@@ -21,6 +21,12 @@ pub fn start_connection(shared: Arc<SharedContext>) {
 	tokio::spawn(connection_loop(shared).instrument(span));
 }
 
+fn websocket_config() -> tungstenite::protocol::WebSocketConfig {
+	tungstenite::protocol::WebSocketConfig::default()
+		.max_message_size(None)
+		.max_frame_size(None)
+}
+
 async fn connection_loop(shared: Arc<SharedContext>) {
 	let mut attempt = 0u32;
 
@@ -106,7 +112,12 @@ async fn single_connection(
 		.body(())
 		.map_err(|e| anyhow::anyhow!("failed to build ws request: {e}"))?;
 
-	let (ws_stream, _) = tokio_tungstenite::connect_async(request).await?;
+	let (ws_stream, _) = tokio_tungstenite::connect_async_with_config(
+		request,
+		Some(websocket_config()),
+		false,
+	)
+	.await?;
 	let (mut write, mut read) = ws_stream.split();
 
 	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<WsTxMessage>();
@@ -238,4 +249,55 @@ fn extract_host(url: &str) -> String {
 		.next()
 		.unwrap_or("localhost")
 		.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+	use futures_util::{SinkExt, StreamExt};
+	use tokio::net::TcpListener;
+
+	use super::*;
+
+	#[test]
+	fn websocket_config_has_no_input_size_limits() {
+		let config = websocket_config();
+
+		assert_eq!(config.max_frame_size, None);
+		assert_eq!(config.max_message_size, None);
+	}
+
+	#[tokio::test]
+	async fn receives_frame_larger_than_default_limit() {
+		const FRAME_SIZE: usize = (16 << 20) + 64 * 1024;
+		const FRAME_BYTE: u8 = 0xa5;
+
+		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let addr = listener.local_addr().unwrap();
+		let server = tokio::spawn(async move {
+			let (stream, _) = listener.accept().await.unwrap();
+			let mut websocket = tokio_tungstenite::accept_async(stream).await.unwrap();
+			websocket
+				.send(tungstenite::Message::Binary(
+					vec![FRAME_BYTE; FRAME_SIZE].into(),
+				))
+				.await
+				.unwrap();
+		});
+
+		let (mut client, _) = tokio_tungstenite::connect_async_with_config(
+			format!("ws://{addr}"),
+			Some(websocket_config()),
+			false,
+		)
+		.await
+		.unwrap();
+		let message = client.next().await.unwrap().unwrap();
+		let tungstenite::Message::Binary(data) = message else {
+			panic!("expected a binary websocket message");
+		};
+
+		assert_eq!(data.len(), FRAME_SIZE);
+		assert!(data.iter().all(|&byte| byte == FRAME_BYTE));
+		server.await.unwrap();
+	}
 }
