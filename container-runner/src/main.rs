@@ -12,8 +12,9 @@
 //! The runner hosts as many concurrent actors as the engine places on it,
 //! each with its own child process on its own port; the pool's request
 //! concurrency decides how many that is (1 in the recommended game-server
-//! setup). When the last actor stops the process exits so the platform reaps
-//! the instance.
+//! setup). The instance stays warm after its last actor stops and never
+//! self-exits; the engine reaps it by draining the `/start` connection once
+//! the request lifespan elapses, or the platform sends a SIGTERM.
 
 mod actor;
 mod child;
@@ -167,12 +168,12 @@ pub fn effective_stop_grace() -> Duration {
 	}
 }
 
-/// End the process. Called when the LAST actor on this instance is gone (or a
-/// failed start poisoned an otherwise idle instance): the instance drains
-/// instead of lingering for the next placement. The runner is PID 1 in the
+/// End the process. Only the platform shutdown signal drives this now: actors
+/// stopping or failing to start no longer exit the instance, so it stays warm
+/// and reusable and its logs have time to drain. The runner is PID 1 in the
 /// image, so exiting stops the container and the platform reaps the instance.
 pub fn request_exit(actor_id: &str, reason: &str) {
-	tracing::info!(actor_id = %actor_id, reason, "actor finished, exiting container");
+	tracing::info!(actor_id = %actor_id, reason, "shutting down container");
 	EXIT.cancel();
 }
 
@@ -346,7 +347,11 @@ async fn async_main() -> Result<()> {
 	));
 	tracing::info!(port, "container-runner serverless front door listening");
 
-	// Wait for an exit request, then tear down. Two orders depending on why:
+	// Wait for an exit request, then tear down. Only the signal path is live
+	// today: nothing calls `request_exit` except `spawn_signal_handler`, which
+	// sets `SIGNAL_SHUTDOWN` before cancelling `EXIT`, so the `else` branch is
+	// currently unreachable and kept only as a fallback for a future
+	// actor-driven exit.
 	//
 	// Signal (platform is reclaiming the instance): tell the engine FIRST so
 	// it can start re-placing actors immediately. Its per-actor stops run our
@@ -354,10 +359,9 @@ async fn async_main() -> Result<()> {
 	// The drain is bounded so an unreachable engine cannot eat the whole
 	// platform budget; the sweep then catches any child whose hooks never ran.
 	//
-	// Actor-driven exit (last actor stopped or a failed start poisoned an
-	// idle instance): no platform deadline. Children are already reaped by
-	// the hooks (the sweep is a no-op backstop), and the runtime drains
-	// unbounded so the /start SSE flushes its stopping frame cleanly.
+	// Fallback actor-driven exit (unreachable today): no platform deadline.
+	// Children are already reaped by the hooks (the sweep is a no-op backstop),
+	// and the runtime drains unbounded so the /start SSE flushes cleanly.
 	EXIT.cancelled().await;
 	if SIGNAL_SHUTDOWN.load(Ordering::Acquire) {
 		if tokio::time::timeout(signal_drain_timeout(), runtime.shutdown())

@@ -8,7 +8,8 @@ This README covers development, the example projects, and the local test harness
 spawning a child game-server process per actor and proxying Rivet's tunneled
 HTTP/WebSocket traffic to it. Each child gets its own port; the pool's request
 concurrency decides how many actors share a container (one, in the recommended
-game-server setup), and the process exits when the last actor stops. Wrap any dedicated server (Unity, Godot, a plain Node process) in a
+game-server setup). The instance stays warm after its last actor stops; the engine
+reaps it by draining the `/start` connection after the request lifespan. Wrap any dedicated server (Unity, Godot, a plain Node process) in a
 container with this binary as the entrypoint and Rivet Compute can cold-start and route
 to it.
 

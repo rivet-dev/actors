@@ -65,7 +65,7 @@ Create actors against the pool's runner (`default`) and connect clients through 
 2. The runner spawns your server as a child process with `PORT` set to the child port, waits for the port to open, and reports the actor as running.
 3. Gateway traffic for the actor arrives over Rivet's tunnel and is proxied to `127.0.0.1:<child port>`. WebSocket clients connect at the bare gateway URL with the `rivet` WebSocket subprotocol. Raw HTTP reaches the child under the `/request/*` prefix on the actor surface (the prefix is stripped before proxying); other paths are reserved for the runtime's own endpoints.
 4. Child stdout and stderr are re-emitted with an `[actorId=... key=...]` prefix so actor logs are attributed in the dashboard.
-5. When an actor stops, the runner sends its child `SIGTERM`, escalates to `SIGKILL` after a grace period, and exits the process once no actors remain.
+5. When an actor stops, the runner sends its child `SIGTERM` and escalates to `SIGKILL` after a grace period. The instance stays warm for the next placement rather than exiting; the engine reaps it by draining the `/start` connection after the request lifespan.
 
 ## Configuration
 
