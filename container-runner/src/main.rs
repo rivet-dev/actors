@@ -68,15 +68,15 @@ static RESERVED_PORTS: LazyLock<scc::HashSet<u16>> = LazyLock::new(scc::HashSet:
 static EXIT: LazyLock<CancellationToken> = LazyLock::new(CancellationToken::new);
 
 /// Set when the process is shutting down because the PLATFORM sent a signal.
-/// Cloud Run gives a container roughly 10 seconds between SIGTERM and SIGKILL,
-/// so every grace period on this path must fit that budget; engine-initiated
-/// stops keep the full configured grace (their budget is the pool's drain
-/// grace period instead).
+/// The hosting platform gives a container only a bounded window (often ~10
+/// seconds) between SIGTERM and SIGKILL, so every grace period on this path must
+/// fit that budget; engine-initiated stops keep the full configured grace
+/// (their budget is the pool's drain grace period instead).
 static SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 /// How long the platform gives this container between SIGTERM and SIGKILL.
-/// Cloud Run defaults to 10 seconds (configurable up to 60 on the service);
-/// keep this in sync with the platform setting via RIVET_SIGTERM_BUDGET_SECS.
+/// Defaults to 10 seconds; keep this in sync with the platform's actual budget
+/// via RIVET_SIGTERM_BUDGET_SECS.
 /// The signal-path teardown splits the budget: ~60% for the engine drain
 /// (whose per-actor stops SIGTERM children with a grace capped at ~40%), 1s
 /// for the straggler sweep, and the rest as margin.
@@ -222,8 +222,9 @@ fn base64url_nopad(input: &[u8]) -> String {
     long_about = None,
 )]
 struct Args {
-	/// Serverless HTTP front-door port. Rivet Compute injects RIVET_PORT (plain Cloud Run
-	/// uses PORT); resolved in `main` as --port > RIVET_PORT > PORT > 8080.
+	/// Serverless HTTP front-door port. Rivet Compute injects RIVET_PORT (other
+	/// serverless platforms use the conventional PORT); resolved in `main` as
+	/// --port > RIVET_PORT > PORT > 8080.
 	#[arg(long)]
 	port: Option<u16>,
 
@@ -244,7 +245,7 @@ struct Args {
 	base_path: String,
 
 	/// SIGTERM→SIGKILL grace period (seconds) when stopping the child.
-	#[arg(long, env = "RIVET_STOP_GRACE_SECS", default_value_t = 25)]
+	#[arg(long, env = "RIVET_STOP_GRACE_SECS", default_value_t = 10)]
 	stop_grace_secs: u64,
 
 	/// How long (seconds) to wait for the child's port to open before failing start.
@@ -285,7 +286,7 @@ async fn async_main() -> Result<()> {
 	let boot_id = boot_id();
 	tracing::info!(?args, %boot_id, "starting container-runner");
 
-	// Front-door port: Rivet Compute injects RIVET_PORT; plain Cloud Run uses PORT.
+	// Front-door port: Rivet Compute injects RIVET_PORT; other serverless platforms use the conventional PORT.
 	let port = args
 		.port
 		.or_else(|| env_u16("RIVET_PORT"))
