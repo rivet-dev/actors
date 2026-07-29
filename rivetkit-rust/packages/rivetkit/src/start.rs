@@ -46,7 +46,11 @@ impl<A: Actor> Input<A> {
 	}
 
 	pub fn decode(&self) -> Result<A::Input> {
-		match self.bytes.as_deref() {
+		// Treat empty input bytes as absent so a zero-length payload defaults
+		// like a missing one, mirroring snapshot decoding. The engine encodes
+		// an omitted `input` as no bytes, but an empty base64 string decodes to
+		// an empty (non-null) buffer.
+		match self.present_bytes() {
 			Some(bytes) => decode_cbor(bytes, "actor input"),
 			None if TypeId::of::<A::Input>() == TypeId::of::<()>() => {
 				let unit: Box<dyn Any> = Box::new(());
@@ -62,10 +66,16 @@ impl<A: Actor> Input<A> {
 	where
 		F: FnOnce() -> A::Input,
 	{
-		match self.bytes.as_deref() {
+		match self.present_bytes() {
 			Some(bytes) => decode_cbor(bytes, "actor input"),
 			None => Ok(f()),
 		}
+	}
+
+	/// Input bytes with empty buffers normalized to `None`, so a zero-length
+	/// payload is treated the same as an omitted one.
+	fn present_bytes(&self) -> Option<&[u8]> {
+		self.bytes.as_deref().filter(|bytes| !bytes.is_empty())
 	}
 
 	pub fn decode_or_default(&self) -> Result<A::Input>
@@ -747,6 +757,31 @@ mod tests {
 	}
 
 	#[test]
+	fn input_decode_or_default_treats_empty_bytes_as_missing() {
+		// An empty base64 input decodes to an empty (non-null) buffer, which
+		// must default rather than fail CBOR decoding.
+		let input = Input::<DefaultActor> {
+			bytes: Some(Vec::new()),
+			_p: PhantomData,
+		};
+
+		assert_eq!(
+			input.decode_or_default().expect("default input"),
+			DefaultInput { count: 7 }
+		);
+	}
+
+	#[test]
+	fn input_decode_treats_empty_unit_as_unit() {
+		let input = Input::<EmptyActor> {
+			bytes: Some(Vec::new()),
+			_p: PhantomData,
+		};
+
+		assert_eq!(input.decode().expect("empty unit input"), ());
+	}
+
+	#[test]
 	fn connection_params_decode_null_as_default() {
 		assert_eq!(
 			decode_conn_params::<LifecycleActor>(&[0xf6]).expect("decode null conn params"),
@@ -944,6 +979,22 @@ mod tests {
 
 		request_sleep(&tx).await;
 		actor.await.expect("join run_actor").expect("run actor");
+	}
+
+	#[tokio::test]
+	async fn run_actor_invalid_input_fails_to_start() {
+		// Non-empty bytes that are not valid CBOR for the input type must fail
+		// the actor start rather than silently defaulting.
+		let (_tx, rx) = unbounded_channel();
+		let start = lifecycle_start(Some(vec![0xff, 0xff, 0xff]), None, rx.into());
+
+		let error = run_actor::<LifecycleActor>(start)
+			.await
+			.expect_err("invalid input should fail actor start");
+		assert!(
+			format!("{error:#}").contains("decode actor input from cbor"),
+			"unexpected error: {error:#}"
+		);
 	}
 
 	#[tokio::test]
