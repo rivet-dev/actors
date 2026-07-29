@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures::FutureExt;
+use rivet_error::RivetError;
 use rivetkit_core::actor::ShutdownKind;
 use rivetkit_core::error::{ActorLifecycle, ActorRuntime, action_not_found};
 use rivetkit_core::{ActorEvent, ActorEvents, ActorStart, QueueSendResult, QueueSendStatus, Reply};
@@ -191,23 +192,45 @@ pub async fn run_actor<A: Actor>(start: Start<A>) -> Result<()> {
 		startup_ready,
 	} = start;
 
-	let state = match snapshot.decode()? {
-		Some(state) => state,
-		// Absent input falls back to the input type's default, matching
-		// rivetkit-typescript where createState receives undefined input.
-		None => A::create_state(&ctx, input.decode_or_default()?).await?,
-	};
-	ctx.set_state(state);
-	ctx.clear_state_dirty();
+	// Run the whole startup phase (input decode, state creation, create,
+	// on_create, on_start) as one fallible unit so a failure is forwarded to
+	// the runtime handshake as the real cause instead of being dropped. Without
+	// this, an input decode error would drop `startup_ready`, surfacing only a
+	// generic closed-channel error rather than the actual failure. The failure
+	// itself is logged by rivetkit-core when it drains the run handle.
+	let startup = async {
+		let state = match snapshot.decode()? {
+			Some(state) => state,
+			// Absent input falls back to the input type's default, matching
+			// rivetkit-typescript where createState receives undefined input.
+			None => A::create_state(&ctx, input.decode_or_default()?).await?,
+		};
+		ctx.set_state(state);
+		ctx.clear_state_dirty();
 
-	let actor = Arc::new(A::create(&ctx).await?);
-	if is_new {
-		actor.clone().on_create(ctx.clone()).await?;
+		let actor = Arc::new(A::create(&ctx).await?);
+		if is_new {
+			actor.clone().on_create(ctx.clone()).await?;
+		}
+		actor.clone().on_start(ctx.clone()).await?;
+		Ok::<_, anyhow::Error>(actor)
 	}
-	actor.clone().on_start(ctx.clone()).await?;
-	if let Some(reply) = startup_ready {
-		let _ = reply.send(Ok(()));
-	}
+	.await;
+
+	let actor = match startup {
+		Ok(actor) => {
+			if let Some(reply) = startup_ready {
+				let _ = reply.send(Ok(()));
+			}
+			actor
+		}
+		Err(error) => {
+			if let Some(reply) = startup_ready {
+				let _ = reply.send(Err(anyhow::Error::new(RivetError::extract(&error))));
+			}
+			return Err(error);
+		}
+	};
 
 	let run_cancel = CancellationToken::new();
 	let run_task = spawn_run_task(actor.clone(), ctx.clone(), run_cancel.clone());
@@ -944,6 +967,35 @@ mod tests {
 
 		request_sleep(&tx).await;
 		actor.await.expect("join run_actor").expect("run actor");
+	}
+
+	#[tokio::test]
+	async fn run_actor_invalid_input_fails_to_start() {
+		// Non-empty bytes that are not valid CBOR for the input type must fail
+		// the actor start rather than silently defaulting, and the failure must
+		// be forwarded to the startup handshake instead of dropped.
+		let (_tx, rx) = unbounded_channel();
+		let (mut start, _ctx) =
+			lifecycle_start_with_ctx(Some(vec![0xff, 0xff, 0xff]), None, rx.into());
+		let (ready_tx, ready_rx) = oneshot::channel();
+		start.startup_ready = Some(ready_tx);
+
+		let error = run_actor::<LifecycleActor>(start)
+			.await
+			.expect_err("invalid input should fail actor start");
+
+		assert!(
+			format!("{error:#}").contains("decode actor input from cbor"),
+			"unexpected error: {error:#}"
+		);
+
+		// The startup handshake is signaled with the error rather than dropped,
+		// so the runtime handshake surfaces the real cause. rivetkit-core owns
+		// logging the failure when it drains the run handle.
+		ready_rx
+			.await
+			.expect("startup_ready should be signaled")
+			.expect_err("startup should report failure");
 	}
 
 	#[tokio::test]
