@@ -1801,6 +1801,25 @@ impl ActorTask {
 			step = "sync_alarm",
 			"actor shutdown cleanup step completed"
 		);
+		// Destroy cancels the engine-side alarm BEFORE the SQLite teardown.
+		// `cancel_driver_alarm_logged` issues a `set_alarm(None)` that spawns a
+		// last-pushed-alarm SQLite persist; running it here (rather than after
+		// `cleanup_sqlite`) lets `wait_for_pending_alarm_writes` below await that
+		// persist so it cannot race the teardown and fail with
+		// `transaction_closed`. Sleep keeps the persisted engine alarm armed for
+		// the next instance, so it only aborts the local timer, after cleanup.
+		match reason {
+			ShutdownKind::Destroy => {
+				ctx.cancel_driver_alarm_logged();
+				tracing::debug!(
+					actor_id = %actor_id,
+					reason = reason_label,
+					step = "cancel_driver_alarm",
+					"actor shutdown cleanup step completed"
+				);
+			}
+			ShutdownKind::Sleep => {}
+		}
 		ctx.wait_for_pending_alarm_writes().await;
 		tracing::debug!(
 			actor_id = %actor_id,
@@ -1834,15 +1853,7 @@ impl ActorTask {
 					"actor shutdown cleanup step completed"
 				);
 			}
-			ShutdownKind::Destroy => {
-				ctx.cancel_driver_alarm_logged();
-				tracing::debug!(
-					actor_id = %actor_id,
-					reason = reason_label,
-					step = "cancel_driver_alarm",
-					"actor shutdown cleanup step completed"
-				);
-			}
+			ShutdownKind::Destroy => {}
 		}
 		Ok(())
 	}
