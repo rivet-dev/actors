@@ -3,6 +3,7 @@ pub mod actor_factory;
 pub mod cancellation_token;
 pub mod connection;
 pub mod database;
+mod http;
 pub mod kv;
 pub mod napi_actor_events;
 pub mod queue;

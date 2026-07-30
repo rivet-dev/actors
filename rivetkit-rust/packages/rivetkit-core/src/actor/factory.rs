@@ -17,6 +17,7 @@ pub struct ActorFactory {
 	config: ActorConfig,
 	entry: Box<ActorEntryFn>,
 	manual_startup_ready: bool,
+	streams_request_body: bool,
 }
 
 #[cfg(feature = "wasm-runtime")]
@@ -34,6 +35,7 @@ impl ActorFactory {
 			config,
 			entry: Box::new(entry),
 			manual_startup_ready: false,
+			streams_request_body: false,
 		}
 	}
 
@@ -47,7 +49,14 @@ impl ActorFactory {
 			config,
 			entry: Box::new(entry),
 			manual_startup_ready: true,
+			streams_request_body: false,
 		}
+	}
+
+	/// Declares that this runtime consumes request bodies incrementally.
+	pub fn with_streaming_request_body(mut self) -> Self {
+		self.streams_request_body = true;
+		self
 	}
 
 	pub fn config(&self) -> &ActorConfig {
@@ -56,6 +65,10 @@ impl ActorFactory {
 
 	pub(crate) fn requires_manual_startup_ready(&self) -> bool {
 		self.manual_startup_ready
+	}
+
+	pub(crate) fn streams_request_body(&self) -> bool {
+		self.streams_request_body
 	}
 
 	pub async fn start(&self, start: ActorStart) -> Result<()> {
@@ -86,6 +99,7 @@ impl fmt::Debug for ActorFactory {
 		f.debug_struct("ActorFactory")
 			.field("config", &self.config)
 			.field("manual_startup_ready", &self.manual_startup_ready)
+			.field("streams_request_body", &self.streams_request_body)
 			.field("entry", &"<boxed entry>")
 			.finish()
 	}

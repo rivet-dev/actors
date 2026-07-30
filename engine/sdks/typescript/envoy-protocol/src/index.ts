@@ -2143,7 +2143,118 @@ export function writeToEnvoyRequestChunk(bc: bare.ByteCursor, x: ToEnvoyRequestC
     bare.writeBool(bc, x.finish)
 }
 
-export type ToEnvoyRequestAbort = null
+export enum HttpStreamAbortReasonKind {
+    Unknown = "Unknown",
+    ClientDisconnect = "ClientDisconnect",
+    HandlerError = "HandlerError",
+    IdleTimeout = "IdleTimeout",
+    Overloaded = "Overloaded",
+    BodyTooLarge = "BodyTooLarge",
+    OutOfMemory = "OutOfMemory",
+    Shutdown = "Shutdown",
+    InternalError = "InternalError",
+}
+
+export function readHttpStreamAbortReasonKind(bc: bare.ByteCursor): HttpStreamAbortReasonKind {
+    const offset = bc.offset
+    const tag = bare.readU8(bc)
+    switch (tag) {
+        case 0:
+            return HttpStreamAbortReasonKind.Unknown
+        case 1:
+            return HttpStreamAbortReasonKind.ClientDisconnect
+        case 2:
+            return HttpStreamAbortReasonKind.HandlerError
+        case 3:
+            return HttpStreamAbortReasonKind.IdleTimeout
+        case 4:
+            return HttpStreamAbortReasonKind.Overloaded
+        case 5:
+            return HttpStreamAbortReasonKind.BodyTooLarge
+        case 6:
+            return HttpStreamAbortReasonKind.OutOfMemory
+        case 7:
+            return HttpStreamAbortReasonKind.Shutdown
+        case 8:
+            return HttpStreamAbortReasonKind.InternalError
+        default: {
+            bc.offset = offset
+            throw new bare.BareError(offset, "invalid tag")
+        }
+    }
+}
+
+export function writeHttpStreamAbortReasonKind(bc: bare.ByteCursor, x: HttpStreamAbortReasonKind): void {
+    switch (x) {
+        case HttpStreamAbortReasonKind.Unknown: {
+            bare.writeU8(bc, 0)
+            break
+        }
+        case HttpStreamAbortReasonKind.ClientDisconnect: {
+            bare.writeU8(bc, 1)
+            break
+        }
+        case HttpStreamAbortReasonKind.HandlerError: {
+            bare.writeU8(bc, 2)
+            break
+        }
+        case HttpStreamAbortReasonKind.IdleTimeout: {
+            bare.writeU8(bc, 3)
+            break
+        }
+        case HttpStreamAbortReasonKind.Overloaded: {
+            bare.writeU8(bc, 4)
+            break
+        }
+        case HttpStreamAbortReasonKind.BodyTooLarge: {
+            bare.writeU8(bc, 5)
+            break
+        }
+        case HttpStreamAbortReasonKind.OutOfMemory: {
+            bare.writeU8(bc, 6)
+            break
+        }
+        case HttpStreamAbortReasonKind.Shutdown: {
+            bare.writeU8(bc, 7)
+            break
+        }
+        case HttpStreamAbortReasonKind.InternalError: {
+            bare.writeU8(bc, 8)
+            break
+        }
+    }
+}
+
+export type HttpStreamAbortReason = {
+    readonly kind: HttpStreamAbortReasonKind
+    readonly detail: string | null
+}
+
+export function readHttpStreamAbortReason(bc: bare.ByteCursor): HttpStreamAbortReason {
+    return {
+        kind: readHttpStreamAbortReasonKind(bc),
+        detail: read17(bc),
+    }
+}
+
+export function writeHttpStreamAbortReason(bc: bare.ByteCursor, x: HttpStreamAbortReason): void {
+    writeHttpStreamAbortReasonKind(bc, x.kind)
+    write17(bc, x.detail)
+}
+
+export type ToEnvoyRequestAbort = {
+    readonly reason: HttpStreamAbortReason
+}
+
+export function readToEnvoyRequestAbort(bc: bare.ByteCursor): ToEnvoyRequestAbort {
+    return {
+        reason: readHttpStreamAbortReason(bc),
+    }
+}
+
+export function writeToEnvoyRequestAbort(bc: bare.ByteCursor, x: ToEnvoyRequestAbort): void {
+    writeHttpStreamAbortReason(bc, x.reason)
+}
 
 export type ToRivetResponseStart = {
     readonly status: u16
@@ -2185,7 +2296,19 @@ export function writeToRivetResponseChunk(bc: bare.ByteCursor, x: ToRivetRespons
     bare.writeBool(bc, x.finish)
 }
 
-export type ToRivetResponseAbort = null
+export type ToRivetResponseAbort = {
+    readonly reason: HttpStreamAbortReason
+}
+
+export function readToRivetResponseAbort(bc: bare.ByteCursor): ToRivetResponseAbort {
+    return {
+        reason: readHttpStreamAbortReason(bc),
+    }
+}
+
+export function writeToRivetResponseAbort(bc: bare.ByteCursor, x: ToRivetResponseAbort): void {
+    writeHttpStreamAbortReason(bc, x.reason)
+}
 
 /**
  * WebSocket
@@ -2347,7 +2470,7 @@ export function readToRivetTunnelMessageKind(bc: bare.ByteCursor): ToRivetTunnel
         case 1:
             return { tag: "ToRivetResponseChunk", val: readToRivetResponseChunk(bc) }
         case 2:
-            return { tag: "ToRivetResponseAbort", val: null }
+            return { tag: "ToRivetResponseAbort", val: readToRivetResponseAbort(bc) }
         case 3:
             return { tag: "ToRivetWebSocketOpen", val: readToRivetWebSocketOpen(bc) }
         case 4:
@@ -2377,6 +2500,7 @@ export function writeToRivetTunnelMessageKind(bc: bare.ByteCursor, x: ToRivetTun
         }
         case "ToRivetResponseAbort": {
             bare.writeU8(bc, 2)
+            writeToRivetResponseAbort(bc, x.val)
             break
         }
         case "ToRivetWebSocketOpen": {
@@ -2445,7 +2569,7 @@ export function readToEnvoyTunnelMessageKind(bc: bare.ByteCursor): ToEnvoyTunnel
         case 1:
             return { tag: "ToEnvoyRequestChunk", val: readToEnvoyRequestChunk(bc) }
         case 2:
-            return { tag: "ToEnvoyRequestAbort", val: null }
+            return { tag: "ToEnvoyRequestAbort", val: readToEnvoyRequestAbort(bc) }
         case 3:
             return { tag: "ToEnvoyWebSocketOpen", val: readToEnvoyWebSocketOpen(bc) }
         case 4:
@@ -2473,6 +2597,7 @@ export function writeToEnvoyTunnelMessageKind(bc: bare.ByteCursor, x: ToEnvoyTun
         }
         case "ToEnvoyRequestAbort": {
             bare.writeU8(bc, 2)
+            writeToEnvoyRequestAbort(bc, x.val)
             break
         }
         case "ToEnvoyWebSocketOpen": {
@@ -3445,4 +3570,4 @@ function assert(condition: boolean, message?: string): asserts condition {
     if (!condition) throw new Error(message ?? "Assertion failed")
 }
 
-export const VERSION = 6;
+export const VERSION = 8;

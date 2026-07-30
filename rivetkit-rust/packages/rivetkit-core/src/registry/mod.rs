@@ -40,7 +40,7 @@ use crate::actor::context::{ActorContext, InspectorAttachGuard};
 use crate::actor::factory::ActorFactory;
 use crate::actor::kv::LegacyActorKv;
 use crate::actor::lifecycle_hooks::Reply;
-use crate::actor::messages::{ActorEvent, QueueSendResult, Request, Response, StateDelta};
+use crate::actor::messages::{ActorEvent, ActorHttpResponse, QueueSendResult, Request, StateDelta};
 use crate::actor::task::{
 	ActorTask, DispatchCommand, LifecycleCommand, try_send_dispatch_command,
 	try_send_lifecycle_command,

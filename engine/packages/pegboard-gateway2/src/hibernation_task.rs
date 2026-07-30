@@ -15,7 +15,7 @@ use std::sync::{
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::shared_state::{InFlightRequestHandle, MsgGcReason};
+use crate::shared_state::{InFlightRequestHandle, InFlightTunnelMessage, MsgGcReason};
 
 use super::HibernationLifecycleResult;
 
@@ -26,7 +26,7 @@ pub async fn task(
 	in_flight_req: InFlightRequestHandle,
 	ctx: StandaloneCtx,
 	actor_id: Id,
-	mut msg_rx: mpsc::UnboundedReceiver<protocol::ToRivetTunnelMessageKind>,
+	mut msg_rx: mpsc::UnboundedReceiver<InFlightTunnelMessage>,
 	mut drop_rx: watch::Receiver<Option<MsgGcReason>>,
 	egress_bytes: Arc<AtomicU64>,
 	mut hibernation_abort_rx: watch::Receiver<()>,
@@ -55,7 +55,7 @@ pub async fn task(
 		tokio::select! {
 			res = msg_rx.recv() => {
 				if let Some(msg) = res {
-					match msg {
+					match msg.message_kind {
 						protocol::ToRivetTunnelMessageKind::ToRivetWebSocketMessage(ws_msg) => {
 							tracing::trace!(
 								request_id=%protocol::util::id_to_string(&in_flight_req.request_id),

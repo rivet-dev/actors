@@ -130,6 +130,10 @@ pub enum ToEnvoyMessage {
 		request_id: protocol::RequestId,
 		envoy_message_index: u16,
 	},
+	HttpRequestComplete {
+		gateway_id: protocol::GatewayId,
+		request_id: protocol::RequestId,
+	},
 	GetActor {
 		actor_id: String,
 		generation: Option<u32>,
@@ -416,6 +420,9 @@ async fn envoy_loop(
 					}
 					ToEnvoyMessage::HwsAck { gateway_id, request_id, envoy_message_index } => {
 						send_hibernatable_ws_message_ack(&mut ctx, gateway_id, request_id, envoy_message_index);
+					}
+					ToEnvoyMessage::HttpRequestComplete { gateway_id, request_id } => {
+						ctx.request_to_actor.remove(&[&gateway_id, &request_id]);
 					}
 					ToEnvoyMessage::GetActor { actor_id, generation, response_tx } => {
 						let info = ctx.get_actor(&actor_id, generation).map(|entry| {

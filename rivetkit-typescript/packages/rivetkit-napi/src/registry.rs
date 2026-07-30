@@ -9,18 +9,20 @@ use napi_derive::napi;
 use parking_lot::Mutex as ParkingMutex;
 use rivetkit_core::{
 	CoreRegistry as NativeCoreRegistry, CoreServerlessRuntime, EngineSpawnMode, ServeConfig,
-	ServerlessRequest,
+	ServerlessRequest, HTTP_BODY_STREAM_CHANNEL_CAPACITY,
 	registry::CoreEnvoyHandle,
 	serverless::ServerlessStreamError,
 	serverless_http::{
-		self, ApplicationFetch, ApplicationRequest, ApplicationResponse, ListenerConfig,
+		self, ApplicationFetch, ApplicationRequest, ApplicationResponse,
+		ApplicationResponseBody, ListenerConfig,
 	},
 };
-use tokio::sync::{Mutex as TokioMutex, Notify};
+use tokio::sync::{Mutex as TokioMutex, Notify, mpsc};
 use tokio_util::sync::CancellationToken as CoreCancellationToken;
 
 use crate::actor_factory::NapiActorFactory;
 use crate::cancellation_token::CancellationToken;
+use crate::http::HttpResponseBodyStream;
 use crate::{NapiInvalidState, napi_anyhow_error};
 
 #[napi(object)]
@@ -71,7 +73,8 @@ pub struct JsServerlessResponseHead {
 pub struct JsApplicationResponse {
 	pub status: u16,
 	pub headers: HashMap<String, String>,
-	pub body: Buffer,
+	pub body: Option<Buffer>,
+	pub stream: Option<bool>,
 }
 
 #[napi(object)]
@@ -693,20 +696,31 @@ impl CoreRegistry {
 	}
 }
 
-type ApplicationFetchTsfn = ThreadsafeFunction<ApplicationRequest, ErrorStrategy::CalleeHandled>;
+struct ApplicationFetchPayload {
+	request: ApplicationRequest,
+	response_stream: HttpResponseBodyStream,
+}
+
+type ApplicationFetchTsfn =
+	ThreadsafeFunction<ApplicationFetchPayload, ErrorStrategy::CalleeHandled>;
 
 fn create_application_fetch_tsfn(callback: JsFunction) -> napi::Result<ApplicationFetchTsfn> {
-	callback.create_threadsafe_function(0, |ctx: ThreadSafeCallContext<ApplicationRequest>| {
+	callback.create_threadsafe_function(0, |ctx: ThreadSafeCallContext<ApplicationFetchPayload>| {
 		let mut request = ctx.env.create_object()?;
-		request.set("method", ctx.value.method)?;
-		request.set("url", ctx.value.url)?;
-		request.set("headers", ctx.value.headers)?;
+		request.set("method", ctx.value.request.method)?;
+		request.set("url", ctx.value.request.url)?;
+		request.set("headers", ctx.value.request.headers)?;
 		request.set(
 			"body",
 			ctx.env
-				.create_buffer_with_data(ctx.value.body)?
+				.create_buffer_with_data(ctx.value.request.body)?
 				.into_unknown(),
 		)?;
+		request.set(
+			"cancelToken",
+			CancellationToken::new(ctx.value.request.cancel_token),
+		)?;
+		request.set("responseBodyStream", ctx.value.response_stream)?;
 		Ok(vec![request.into_unknown()])
 	})
 }
@@ -715,8 +729,14 @@ fn application_fetch_from_tsfn(callback: ApplicationFetchTsfn) -> ApplicationFet
 	Arc::new(move |request| {
 		let callback = callback.clone();
 		Box::pin(async move {
+			let (body_tx, body_rx) = mpsc::channel(HTTP_BODY_STREAM_CHANNEL_CAPACITY);
 			let promise = callback
-				.call_async::<Promise<JsApplicationResponse>>(Ok(request))
+				.call_async::<Promise<JsApplicationResponse>>(Ok(
+					ApplicationFetchPayload {
+						request,
+						response_stream: HttpResponseBodyStream::new(body_tx),
+					},
+				))
 				.await
 				.map_err(|error| anyhow::anyhow!("application fetch callback failed: {error}"))?;
 			let response = promise
@@ -725,7 +745,13 @@ fn application_fetch_from_tsfn(callback: ApplicationFetchTsfn) -> ApplicationFet
 			Ok(ApplicationResponse {
 				status: response.status,
 				headers: response.headers,
-				body: response.body.to_vec(),
+				body: if response.stream.unwrap_or(false) {
+					ApplicationResponseBody::Stream(body_rx)
+				} else {
+					ApplicationResponseBody::Buffered(
+						response.body.map(|body| body.to_vec()).unwrap_or_default(),
+					)
+				},
 			})
 		})
 	})

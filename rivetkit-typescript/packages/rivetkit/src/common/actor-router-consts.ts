@@ -12,6 +12,7 @@ export const HEADER_ENCODING = "x-rivet-encoding";
 
 // IMPORTANT: Params must be in headers or in an E2EE part of the request (i.e. NOT the URL or query string) in order to ensure that tokens can be securely passed in params.
 export const HEADER_CONN_PARAMS = "x-rivet-conn-params";
+export const HEADER_ORIGINAL_REQUEST_URL = "x-rivet-internal-original-request-url";
 
 export const HEADER_ACTOR_ID = "x-rivet-actor";
 export const HEADER_ACTOR_GENERATION = "x-rivet-actor-generation";

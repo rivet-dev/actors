@@ -1476,7 +1476,7 @@ fn tunnel_message_kind_name(kind: &protocol::ToRivetTunnelMessageKind) -> &'stat
 	match kind {
 		ToRivetTunnelMessageKind::ToRivetResponseStart(_) => "ToRivetResponseStart",
 		ToRivetTunnelMessageKind::ToRivetResponseChunk(_) => "ToRivetResponseChunk",
-		ToRivetTunnelMessageKind::ToRivetResponseAbort => "ToRivetResponseAbort",
+		ToRivetTunnelMessageKind::ToRivetResponseAbort(_) => "ToRivetResponseAbort",
 		ToRivetTunnelMessageKind::ToRivetWebSocketOpen(_) => "ToRivetWebSocketOpen",
 		ToRivetTunnelMessageKind::ToRivetWebSocketMessage(_) => "ToRivetWebSocketMessage",
 		ToRivetTunnelMessageKind::ToRivetWebSocketMessageAck(_) => "ToRivetWebSocketMessageAck",
@@ -2212,7 +2212,9 @@ fn sqlite_protocol_error_response(message: &str) -> protocol::SqliteErrorRespons
 	}
 }
 
-/// Returns the length of the inner data payload for a tunnel message kind.
+/// Returns variable-length application payload bytes for per-message limits and tracing.
+///
+/// This excludes protocol framing and fixed fields, and does not represent a whole HTTP stream.
 fn tunnel_message_inner_data_len(kind: &protocol::ToRivetTunnelMessageKind) -> usize {
 	use protocol::ToRivetTunnelMessageKind;
 	match kind {
@@ -2221,16 +2223,16 @@ fn tunnel_message_inner_data_len(kind: &protocol::ToRivetTunnelMessageKind) -> u
 		}
 		ToRivetTunnelMessageKind::ToRivetResponseChunk(chunk) => chunk.body.len(),
 		ToRivetTunnelMessageKind::ToRivetWebSocketMessage(msg) => msg.data.len(),
-		ToRivetTunnelMessageKind::ToRivetResponseAbort
-		| ToRivetTunnelMessageKind::ToRivetWebSocketOpen(_)
+		ToRivetTunnelMessageKind::ToRivetResponseAbort(abort) => abort
+			.reason
+			.detail
+			.as_ref()
+			.map_or(0, |detail| detail.len()),
+		ToRivetTunnelMessageKind::ToRivetWebSocketOpen(_)
 		| ToRivetTunnelMessageKind::ToRivetWebSocketMessageAck(_)
 		| ToRivetTunnelMessageKind::ToRivetWebSocketClose(_) => 0,
 	}
 }
-
-#[cfg(test)]
-#[path = "../tests/support/ws_to_tunnel_task.rs"]
-mod tests;
 
 async fn send_actor_kv_error(conn: &Conn, request_id: u32, message: &str) -> Result<()> {
 	send_actor_kv_response(
@@ -2375,3 +2377,11 @@ impl Drop for WsResponseInFlightGuard {
 		metrics::WS_RESPONSES_IN_FLIGHT.dec();
 	}
 }
+
+#[cfg(test)]
+#[path = "../tests/support/ws_to_tunnel_payload_accounting.rs"]
+mod payload_accounting_tests;
+
+#[cfg(test)]
+#[path = "../tests/support/ws_to_tunnel_task.rs"]
+mod tests;

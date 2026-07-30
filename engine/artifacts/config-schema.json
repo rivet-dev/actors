@@ -1008,6 +1008,24 @@
           "format": "uint",
           "minimum": 0.0
         },
+        "gateway_http_response_body_channel_capacity": {
+          "description": "Number of body chunks buffered between a streaming response handler and its HTTP client.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "gateway_http_response_queue_max_messages": {
+          "description": "Maximum number of envoy response messages buffered per HTTP request.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
+        },
         "gateway_hws_max_pending_size": {
           "description": "Max pending message buffer size for hibernating WebSockets in bytes.",
           "type": [
@@ -1026,6 +1044,15 @@
           "format": "uint64",
           "minimum": 0.0
         },
+        "gateway_response_chunk_idle_timeout_ms": {
+          "description": "Timeout between streaming HTTP response chunks in milliseconds.\n\nDisabled when unset so long-lived streams such as SSE may remain idle.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
         "gateway_response_start_timeout_ms": {
           "description": "Timeout for response to start in milliseconds.",
           "type": [
@@ -1033,6 +1060,15 @@
             "null"
           ],
           "format": "uint64",
+          "minimum": 0.0
+        },
+        "gateway_streaming_http_response_queue_max_bytes": {
+          "description": "Maximum streaming response bytes buffered per HTTP request.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
           "minimum": 0.0
         },
         "gateway_tunnel_ping_timeout_ms": {

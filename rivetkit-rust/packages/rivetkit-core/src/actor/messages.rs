@@ -1,8 +1,13 @@
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use anyhow::Result;
+use parking_lot::Mutex;
+use rivet_envoy_client::config::{HttpRequestBodyStream, ResponseChunk};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::actor::connection::ConnHandle;
 use crate::actor::lifecycle_hooks::Reply;
@@ -13,11 +18,19 @@ use crate::types::ConnId;
 use crate::websocket::WebSocket;
 
 #[derive(Clone, Debug)]
-pub struct Request(http::Request<Vec<u8>>);
+pub struct Request {
+	inner: http::Request<Vec<u8>>,
+	body_stream: Option<Arc<Mutex<Option<HttpRequestBodyStream>>>>,
+	cancel_token: CancellationToken,
+}
 
 impl Request {
 	pub fn new(body: Vec<u8>) -> Self {
-		Self(http::Request::new(body))
+		Self {
+			inner: http::Request::new(body),
+			body_stream: None,
+			cancel_token: CancellationToken::new(),
+		}
 	}
 
 	pub fn from_parts(
@@ -25,6 +38,16 @@ impl Request {
 		uri: &str,
 		headers: HashMap<String, String>,
 		body: Vec<u8>,
+	) -> Result<Self> {
+		Self::from_parts_with_stream(method, uri, headers, body, None)
+	}
+
+	pub fn from_parts_with_stream(
+		method: &str,
+		uri: &str,
+		headers: HashMap<String, String>,
+		body: Vec<u8>,
+		body_stream: Option<HttpRequestBodyStream>,
 	) -> Result<Self> {
 		let method = method
 			.parse::<http::Method>()
@@ -47,7 +70,11 @@ impl Request {
 			request.headers_mut().insert(header_name, header_value);
 		}
 
-		Ok(Self(request))
+		Ok(Self {
+			inner: request,
+			body_stream: body_stream.map(|rx| Arc::new(Mutex::new(Some(rx)))),
+			cancel_token: CancellationToken::new(),
+		})
 	}
 
 	pub fn to_parts(&self) -> (String, String, HashMap<String, String>, Vec<u8>) {
@@ -67,12 +94,41 @@ impl Request {
 		)
 	}
 
+	pub fn has_body_stream(&self) -> bool {
+		self.body_stream
+			.as_ref()
+			.is_some_and(|body_stream| body_stream.lock().is_some())
+	}
+
+	pub fn take_body_stream(&self) -> Option<HttpRequestBodyStream> {
+		self.body_stream
+			.as_ref()
+			.and_then(|body_stream| body_stream.lock().take())
+	}
+
+	pub fn cancellation_token(&self) -> CancellationToken {
+		self.cancel_token.clone()
+	}
+
+	pub async fn into_buffered(mut self) -> Result<Self> {
+		if let Some(body_stream) = &self.body_stream {
+			let mut body_stream = body_stream.lock().take();
+			if let Some(mut body_stream) = body_stream.take() {
+				while let Some(chunk) = body_stream.recv().await? {
+					self.inner.body_mut().extend_from_slice(&chunk);
+				}
+			}
+		}
+		self.body_stream = None;
+		Ok(self)
+	}
+
 	pub fn into_inner(self) -> http::Request<Vec<u8>> {
-		self.0
+		self.inner
 	}
 
 	pub fn into_body(self) -> Vec<u8> {
-		self.0.into_body()
+		self.inner.into_body()
 	}
 }
 
@@ -86,25 +142,29 @@ impl Deref for Request {
 	type Target = http::Request<Vec<u8>>;
 
 	fn deref(&self) -> &Self::Target {
-		&self.0
+		&self.inner
 	}
 }
 
 impl DerefMut for Request {
 	fn deref_mut(&mut self) -> &mut Self::Target {
-		&mut self.0
+		&mut self.inner
 	}
 }
 
 impl From<http::Request<Vec<u8>>> for Request {
 	fn from(value: http::Request<Vec<u8>>) -> Self {
-		Self(value)
+		Self {
+			inner: value,
+			body_stream: None,
+			cancel_token: CancellationToken::new(),
+		}
 	}
 }
 
 impl From<Request> for http::Request<Vec<u8>> {
 	fn from(value: Request) -> Self {
-		value.0
+		value.inner
 	}
 }
 
@@ -212,6 +272,59 @@ impl From<Response> for http::Response<Vec<u8>> {
 	}
 }
 
+pub struct StreamingResponse {
+	status: u16,
+	headers: HashMap<String, String>,
+	body_stream: mpsc::Receiver<ResponseChunk>,
+}
+
+impl StreamingResponse {
+	pub fn from_parts(
+		status: u16,
+		headers: HashMap<String, String>,
+		body_stream: mpsc::Receiver<ResponseChunk>,
+	) -> Result<Self> {
+		let status_code: http::StatusCode = status
+			.try_into()
+			.map_err(|error| invalid_http_response("status", format!("{status}: {error}")))?;
+		for (name, value) in &headers {
+			let _: http::header::HeaderName = name.parse().map_err(|error| {
+				invalid_http_response("header name", format!("{name}: {error}"))
+			})?;
+			let _: http::header::HeaderValue = value.parse().map_err(|error| {
+				invalid_http_response("header value", format!("{name}: {error}"))
+			})?;
+		}
+
+		Ok(Self {
+			status: status_code.as_u16(),
+			headers,
+			body_stream,
+		})
+	}
+
+	pub fn into_parts(self) -> (u16, HashMap<String, String>, mpsc::Receiver<ResponseChunk>) {
+		(self.status, self.headers, self.body_stream)
+	}
+}
+
+pub enum ActorHttpResponse {
+	Buffered(Response),
+	Stream(StreamingResponse),
+}
+
+impl From<Response> for ActorHttpResponse {
+	fn from(value: Response) -> Self {
+		Self::Buffered(value)
+	}
+}
+
+impl From<StreamingResponse> for ActorHttpResponse {
+	fn from(value: StreamingResponse) -> Self {
+		Self::Stream(value)
+	}
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StateDelta {
 	ActorState(Vec<u8>),
@@ -283,7 +396,7 @@ pub enum ActorEvent {
 	},
 	HttpRequest {
 		request: Request,
-		reply: Reply<Response>,
+		reply: Reply<ActorHttpResponse>,
 	},
 	QueueSend {
 		name: String,

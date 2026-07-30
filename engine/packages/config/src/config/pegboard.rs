@@ -105,6 +105,10 @@ pub struct Pegboard {
 	pub gateway_websocket_open_timeout_ms: Option<u64>,
 	/// Timeout for response to start in milliseconds.
 	pub gateway_response_start_timeout_ms: Option<u64>,
+	/// Timeout between streaming HTTP response chunks in milliseconds.
+	///
+	/// Disabled when unset so long-lived streams such as SSE may remain idle.
+	pub gateway_response_chunk_idle_timeout_ms: Option<u64>,
 	/// Ping interval for gateway updates in milliseconds.
 	pub gateway_update_ping_interval_ms: Option<u64>,
 	/// GC interval for in-flight requests in milliseconds.
@@ -123,6 +127,12 @@ pub struct Pegboard {
 	///
 	/// Unit is in milliseconds.
 	pub gateway_websocket_rate_limit_drip_rate_ms: Option<u64>,
+	/// Number of body chunks buffered between a streaming response handler and its HTTP client.
+	pub gateway_http_response_body_channel_capacity: Option<usize>,
+	/// Maximum number of envoy response messages buffered per HTTP request.
+	pub gateway_http_response_queue_max_messages: Option<usize>,
+	/// Maximum streaming response bytes buffered per HTTP request.
+	pub gateway_streaming_http_response_queue_max_bytes: Option<usize>,
 
 	// === Envoy Settings ===
 	/// How long to wait before considering an envoy lost and evicting all of its actors.
@@ -302,6 +312,10 @@ impl Pegboard {
 			.unwrap_or(5 * 60 * 1000)
 	}
 
+	pub fn gateway_response_chunk_idle_timeout_ms(&self) -> Option<u64> {
+		self.gateway_response_chunk_idle_timeout_ms
+	}
+
 	pub fn gateway_update_ping_interval_ms(&self) -> u64 {
 		self.gateway_update_ping_interval_ms.unwrap_or(3_000)
 	}
@@ -321,6 +335,23 @@ impl Pegboard {
 	pub fn gateway_hws_max_pending_size(&self) -> u64 {
 		self.gateway_hws_max_pending_size
 			.unwrap_or(128 * 1024 * 1024) // 128 MiB
+	}
+
+	pub fn gateway_http_response_body_channel_capacity(&self) -> usize {
+		self.gateway_http_response_body_channel_capacity
+			.unwrap_or(16)
+			.max(1)
+	}
+
+	pub fn gateway_http_response_queue_max_messages(&self) -> usize {
+		// A 20 MiB response occupies 320 64 KiB chunks. Leave room for
+		// control frames and smaller chunks while still bounding amplification.
+		self.gateway_http_response_queue_max_messages.unwrap_or(384)
+	}
+
+	pub fn gateway_streaming_http_response_queue_max_bytes(&self) -> usize {
+		self.gateway_streaming_http_response_queue_max_bytes
+			.unwrap_or(20 * 1024 * 1024) // 20 MiB
 	}
 
 	pub fn runner_max_response_payload_body_size(&self) -> usize {

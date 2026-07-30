@@ -1,11 +1,25 @@
 import { Hono } from "hono";
 import { actor, type RequestContext } from "rivetkit";
 
+type RawHttpConnParams = { streamLifecycle?: boolean } | undefined;
+
 export const rawHttpActor = actor({
 	state: {
 		requestCount: 0,
+		requestAbortStarted: false,
+		requestAbortObserved: false,
+		responseAbortStarted: false,
+		responseAbortObserved: false,
+		streamResponseFinished: false,
+		streamDisconnectedBeforeFinish: false,
 	},
-	onRequest(
+	onBeforeConnect: (_c, _params: RawHttpConnParams) => {},
+	onDisconnect: (c, conn) => {
+		if (conn.params?.streamLifecycle && !c.state.streamResponseFinished) {
+			c.state.streamDisconnectedBeforeFinish = true;
+		}
+	},
+	async onRequest(
 		ctx: RequestContext<any, any, any, any, any, any>,
 		request: Request,
 	) {
@@ -31,9 +45,153 @@ export const rawHttpActor = actor({
 			});
 		}
 
+		if (url.pathname === "/api/stream") {
+			const encoder = new TextEncoder();
+			return new Response(
+				new ReadableStream<Uint8Array>({
+					async start(controller) {
+						controller.enqueue(encoder.encode("data: first\n\n"));
+						await new Promise((resolve) =>
+							setTimeout(resolve, 150),
+						);
+						controller.enqueue(encoder.encode("data: second\n\n"));
+						controller.close();
+					},
+				}),
+				{
+					headers: { "Content-Type": "text/event-stream" },
+				},
+			);
+		}
+
+		if (url.pathname === "/api/stream-lifecycle") {
+			const encoder = new TextEncoder();
+			ctx.state.streamResponseFinished = false;
+			ctx.state.streamDisconnectedBeforeFinish = false;
+			return new Response(
+				new ReadableStream<Uint8Array>({
+					async start(controller) {
+						controller.enqueue(encoder.encode("data: first\n\n"));
+						await new Promise((resolve) =>
+							setTimeout(resolve, 150),
+						);
+						ctx.state.streamResponseFinished = true;
+						controller.close();
+					},
+				}),
+				{
+					headers: { "Content-Type": "text/event-stream" },
+				},
+			);
+		}
+
+		if (url.pathname === "/api/wait-for-response-abort") {
+			const encoder = new TextEncoder();
+			ctx.state.responseAbortStarted = true;
+			ctx.state.responseAbortObserved = false;
+			return new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(encoder.encode("data: ready\n\n"));
+						const observeAbort = () => {
+							ctx.state.responseAbortObserved = true;
+						};
+						if (request.signal.aborted) {
+							observeAbort();
+						} else {
+							request.signal.addEventListener(
+								"abort",
+								observeAbort,
+								{ once: true },
+							);
+						}
+					},
+				}),
+				{
+					headers: { "Content-Type": "text/event-stream" },
+				},
+			);
+		}
+
+		if (url.pathname === "/api/sse-proxy") {
+			const target = url.searchParams.get("target");
+			if (!target) {
+				return new Response("Missing target", { status: 400 });
+			}
+
+			const upstreamHeaders = new Headers();
+			for (const name of ["accept", "cache-control", "last-event-id"]) {
+				const value = request.headers.get(name);
+				if (value) {
+					upstreamHeaders.set(name, value);
+				}
+			}
+
+			const upstream = await fetch(target, {
+				headers: upstreamHeaders,
+				signal: request.signal,
+			});
+			return new Response(upstream.body, {
+				status: upstream.status,
+				headers: upstream.headers,
+			});
+		}
+
+		if (url.pathname === "/api/upload-stream" && method === "POST") {
+			const reader = request.body?.getReader();
+			const sizes: number[] = [];
+			let totalBytes = 0;
+			if (reader) {
+				for (;;) {
+					const next = await reader.read();
+					if (next.done) break;
+					sizes.push(next.value.byteLength);
+					totalBytes += next.value.byteLength;
+				}
+			}
+			return new Response(
+				JSON.stringify({
+					chunkCount: sizes.length,
+					contentLength: request.headers.get("content-length"),
+					sizes,
+					totalBytes,
+				}),
+				{
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
+
+		if (url.pathname === "/api/cancel-upload" && method === "POST") {
+			await request.body?.cancel();
+			return new Response("upload cancelled");
+		}
+
+		if (url.pathname === "/api/wait-for-request-abort") {
+			ctx.state.requestAbortStarted = true;
+			await new Promise<void>((resolve) => {
+				if (request.signal.aborted) {
+					resolve();
+				} else {
+					request.signal.addEventListener("abort", () => resolve(), {
+						once: true,
+					});
+				}
+			});
+			ctx.state.requestAbortObserved = true;
+			return new Response("aborted");
+		}
+
 		if (url.pathname === "/api/state") {
 			return new Response(
 				JSON.stringify({
+					requestAbortStarted: ctx.state.requestAbortStarted,
+					requestAbortObserved: ctx.state.requestAbortObserved,
+					responseAbortStarted: ctx.state.responseAbortStarted,
+					responseAbortObserved: ctx.state.responseAbortObserved,
+					streamResponseFinished: ctx.state.streamResponseFinished,
+					streamDisconnectedBeforeFinish:
+						ctx.state.streamDisconnectedBeforeFinish,
 					requestCount: ctx.state.requestCount,
 				}),
 				{

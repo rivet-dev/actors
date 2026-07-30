@@ -40,6 +40,14 @@ export interface RuntimeHttpResponse {
 	status?: number;
 	headers?: Record<string, string>;
 	body?: RuntimeBytes;
+	stream?: boolean;
+}
+
+export interface RuntimeHttpResponseBodyStream {
+	cancelled(): Promise<void>;
+	write(chunk: Uint8Array): Promise<void>;
+	end(): Promise<void>;
+	error(message: string): Promise<void>;
 }
 
 export interface RuntimeStateDeltaPayload {
@@ -362,14 +370,20 @@ export interface RuntimeServerlessRequest {
 	body: RuntimeBytes;
 }
 
+export interface RuntimeApplicationRequest extends RuntimeServerlessRequest {
+	cancelToken?: CancellationTokenHandle;
+}
+
 export interface RuntimeApplicationResponse {
 	status: number;
 	headers: Record<string, string>;
-	body: RuntimeBytes;
+	body?: RuntimeBytes;
+	stream?: boolean;
 }
 
 export type RuntimeApplicationFetch = (
-	request: RuntimeServerlessRequest,
+	request: RuntimeApplicationRequest,
+	responseBodyStream?: RuntimeHttpResponseBodyStream,
 ) => Promise<RuntimeApplicationResponse>;
 
 export interface RuntimeApplicationListenerConfig

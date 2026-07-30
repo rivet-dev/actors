@@ -23,11 +23,11 @@ use crate::actor_context::{ActorContext, RegisteredTask, state_deltas_from_paylo
 use crate::actor_factory::{
 	ActionPayload, AdapterConfig, BeforeActionResponsePayload, BeforeConnectPayload,
 	BeforeSubscribePayload, CallbackBindings, ConnectionPayload, CreateConnStatePayload,
-	CreateStatePayload, HttpRequestPayload, LifecyclePayload, MigratePayload, QueueSendPayload,
-	SerializeStatePayload, WebSocketPayload, WorkflowHistoryPayload, WorkflowReplayPayload,
-	call_buffer, call_optional_buffer, call_queue_send, call_request, call_state_delta_payload,
-	call_void,
+	CreateStatePayload, LifecyclePayload, MigratePayload, QueueSendPayload, SerializeStatePayload,
+	WebSocketPayload, WorkflowHistoryPayload, WorkflowReplayPayload, call_buffer,
+	call_optional_buffer, call_queue_send, call_state_delta_payload, call_void,
 };
+use crate::http::{HttpRequestPayload, call_request};
 
 // Restart hooks are synchronous callback slots; the guard is only held while
 // swapping task handles, never while awaiting a task shutdown.
@@ -468,18 +468,14 @@ pub(crate) async fn dispatch_event(
 			let ctx = ctx.clone();
 			let timeout = config.on_request_timeout;
 			spawn_reply(tasks, abort.clone(), reply, async move {
-				with_dispatch_cancel_token(|cancel_token| {
-					with_structured_timeout(
-						"actor",
-						"action_timed_out",
-						"Action timed out",
-						None,
-						timeout,
-						async move {
-							call_http_request(&callback, &ctx, request, Some(cancel_token)).await
-						},
-					)
-				})
+				with_structured_timeout(
+					"actor",
+					"action_timed_out",
+					"Action timed out",
+					None,
+					timeout,
+					call_http_request(&callback, &ctx, request),
+				)
 				.await
 			});
 		}
@@ -1227,15 +1223,16 @@ async fn call_http_request(
 	callback: &crate::actor_factory::CallbackTsfn<HttpRequestPayload>,
 	ctx: &ActorContext,
 	request: rivetkit_core::Request,
-	cancel_token: Option<CancellationToken>,
-) -> Result<rivetkit_core::Response> {
+) -> Result<rivetkit_core::ActorHttpResponse> {
+	let request_cancel_token = request.cancellation_token();
 	call_request(
 		"onRequest",
 		callback,
 		HttpRequestPayload {
 			ctx: ctx.inner().clone(),
 			request,
-			cancel_token,
+			cancel_token: Some(request_cancel_token),
+			response_stream: None,
 		},
 	)
 	.await

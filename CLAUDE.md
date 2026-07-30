@@ -341,6 +341,8 @@ When the user asks to track something in a note, store it in `~/.agents/notes/` 
 - Follow existing patterns in neighboring files.
 - Always check existing imports and dependencies before adding new ones.
 - **Always add imports at the top of the file instead of inline within a function.**
+- Prefer explicit `if` or `match` statements over calling `.then(...)` on booleans.
+- Warning and error logs should briefly identify the likely operational cause or direction when known.
 
 ### Comments
 

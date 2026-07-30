@@ -27,10 +27,10 @@ pub async fn handle_tunnel_message(ctx: &mut EnvoyContext, msg: protocol::ToEnvo
 			handle_request_start(ctx, message_id, req).await;
 		}
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestChunk(chunk) => {
-			handle_request_chunk(ctx, message_id, chunk);
+			handle_request_chunk(ctx, message_id, chunk).await;
 		}
-		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort => {
-			handle_request_abort(ctx, message_id);
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(abort) => {
+			handle_request_abort(ctx, message_id, abort.reason);
 		}
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(open) => {
 			handle_ws_open(ctx, message_id, open).await;
@@ -54,7 +54,14 @@ async fn handle_request_start(
 
 	if !has_actor {
 		tracing::warn!(actor_id = %actor_id, "received request for unknown actor");
-		send_error_response(ctx, message_id.gateway_id, message_id.request_id).await;
+		send_error_response(
+			ctx,
+			message_id.gateway_id,
+			message_id.request_id,
+			"envoy.actor_not_found",
+			"Actor not found",
+		)
+		.await;
 		return;
 	}
 
@@ -64,12 +71,14 @@ async fn handle_request_start(
 	);
 
 	let actor = ctx.get_actor(&actor_id, None).unwrap();
-	let _ = actor
-		.handle
-		.send(crate::actor::ToActor::ReqStart { message_id, req });
+	let actor_handle = actor.handle.clone();
+	let _ = actor_handle.send(crate::actor::ToActor::ReqStart {
+		message_id: message_id.clone(),
+		req,
+	});
 }
 
-fn handle_request_chunk(
+async fn handle_request_chunk(
 	ctx: &mut EnvoyContext,
 	message_id: protocol::MessageId,
 	chunk: protocol::ToEnvoyRequestChunk,
@@ -79,24 +88,38 @@ fn handle_request_chunk(
 		.get(&[&message_id.gateway_id, &message_id.request_id])
 		.cloned();
 
-	let finish = chunk.finish;
-
 	if let Some(actor_id) = &actor_id {
 		if let Some(actor) = ctx.get_actor(actor_id, None) {
 			let _ = actor.handle.send(crate::actor::ToActor::ReqChunk {
 				message_id: message_id.clone(),
 				chunk,
 			});
+		} else {
+			tracing::warn!(actor_id = %actor_id, "received request chunk for unknown actor");
 		}
-	}
-
-	if finish {
-		ctx.request_to_actor
-			.remove(&[&message_id.gateway_id, &message_id.request_id]);
+	} else {
+		tracing::warn!(
+			gateway_id = ?message_id.gateway_id,
+			request_id = ?message_id.request_id,
+			message_index = message_id.message_index,
+			"received request chunk without request start"
+		);
+		send_error_response(
+			ctx,
+			message_id.gateway_id,
+			message_id.request_id,
+			"envoy.request_not_found",
+			"Request start was not delivered",
+		)
+		.await;
 	}
 }
 
-fn handle_request_abort(ctx: &mut EnvoyContext, message_id: protocol::MessageId) {
+fn handle_request_abort(
+	ctx: &mut EnvoyContext,
+	message_id: protocol::MessageId,
+	reason: protocol::HttpStreamAbortReason,
+) {
 	let actor_id = ctx
 		.request_to_actor
 		.get(&[&message_id.gateway_id, &message_id.request_id])
@@ -105,6 +128,7 @@ fn handle_request_abort(ctx: &mut EnvoyContext, message_id: protocol::MessageId)
 		if let Some(actor) = ctx.get_actor(actor_id, None) {
 			let _ = actor.handle.send(crate::actor::ToActor::ReqAbort {
 				message_id: message_id.clone(),
+				reason,
 			});
 		}
 	}
@@ -268,13 +292,12 @@ async fn send_error_response(
 	ctx: &EnvoyContext,
 	gateway_id: protocol::GatewayId,
 	request_id: protocol::RequestId,
+	error_code: &str,
+	message: &str,
 ) {
-	let body = b"Actor not found".to_vec();
+	let body = message.as_bytes().to_vec();
 	let mut headers = HashMap::new();
-	headers.insert(
-		"x-rivet-error".to_string(),
-		"envoy.actor_not_found".to_string(),
-	);
+	headers.insert("x-rivet-error".to_string(), error_code.to_owned());
 	headers.insert("content-length".to_string(), body.len().to_string());
 
 	ws_send(

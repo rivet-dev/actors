@@ -129,8 +129,8 @@ pub use actor::context::{
 pub use actor::factory::{ActorEntryFn, ActorFactory};
 pub use actor::lifecycle_hooks::{ActorEvents, ActorStart, Reply};
 pub use actor::messages::{
-	ActorEvent, QueueSendResult, QueueSendStatus, Request, Response, SerializeStateReason,
-	StateDelta, WorkflowKvWrite,
+	ActorEvent, ActorHttpResponse, QueueSendResult, QueueSendStatus, Request, Response,
+	SerializeStateReason, StateDelta, StreamingResponse, WorkflowKvWrite,
 };
 pub use actor::queue::{
 	CompletableQueueMessage, EnqueueAndWaitOpts, QueueMessage, QueueNextBatchOpts, QueueNextOpts,
@@ -150,7 +150,9 @@ pub use actor::work_registry::{ActorWorkKind, ActorWorkPolicy};
 pub use error::ActorLifecycle;
 pub use inspector::{Inspector, InspectorSnapshot};
 pub use registry::{CoreRegistry, EngineSpawnMode, ServeConfig};
-pub use rivet_envoy_client::config::ResponseChunk;
+pub use rivet_envoy_client::config::{
+	HTTP_BODY_STREAM_CHANNEL_CAPACITY, HttpRequestBodyStream, ResponseChunk,
+};
 pub use runtime::{RuntimeBoxFuture, RuntimeSpawner, boxed_runtime_future};
 pub use serverless::{CoreServerlessRuntime, ServerlessRequest, ServerlessResponse};
 pub use types::{

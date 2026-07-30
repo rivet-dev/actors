@@ -1,6 +1,6 @@
 use anyhow::Result;
 use rivet_envoy_protocol::{
-	generated::{v4, v6},
+	generated::{v4, v8},
 	versioned::{
 		ProtocolCompatibilityDirection, ProtocolCompatibilityError, ProtocolCompatibilityFeature,
 		ToEnvoy, ToRivet,
@@ -8,10 +8,10 @@ use rivet_envoy_protocol::{
 };
 use vbare::OwnedVersionedData;
 
-fn remote_sql_request_exec() -> v6::ToRivet {
-	v6::ToRivet::ToRivetSqliteExecRequest(v6::ToRivetSqliteExecRequest {
+fn remote_sql_request_exec() -> v8::ToRivet {
+	v8::ToRivet::ToRivetSqliteExecRequest(v8::ToRivetSqliteExecRequest {
 		request_id: 1,
-		data: v6::SqliteExecRequest {
+		data: v8::SqliteExecRequest {
 			namespace_id: "namespace".into(),
 			actor_id: "actor".into(),
 			generation: 7,
@@ -20,25 +20,25 @@ fn remote_sql_request_exec() -> v6::ToRivet {
 	})
 }
 
-fn remote_sql_request_execute() -> v6::ToRivet {
-	v6::ToRivet::ToRivetSqliteExecuteRequest(v6::ToRivetSqliteExecuteRequest {
+fn remote_sql_request_execute() -> v8::ToRivet {
+	v8::ToRivet::ToRivetSqliteExecuteRequest(v8::ToRivetSqliteExecuteRequest {
 		request_id: 2,
-		data: v6::SqliteExecuteRequest {
+		data: v8::SqliteExecuteRequest {
 			namespace_id: "namespace".into(),
 			actor_id: "actor".into(),
 			generation: 7,
 			sql: "select ?".into(),
-			params: Some(vec![v6::SqliteBindParam::SqliteValueInteger(
-				v6::SqliteValueInteger { value: 1 },
+			params: Some(vec![v8::SqliteBindParam::SqliteValueInteger(
+				v8::SqliteValueInteger { value: 1 },
 			)]),
 		},
 	})
 }
 
-fn remote_sql_response_exec() -> v6::ToEnvoy {
-	v6::ToEnvoy::ToEnvoySqliteExecResponse(v6::ToEnvoySqliteExecResponse {
+fn remote_sql_response_exec() -> v8::ToEnvoy {
+	v8::ToEnvoy::ToEnvoySqliteExecResponse(v8::ToEnvoySqliteExecResponse {
 		request_id: 1,
-		data: v6::SqliteExecResponse::SqliteErrorResponse(v6::SqliteErrorResponse {
+		data: v8::SqliteExecResponse::SqliteErrorResponse(v8::SqliteErrorResponse {
 			group: "sqlite".into(),
 			code: "remote_unavailable".into(),
 			message: "remote sql execution is unavailable".into(),
@@ -46,10 +46,10 @@ fn remote_sql_response_exec() -> v6::ToEnvoy {
 	})
 }
 
-fn remote_sql_response_execute() -> v6::ToEnvoy {
-	v6::ToEnvoy::ToEnvoySqliteExecuteResponse(v6::ToEnvoySqliteExecuteResponse {
+fn remote_sql_response_execute() -> v8::ToEnvoy {
+	v8::ToEnvoy::ToEnvoySqliteExecuteResponse(v8::ToEnvoySqliteExecuteResponse {
 		request_id: 2,
-		data: v6::SqliteExecuteResponse::SqliteErrorResponse(v6::SqliteErrorResponse {
+		data: v8::SqliteExecuteResponse::SqliteErrorResponse(v8::SqliteErrorResponse {
 			group: "sqlite".into(),
 			code: "remote_unavailable".into(),
 			message: "remote sql execution is unavailable".into(),
@@ -57,27 +57,27 @@ fn remote_sql_response_execute() -> v6::ToEnvoy {
 	})
 }
 
-fn remote_sql_request_execute_batch() -> v6::ToRivet {
-	v6::ToRivet::ToRivetSqliteExecuteBatchRequest(v6::ToRivetSqliteExecuteBatchRequest {
+fn remote_sql_request_execute_batch() -> v8::ToRivet {
+	v8::ToRivet::ToRivetSqliteExecuteBatchRequest(v8::ToRivetSqliteExecuteBatchRequest {
 		request_id: 3,
-		data: v6::SqliteExecuteBatchRequest {
+		data: v8::SqliteExecuteBatchRequest {
 			namespace_id: "namespace".into(),
 			actor_id: "actor".into(),
 			generation: 7,
-			statements: vec![v6::SqliteBatchStatement {
+			statements: vec![v8::SqliteBatchStatement {
 				sql: "insert into t values (?)".into(),
-				params: Some(vec![v6::SqliteBindParam::SqliteValueInteger(
-					v6::SqliteValueInteger { value: 1 },
+				params: Some(vec![v8::SqliteBindParam::SqliteValueInteger(
+					v8::SqliteValueInteger { value: 1 },
 				)]),
 			}],
 		},
 	})
 }
 
-fn remote_sql_response_execute_batch() -> v6::ToEnvoy {
-	v6::ToEnvoy::ToEnvoySqliteExecuteBatchResponse(v6::ToEnvoySqliteExecuteBatchResponse {
+fn remote_sql_response_execute_batch() -> v8::ToEnvoy {
+	v8::ToEnvoy::ToEnvoySqliteExecuteBatchResponse(v8::ToEnvoySqliteExecuteBatchResponse {
 		request_id: 3,
-		data: v6::SqliteExecuteBatchResponse::SqliteExecuteBatchOk(v6::SqliteExecuteBatchOk {
+		data: v8::SqliteExecuteBatchResponse::SqliteExecuteBatchOk(v8::SqliteExecuteBatchOk {
 			results: Vec::new(),
 		}),
 	})
@@ -139,11 +139,11 @@ fn new_core_new_pegboard_envoy_allows_remote_sql_both_directions() -> Result<()>
 
 	assert!(matches!(
 		ToRivet::deserialize(&request, 4)?,
-		v6::ToRivet::ToRivetSqliteExecRequest(_)
+		v8::ToRivet::ToRivetSqliteExecRequest(_)
 	));
 	assert!(matches!(
 		ToEnvoy::deserialize(&response, 4)?,
-		v6::ToEnvoy::ToEnvoySqliteExecResponse(_)
+		v8::ToEnvoy::ToEnvoySqliteExecResponse(_)
 	));
 
 	Ok(())
@@ -235,11 +235,11 @@ fn remote_sql_batch_requires_v6() -> Result<()> {
 	let response = ToEnvoy::wrap_latest(remote_sql_response_execute_batch()).serialize(6)?;
 	assert!(matches!(
 		ToRivet::deserialize(&request, 6)?,
-		v6::ToRivet::ToRivetSqliteExecuteBatchRequest(_)
+		v8::ToRivet::ToRivetSqliteExecuteBatchRequest(_)
 	));
 	assert!(matches!(
 		ToEnvoy::deserialize(&response, 6)?,
-		v6::ToEnvoy::ToEnvoySqliteExecuteBatchResponse(_)
+		v8::ToEnvoy::ToEnvoySqliteExecuteBatchResponse(_)
 	));
 	Ok(())
 }

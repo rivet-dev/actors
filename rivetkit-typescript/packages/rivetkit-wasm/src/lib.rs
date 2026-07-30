@@ -864,6 +864,13 @@ async fn dispatch_event(callbacks: &WasmCallbacks, ctx: &WasmActorContext, event
 						.ok_or_else(|| anyhow!("wasm onRequest callback is not implemented"))?;
 					let payload = object();
 					set_anyhow(&payload, "ctx", JsValue::from(ctx.clone()))?;
+					set_anyhow(
+						&payload,
+						"cancelToken",
+						JsValue::from(WasmCancellationToken {
+							inner: request.cancellation_token(),
+						}),
+					)?;
 					set_anyhow(&payload, "request", request_to_js(request)?)?;
 					let value = call_callback(callback, &payload.into()).await?;
 					response_from_js(value)

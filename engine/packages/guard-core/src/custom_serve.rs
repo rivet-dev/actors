@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use async_trait::async_trait;
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::{Request, Response};
+use hyper::{Request, Response, body::Incoming as BodyIncoming};
 use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
 
 use crate::WebSocketHandle;
@@ -17,12 +17,27 @@ pub enum HibernationResult {
 /// Trait for custom request serving logic that can handle both HTTP and WebSocket requests
 #[async_trait]
 pub trait CustomServeTrait: Send + Sync {
+	/// Returns true when this service wants the original request body stream.
+	/// The default buffered path keeps retry semantics for existing custom routes.
+	fn streams_request_body(&self) -> bool {
+		false
+	}
+
 	/// Handle a regular HTTP request
 	async fn handle_request(
 		&self,
 		req: Request<Full<Bytes>>,
 		req_ctx: &mut RequestContext,
 	) -> Result<Response<ResponseBody>>;
+
+	/// Handle a regular HTTP request with the original inbound body stream.
+	async fn handle_streaming_request(
+		&self,
+		_req: Request<BodyIncoming>,
+		_req_ctx: &mut RequestContext,
+	) -> Result<Response<ResponseBody>> {
+		bail!("service does not support streaming request bodies");
+	}
 
 	/// Handle a WebSocket connection after upgrade. Supports connection retries.
 	async fn handle_websocket(

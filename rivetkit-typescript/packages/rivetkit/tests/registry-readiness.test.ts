@@ -172,7 +172,7 @@ describe("Registry.startAndWait", () => {
 		await assertion;
 	});
 
-	test("listen with an application starts envoy and the application listener", async () => {
+	test("listen with an application waits for envoy readiness before opening the listener", async () => {
 		const { registry, ready, serve, listener, calls } = createRegistry();
 		const listenPromise = registry.listen({
 			port: 3000,
@@ -192,9 +192,11 @@ describe("Registry.startAndWait", () => {
 				build: 1,
 				serve: 1,
 				ready: 1,
-				listener: 1,
+				listener: 0,
 			});
 		});
+		ready.resolve();
+		await vi.waitFor(() => expect(calls.listener).toBe(1));
 		expect(calls.application).toBeDefined();
 		const response = await calls.application?.({
 			method: "GET",
@@ -207,7 +209,6 @@ describe("Registry.startAndWait", () => {
 			"application:/health",
 		);
 
-		ready.resolve();
 		listener.resolve();
 		serve.resolve();
 		await listenPromise;

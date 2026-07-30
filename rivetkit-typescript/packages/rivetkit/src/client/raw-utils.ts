@@ -1,5 +1,6 @@
 import {
 	HEADER_CONN_PARAMS,
+	HEADER_ORIGINAL_REQUEST_URL,
 	PATH_WEBSOCKET_PREFIX,
 } from "@/common/actor-router-consts";
 import { deconstructError } from "@/common/utils";
@@ -25,16 +26,19 @@ export async function rawHttpFetch(
 ): Promise<Response> {
 	// Extract path and merge init options
 	let path: string;
+	let originalUrl: string | undefined;
 	let mergedInit: RequestInit = init || {};
 
 	if (typeof input === "string") {
 		path = input;
 	} else if (isUrlLike(input)) {
 		path = input.pathname + input.search;
+		originalUrl = input.toString();
 	} else if (isRequestLike(input)) {
 		// Extract path from Request URL
 		const url = new URL(input.url);
 		path = url.pathname + url.search;
+		originalUrl = url.toString();
 		// Merge Request properties with init
 		const requestHeaders = new Headers(input.headers);
 		const initHeaders = new Headers(init?.headers || {});
@@ -86,6 +90,10 @@ export async function rawHttpFetch(
 
 		// Forward conn params if provided
 		const proxyRequestHeaders = new Headers(mergedInit.headers);
+		proxyRequestHeaders.delete(HEADER_ORIGINAL_REQUEST_URL);
+		if (originalUrl) {
+			proxyRequestHeaders.set(HEADER_ORIGINAL_REQUEST_URL, originalUrl);
+		}
 		if (params) {
 			proxyRequestHeaders.set(HEADER_CONN_PARAMS, JSON.stringify(params));
 		}

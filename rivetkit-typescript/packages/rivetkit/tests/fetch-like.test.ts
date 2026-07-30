@@ -41,6 +41,9 @@ describe("fetch objects across JavaScript realms", () => {
 			"http://actor/request/path?query=yes",
 		);
 		expect(forwarded?.headers.get("x-source")).toBe("present");
+		expect(
+			forwarded?.headers.get("x-rivet-internal-original-request-url"),
+		).toBe("https://example.com/path?query=yes");
 	});
 
 	test("recognizes a response-compatible object without prototype identity", () => {

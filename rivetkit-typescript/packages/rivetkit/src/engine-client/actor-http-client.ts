@@ -17,8 +17,7 @@ export async function sendHttpRequestToGateway(
 	actorRequest: Request,
 	options: HttpGatewayRequestOptions = {},
 ): Promise<Response> {
-	// Handle body properly based on method and presence
-	let bodyToSend: ArrayBuffer | null = null;
+	let bodyToSend: ReadableStream<Uint8Array> | null = null;
 	const guardHeaders = buildGuardHeaders(runConfig, actorRequest, options);
 
 	if (actorRequest.method !== "GET" && actorRequest.method !== "HEAD") {
@@ -26,35 +25,20 @@ export async function sendHttpRequestToGateway(
 			throw new Error("Request body has already been consumed");
 		}
 
-		// TODO: This buffers the entire request in memory every time. We
-		// need to properly implement streaming bodies.
-		const reqBody = await actorRequest.arrayBuffer();
-
-		if (reqBody.byteLength !== 0) {
-			bodyToSend = reqBody;
-
-			// If this is a streaming request, we need to convert the headers
-			// for the basic array buffer.
+		if (actorRequest.body) {
+			bodyToSend = actorRequest.body;
 			guardHeaders.delete("transfer-encoding");
 			guardHeaders.delete("content-length");
 		}
 	}
 
-	const guardRequest = new Request(gatewayUrl, {
+	return fetch(gatewayUrl, {
 		method: actorRequest.method,
 		headers: guardHeaders,
 		body: bodyToSend,
 		signal: actorRequest.signal,
-	});
-
-	return mutableResponse(await fetch(guardRequest));
-}
-
-function mutableResponse(fetchRes: Response): Response {
-	// We cannot return the raw response from `fetch` since the response type is not mutable.
-	//
-	// In order for middleware to be able to mutate the response, we need to build a new Response object that is mutable.
-	return new Response(fetchRes.body, fetchRes);
+		...(bodyToSend ? { duplex: "half" } : {}),
+	} as RequestInit);
 }
 
 function buildGuardHeaders(

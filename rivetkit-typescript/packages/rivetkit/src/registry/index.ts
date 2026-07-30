@@ -15,9 +15,14 @@ import {
 	RegistryConfigSchema,
 } from "./config";
 import { logger } from "./log";
-import { buildConfiguredRegistry } from "./native";
+import {
+	buildConfiguredRegistry,
+} from "./native";
+import { convertNativeHttpResponse } from "./native-http";
 import type {
+	CoreRuntime,
 	RuntimeApplicationFetch,
+	RuntimeHttpResponseBodyStream,
 	RuntimeServerlessResponseHead,
 } from "./runtime";
 
@@ -43,18 +48,34 @@ function finishShutdownSignal(signal: ShutdownSignal): void {
 
 function createApplicationFetch(
 	application: RegistryApplication,
+	runtime: CoreRuntime,
 ): RuntimeApplicationFetch {
-	return async (request) => {
+	return async (
+		request,
+		responseBodyStream?: RuntimeHttpResponseBodyStream,
+	) => {
 		const method = request.method.toUpperCase();
 		const body =
 			method === "GET" || method === "HEAD" || request.body.length === 0
 				? undefined
 				: Uint8Array.from(request.body).buffer;
+		const abortController = new AbortController();
+		if (request.cancelToken) {
+			if (runtime.cancellationTokenAborted(request.cancelToken)) {
+				abortController.abort();
+			} else {
+				runtime.onCancellationTokenCancelled(
+					request.cancelToken,
+					() => abortController.abort(),
+				);
+			}
+		}
 		const response = await application.fetch(
 			new Request(request.url, {
 				method,
 				headers: request.headers,
 				body,
+				signal: abortController.signal,
 			}),
 		);
 		if (!isResponseLike(response)) {
@@ -62,10 +83,25 @@ function createApplicationFetch(
 				"registry.listen() application fetch must return a Response",
 			);
 		}
+		const conversion = await convertNativeHttpResponse(
+			response,
+			responseBodyStream,
+		);
+		if (conversion.bodyCompletion) {
+			void conversion.bodyCompletion.catch((error) => {
+				logger().error({
+					msg: "application response stream failed",
+					error,
+				});
+			});
+		}
 		return {
-			status: response.status,
-			headers: Object.fromEntries(response.headers.entries()),
-			body: new Uint8Array(await response.arrayBuffer()),
+			status: conversion.response.status ?? response.status,
+			headers:
+				conversion.response.headers ??
+				Object.fromEntries(response.headers.entries()),
+			body: conversion.response.body,
+			stream: conversion.response.stream,
 		};
 	};
 }
@@ -406,11 +442,8 @@ export class Registry<A extends RegistryActors> {
 		const port = opts.port ?? parsePortEnv(process.env.RIVET_PORT) ?? 3000;
 		const publicDir = opts.publicDir ?? getRivetkitPublicDir();
 		const config = this.parseConfig();
-		const application = opts.application
-			? createApplicationFetch(opts.application)
-			: undefined;
 
-		if (application && getRivetkitRuntimeMode() !== "serverless") {
+		if (opts.application && getRivetkitRuntimeMode() !== "serverless") {
 			if (config.runtime === "wasm") {
 				throw new Error(
 					"registry.listen() requires the native runtime; use an application-owned HTTP server with WebAssembly",
@@ -431,6 +464,11 @@ export class Registry<A extends RegistryActors> {
 			}
 			const { runtime, registry, serveConfig } =
 				await configuredRegistryPromise;
+			const application = createApplicationFetch(
+				opts.application,
+				runtime,
+			);
+			await readyPromise;
 			const listenerPromise = runtime.serveApplicationListener(
 				registry,
 				{
@@ -449,7 +487,6 @@ export class Registry<A extends RegistryActors> {
 				);
 			}
 			await Promise.all([
-				readyPromise,
 				listenerPromise,
 				serveLifecyclePromise,
 			]);
@@ -457,7 +494,7 @@ export class Registry<A extends RegistryActors> {
 		}
 
 		// Cache on both promise fields so the shutdown drain sees Mode A and B.
-		const configuredRegistryPromise = buildConfiguredRegistry(config);
+		const configuredRegistryPromise = this.#buildConfiguredRegistry(config);
 		this.#runtimeServeConfiguredPromise = configuredRegistryPromise;
 		this.#runtimeServerlessPromise = configuredRegistryPromise;
 		this.#installSignalHandlers(config);
@@ -473,6 +510,9 @@ export class Registry<A extends RegistryActors> {
 
 		const { runtime, registry, serveConfig } =
 			await configuredRegistryPromise;
+		const application = opts.application
+			? createApplicationFetch(opts.application, runtime)
+			: undefined;
 		await runtime.serveListener(
 			registry,
 			{

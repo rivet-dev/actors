@@ -3,7 +3,7 @@ use gas::prelude::*;
 use hyper_tungstenite::tungstenite::Message;
 use pegboard::pubsub_subjects::GatewayReceiverSubject;
 use rivet_envoy_protocol::{self as protocol, PROTOCOL_VERSION, versioned};
-use std::{sync::Arc, time::Instant};
+use std::{future::Future, sync::Arc, time::Instant};
 use tokio::sync::watch;
 use universalpubsub as ups;
 use universalpubsub::{NextOutput, PublishOpts, Subscriber};
@@ -101,7 +101,7 @@ async fn handle_message(
 	);
 
 	// Parse message
-	let start = Instant::now();
+	let ack_start = Instant::now();
 	let msg = match versioned::ToEnvoyConn::deserialize_with_embedded_version(&tunnel_msg.payload) {
 		Result::Ok(x) => x,
 		Err(err) => {
@@ -110,14 +110,17 @@ async fn handle_message(
 		}
 	};
 
-	// Need to reply to tunnel request so it can continue
-	tunnel_msg.reply(&[]).await?;
+	// Tunnel messages are acknowledged only after they have been written to the
+	// actor WebSocket. This keeps the gateway's sequential send loop behind the
+	// final transport handoff and turns a disconnect into a request failure
+	// instead of acknowledging data that the actor never received.
+	let reply_after_websocket_handoff =
+		matches!(&msg, protocol::ToEnvoyConn::ToEnvoyTunnelMessage(_));
+	if !reply_after_websocket_handoff {
+		reply_to_gateway(conn, &tunnel_msg, ack_start).await?;
+	}
 
-	metrics::ACK_MSG_DURATION
-		.with_label_values(&[conn.namespace_id.to_string().as_str(), &conn.pool_name])
-		.observe(start.elapsed().as_secs_f64());
-
-	let start = Instant::now();
+	let process_start = Instant::now();
 
 	// Convert to ToEnvoy types
 	let mut tunnel_message_meta = None;
@@ -226,10 +229,21 @@ async fn handle_message(
 		);
 	}
 	let _in_flight = ws_to_tunnel_task::WsResponseInFlightGuard::new();
-	conn.ws_handle
-		.send(ws_msg)
-		.await
-		.context("failed to send message to WebSocket")?;
+	let websocket_handoff = async {
+		conn.ws_handle
+			.send(ws_msg)
+			.await
+			.context("failed to send message to WebSocket")
+	};
+	if reply_after_websocket_handoff {
+		ordered_handoff(
+			websocket_handoff,
+			reply_to_gateway(conn, &tunnel_msg, ack_start),
+		)
+		.await?;
+	} else {
+		websocket_handoff.await?;
+	}
 	drop(_in_flight);
 	if let Some((gateway_id, request_id, message_index, message_kind, inner_data_len)) =
 		&tunnel_message_meta
@@ -246,7 +260,7 @@ async fn handle_message(
 
 	metrics::PROCESS_MSG_DURATION
 		.with_label_values(&[conn.namespace_id.to_string().as_str(), &conn.pool_name])
-		.observe(start.elapsed().as_secs_f64());
+		.observe(process_start.elapsed().as_secs_f64());
 	metrics::MSG_PROCESSED_TOTAL
 		.with_label_values(&[conn.namespace_id.to_string().as_str(), &conn.pool_name])
 		.inc();
@@ -254,11 +268,27 @@ async fn handle_message(
 	Ok(false)
 }
 
+async fn ordered_handoff(
+	handoff: impl Future<Output = Result<()>>,
+	reply: impl Future<Output = Result<()>>,
+) -> Result<()> {
+	handoff.await?;
+	reply.await
+}
+
+async fn reply_to_gateway(conn: &Conn, tunnel_msg: &ups::Message, start: Instant) -> Result<()> {
+	tunnel_msg.reply(&[]).await?;
+	metrics::ACK_MSG_DURATION
+		.with_label_values(&[conn.namespace_id.to_string().as_str(), &conn.pool_name])
+		.observe(start.elapsed().as_secs_f64());
+	Ok(())
+}
+
 fn to_envoy_tunnel_message_kind_name(kind: &protocol::ToEnvoyTunnelMessageKind) -> &'static str {
 	match kind {
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(_) => "ToEnvoyRequestStart",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestChunk(_) => "ToEnvoyRequestChunk",
-		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort => "ToEnvoyRequestAbort",
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(_) => "ToEnvoyRequestAbort",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(_) => "ToEnvoyWebSocketOpen",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketMessage(_) => "ToEnvoyWebSocketMessage",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketClose(_) => "ToEnvoyWebSocketClose",
@@ -272,8 +302,18 @@ fn to_envoy_tunnel_message_inner_data_len(kind: &protocol::ToEnvoyTunnelMessageK
 		}
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestChunk(msg) => msg.body.len(),
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketMessage(msg) => msg.data.len(),
-		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort
-		| protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(_)
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(abort) => {
+			abort.reason.detail.as_ref().map_or(0, String::len)
+		}
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(_)
 		| protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketClose(_) => 0,
 	}
 }
+
+#[cfg(test)]
+#[path = "../tests/support/tunnel_to_ws_payload_accounting.rs"]
+mod payload_accounting_tests;
+
+#[cfg(test)]
+#[path = "../tests/support/tunnel_to_ws_delivery.rs"]
+mod delivery_tests;

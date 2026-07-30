@@ -4,6 +4,7 @@ import {
 	HEADER_CONN_PARAMS,
 	HEADER_ENCODING,
 } from "@/common/actor-router-consts";
+import { isRequestLike } from "@/common/fetch-like";
 import type * as protocol from "@/common/client-protocol";
 import {
 	CURRENT_VERSION as CLIENT_PROTOCOL_CURRENT_VERSION,
@@ -653,6 +654,7 @@ export class ActorHandleRaw {
 	) {
 		const maxAttempts = this.#getDynamicQueryMaxAttempts();
 		let useQueryTarget = isDynamicActorQuery(this.#actorResolutionState);
+		const retryableRequest = isRequestLike(input) ? input.clone() : undefined;
 		const { skipReadyWait, ...requestInit } = init ?? {};
 		const gatewayOptions = resolveActorGatewayOptions(
 			this.#gatewayOptions,
@@ -673,7 +675,7 @@ export class ActorHandleRaw {
 					this.#driver,
 					target,
 					this.#params,
-					input,
+					retryableRequest ? retryableRequest.clone() : input,
 					requestInit,
 					gatewayOptions,
 				);

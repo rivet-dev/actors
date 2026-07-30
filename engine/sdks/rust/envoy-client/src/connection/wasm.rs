@@ -156,6 +156,8 @@ mod imp {
 			}
 		}
 
+		// TODO: Bound shared WebSocket writer memory across protocol message types.
+		// https://github.com/rivet-dev/rivet/issues/5468
 		let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<WsTxMessage>();
 		super::super::install_connection(shared, ws_tx).await;
 

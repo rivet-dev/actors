@@ -11,13 +11,14 @@ use rivet_error::{ActorSpecifier, RivetError, RivetErrorKind};
 use rivetkit_core::inspector::InspectorTabEntry;
 use rivetkit_core::{
 	ActionDefinition, ActorConfig, ActorConfigInput, ActorContext as CoreActorContext,
-	ActorFactory as CoreActorFactory, ConnHandle as CoreConnHandle, Request, Response,
+	ActorFactory as CoreActorFactory, ConnHandle as CoreConnHandle, Request,
 	SqliteProfilingConfigInput, WebSocket as CoreWebSocket,
 };
 
 use crate::actor_context::{ActorContext, StateDeltaPayload};
 use crate::cancellation_token::CancellationToken;
 use crate::connection::ConnHandle;
+use crate::http::{HttpRequestPayload, build_http_request_payload, build_request_object};
 use crate::napi_actor_events::run_adapter_loop;
 use crate::websocket::WebSocket;
 use crate::{BRIDGE_RIVET_ERROR_PREFIX, NapiInvalidArgument, napi_anyhow_error};
@@ -38,13 +39,6 @@ pub(crate) trait TsfnPayloadSummary {
 struct JsCallbackUnavailable {
 	callback: String,
 	reason: String,
-}
-
-#[napi(object)]
-pub struct JsHttpResponse {
-	pub status: Option<u16>,
-	pub headers: Option<HashMap<String, String>>,
-	pub body: Option<Buffer>,
 }
 
 #[napi(object)]
@@ -156,13 +150,6 @@ pub(crate) struct CreateConnStatePayload {
 pub(crate) struct MigratePayload {
 	pub(crate) ctx: CoreActorContext,
 	pub(crate) is_new: bool,
-}
-
-#[derive(Clone)]
-pub(crate) struct HttpRequestPayload {
-	pub(crate) ctx: CoreActorContext,
-	pub(crate) request: Request,
-	pub(crate) cancel_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 #[derive(Clone)]
@@ -351,14 +338,14 @@ impl NapiActorFactory {
 		// Reject malformed config (empty ids/labels, duplicate ids, custom
 		// tabs colliding with built-in ids, etc.) before the actor starts.
 		actor_config.validate().map_err(napi_anyhow_error)?;
-		let inner = Arc::new(CoreActorFactory::new_with_manual_startup_ready(
-			actor_config,
-			move |start| {
+		let inner = Arc::new(
+			CoreActorFactory::new_with_manual_startup_ready(actor_config, move |start| {
 				let bindings = Arc::clone(&adapter_bindings);
 				let config = Arc::clone(&loop_config);
 				Box::pin(async move { run_adapter_loop(bindings, config, start).await })
-			},
-		));
+			})
+			.with_streaming_request_body(),
+		);
 
 		Ok(Self {
 			_bindings: bindings,
@@ -590,30 +577,6 @@ where
 }
 
 #[allow(dead_code)]
-pub(crate) async fn call_request(
-	callback_name: &str,
-	callback: &CallbackTsfn<HttpRequestPayload>,
-	payload: HttpRequestPayload,
-) -> Result<Response> {
-	log_tsfn_invocation(callback_name, &payload);
-	let promise = callback
-		.call_async::<Promise<JsHttpResponse>>(Ok(payload))
-		.await
-		.map_err(|error| callback_error(callback_name, error))?;
-	let response = promise
-		.await
-		.map_err(|error| callback_error(callback_name, error))?;
-	Response::from_parts(
-		response.status.unwrap_or(200),
-		response.headers.unwrap_or_default(),
-		response
-			.body
-			.unwrap_or_else(|| Buffer::from(Vec::new()))
-			.to_vec(),
-	)
-}
-
-#[allow(dead_code)]
 pub(crate) async fn call_queue_send(
 	callback_name: &str,
 	callback: &CallbackTsfn<QueueSendPayload>,
@@ -645,7 +608,7 @@ pub(crate) async fn call_state_delta_payload(
 		.map_err(|error| callback_error(callback_name, error))
 }
 
-fn log_tsfn_invocation<T>(kind: &str, payload: &T)
+pub(crate) fn log_tsfn_invocation<T>(kind: &str, payload: &T)
 where
 	T: TsfnPayloadSummary,
 {
@@ -688,17 +651,6 @@ impl TsfnPayloadSummary for CreateConnStatePayload {
 impl TsfnPayloadSummary for MigratePayload {
 	fn payload_summary(&self) -> String {
 		format!("actor_id={} is_new={}", self.ctx.actor_id(), self.is_new)
-	}
-}
-
-impl TsfnPayloadSummary for HttpRequestPayload {
-	fn payload_summary(&self) -> String {
-		format!(
-			"actor_id={} {} has_cancel_token={}",
-			self.ctx.actor_id(),
-			request_summary(&self.request),
-			self.cancel_token.is_some()
-		)
 	}
 }
 
@@ -807,16 +759,6 @@ impl TsfnPayloadSummary for SerializeStatePayload {
 	}
 }
 
-fn request_summary(request: &Request) -> String {
-	format!(
-		"method={} uri={} headers={} body_bytes={}",
-		request.method(),
-		request.uri(),
-		request.headers().len(),
-		request.body().len()
-	)
-}
-
 fn build_lifecycle_payload(
 	env: &Env,
 	payload: LifecyclePayload,
@@ -854,20 +796,6 @@ fn build_migrate_payload(env: &Env, payload: MigratePayload) -> napi::Result<Vec
 	let mut object = env.create_object()?;
 	object.set("ctx", ActorContext::new(payload.ctx))?;
 	object.set("isNew", payload.is_new)?;
-	Ok(vec![object.into_unknown()])
-}
-
-fn build_http_request_payload(
-	env: &Env,
-	payload: HttpRequestPayload,
-) -> napi::Result<Vec<napi::JsUnknown>> {
-	let mut object = env.create_object()?;
-	object.set("ctx", ActorContext::new(payload.ctx))?;
-	object.set("request", build_request_object(env, payload.request)?)?;
-	match payload.cancel_token {
-		Some(cancel_token) => object.set("cancelToken", CancellationToken::new(cancel_token))?,
-		None => object.set("cancelToken", env.get_undefined()?)?,
-	}
 	Ok(vec![object.into_unknown()])
 }
 
@@ -1009,16 +937,6 @@ fn build_serialize_state_payload(
 	object.set("ctx", ActorContext::new(payload.ctx))?;
 	object.set("reason", env.create_string_from_std(payload.reason)?)?;
 	Ok(vec![object.into_unknown()])
-}
-
-fn build_request_object(env: &Env, request: Request) -> napi::Result<JsObject> {
-	let (method, uri, headers, body) = request.to_parts();
-	let mut request_object = env.create_object()?;
-	request_object.set("method", method)?;
-	request_object.set("uri", uri)?;
-	request_object.set("headers", headers)?;
-	request_object.set("body", Buffer::from(body))?;
-	Ok(request_object)
 }
 
 fn parse_bridge_rivet_error(reason: &str) -> Option<anyhow::Error> {
