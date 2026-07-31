@@ -7,7 +7,7 @@
 //! `on_destroy` stops the child while the instance stays warm for the next
 //! placement.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -20,6 +20,12 @@ use crate::{
 	children, effective_stop_grace, release_child_port, reserve_child_port,
 	runner_config,
 };
+
+/// Live actor contexts on this instance, keyed by actor id. Lets the process
+/// shutdown path report actors as crashed when the platform reclaims the
+/// container out from under them.
+static ACTOR_CTXS: LazyLock<scc::HashMap<String, Ctx<GameServer>>> =
+	LazyLock::new(scc::HashMap::new);
 
 pub struct GameServer {
 	child: TokioMutex<Option<Arc<ChildProcess>>>,
@@ -35,6 +41,7 @@ impl GameServer {
 		// deliberate, then stop. `stop` is idempotent if the process shutdown
 		// sweep already stopped this child.
 		children().remove_async(actor_id).await;
+		ACTOR_CTXS.remove_async(actor_id).await;
 		let child = self.child.lock().await.take();
 		if let Some(child) = child {
 			child.stop(effective_stop_grace()).await;
@@ -87,6 +94,7 @@ impl Actor for GameServer {
 					"{} runner: actor already running, ignoring duplicate start",
 					log_prefix(&actor_id, existing.key.as_deref())
 				);
+				register_ctx(&actor_id, &ctx).await;
 				*self.child.lock().await = Some(existing);
 				return Ok(());
 			}
@@ -152,6 +160,10 @@ impl Actor for GameServer {
 			release_child_port(child_port).await;
 			anyhow::bail!("a child for actor {actor_id} is already registered");
 		}
+		// Register only now that startup has succeeded. Registering earlier would
+		// leak an entry for any generation whose start failed, since a failed
+		// start never runs on_destroy/on_sleep to remove it.
+		register_ctx(&actor_id, &ctx).await;
 		*self.child.lock().await = Some(child);
 		Ok(())
 	}
@@ -233,6 +245,38 @@ impl Actor for GameServer {
 	async fn on_destroy(self: Arc<Self>, ctx: Ctx<Self>) -> Result<()> {
 		self.stop_child(ctx.actor_id(), "actor stopped").await;
 		Ok(())
+	}
+}
+
+/// Register an actor context for crash-on-shutdown reporting. Overwrites any
+/// stale entry left by a prior generation with the same id.
+async fn register_ctx(actor_id: &str, ctx: &Ctx<GameServer>) {
+	ACTOR_CTXS.remove_async(actor_id).await;
+	let _ = ACTOR_CTXS
+		.insert_async(actor_id.to_string(), ctx.clone())
+		.await;
+}
+
+/// Report every live actor on this instance as crashed. Called when the
+/// platform reclaims the container (an unexpected SIGTERM) so the reclaim
+/// surfaces as a crash on the engine instead of a silent reallocation. Runs
+/// while the envoy is still connected so the crash reaches the engine.
+pub async fn crash_all_actors(message: &str) {
+	let mut ctxs = Vec::new();
+	ACTOR_CTXS
+		.retain_async(|_, ctx| {
+			ctxs.push(ctx.clone());
+			false
+		})
+		.await;
+	for ctx in ctxs {
+		if let Err(err) = ctx.stop_with_error(message) {
+			tracing::debug!(
+				actor_id = %ctx.actor_id(),
+				error = ?err,
+				"crash-on-shutdown stop_with_error failed"
+			);
+		}
 	}
 }
 
