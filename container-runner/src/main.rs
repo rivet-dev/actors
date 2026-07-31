@@ -75,6 +75,11 @@ static EXIT: LazyLock<CancellationToken> = LazyLock::new(CancellationToken::new)
 /// (their budget is the pool's drain grace period instead).
 static SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+/// Set when shutdown was triggered by a platform SIGTERM (an instance reclaim),
+/// as opposed to a local SIGINT (developer Ctrl-C). Distinguishes a reclaim
+/// from a manual stop for downstream shutdown handling.
+static PLATFORM_RECLAIM: AtomicBool = AtomicBool::new(false);
+
 /// How long the platform gives this container between SIGTERM and SIGKILL.
 /// Defaults to 10 seconds; keep this in sync with the platform's actual budget
 /// via RIVET_SIGTERM_BUDGET_SECS.
@@ -418,7 +423,30 @@ fn spawn_signal_handler() {
 		let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
 		let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
 		tokio::select! {
-			_ = sigterm.recv() => tracing::info!("received SIGTERM"),
+			_ = sigterm.recv() => {
+				PLATFORM_RECLAIM.store(true, Ordering::Release);
+				// Attribute the reclaim to each running actor so it is visible in
+				// actor-scoped logs, not only the process-level log stream.
+				let mut actor_ids = Vec::new();
+				CHILDREN
+					.retain_async(|actor_id, _| {
+						actor_ids.push(actor_id.clone());
+						true
+					})
+					.await;
+				if actor_ids.is_empty() {
+					tracing::error!(
+						"unexpected platform SIGTERM received, likely hitting OOM or running longer than 60 minutes"
+					);
+				} else {
+					for actor_id in actor_ids {
+						tracing::error!(
+							actor_id = %actor_id,
+							"unexpected platform SIGTERM received, likely hitting OOM or running longer than 60 minutes"
+						);
+					}
+				}
+			}
 			_ = sigint.recv() => tracing::info!("received SIGINT"),
 		}
 		SIGNAL_SHUTDOWN.store(true, Ordering::Release);
