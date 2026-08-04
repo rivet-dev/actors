@@ -85,6 +85,17 @@ impl Actor for GameServer {
 		let actor_id = ctx.actor_id().to_string();
 		let key = actor_key_string(&ctx);
 
+		// Surface the resource monitor's status here, tagged with the actor id, so
+		// it is visible in actor-scoped log views. The monitor's own enable/disable
+		// logs are process-level and have no actor id, so they are filtered out of
+		// those views.
+		tracing::info!(
+			actor_id = %actor_id,
+			resource_monitor_enabled = crate::monitor::enabled(),
+			resource_monitor_source = crate::monitor::sampling_source(),
+			"resource monitor status"
+		);
+
 		// An engine retry for an actor that is already running here must be an
 		// idempotent no-op: rejecting it would make the engine tear down a
 		// healthy actor.

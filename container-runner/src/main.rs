@@ -19,6 +19,7 @@
 mod actor;
 mod child;
 mod input;
+mod monitor;
 mod proxy;
 
 use std::io::Read;
@@ -114,6 +115,20 @@ pub fn runner_config() -> Arc<RunnerConfig> {
 
 pub fn children() -> &'static scc::HashMap<String, Arc<ChildProcess>> {
 	&CHILDREN
+}
+
+/// Actor ids currently hosting a running child on this instance. Used to
+/// attribute the instance-wide resource samples to the running actor(s).
+pub async fn active_actor_ids() -> Vec<String> {
+	let mut ids = Vec::new();
+	// `retain_async` returning `true` keeps every entry: a read-only scan.
+	CHILDREN
+		.retain_async(|actor_id, _| {
+			ids.push(actor_id.clone());
+			true
+		})
+		.await;
+	ids
 }
 
 /// Reserve a local port for a new child. An explicit `input.port` is honored
@@ -336,6 +351,7 @@ async fn async_main() -> Result<()> {
 
 	let serve_shutdown = CancellationToken::new();
 	spawn_signal_handler();
+	monitor::spawn_resource_monitor();
 
 	let serve = tokio::spawn(serverless_http::serve(
 		runtime.clone(),
