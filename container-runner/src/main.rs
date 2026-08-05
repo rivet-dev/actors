@@ -37,6 +37,27 @@ use tracing_subscriber::EnvFilter;
 use crate::actor::GameServer;
 use crate::child::ChildProcess;
 
+/// Crate version from Cargo.toml (the workspace version).
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Git commit SHA baked in at build time (see `build.rs`). `"unknown"` when the
+/// build had neither `OVERRIDE_GIT_SHA` nor a reachable git repo (the release
+/// image build context excludes `.git`).
+pub(crate) const GIT_SHA: &str = env!("CONTAINER_RUNNER_GIT_SHA");
+
+/// The effective git SHA, or `None` when unknown. Prefers the build-time SHA and
+/// falls back to a runtime `OVERRIDE_GIT_SHA` env var, so a deploy that cannot
+/// inject a build arg can still surface it via an environment variable.
+pub(crate) fn git_sha() -> Option<String> {
+	if GIT_SHA != "unknown" {
+		return Some(GIT_SHA.to_string());
+	}
+	std::env::var("OVERRIDE_GIT_SHA")
+		.ok()
+		.map(|sha| sha.trim().to_string())
+		.filter(|sha| !sha.is_empty())
+}
+
 /// Static runner configuration derived from the CLI/env.
 pub struct RunnerConfig {
 	/// Child command template (program + fixed args) from `-- <command...>`.

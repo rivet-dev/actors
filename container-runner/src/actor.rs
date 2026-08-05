@@ -139,6 +139,23 @@ impl Actor for GameServer {
 			key: key.clone(),
 		};
 
+		// Version line, tagged with the actor id so it is visible in actor-scoped
+		// logs. `git_sha` is omitted entirely when unknown rather than logged as
+		// "unknown".
+		match crate::git_sha() {
+			Some(git_sha) => tracing::info!(
+				actor_id = %actor_id,
+				version = crate::VERSION,
+				git_sha = %git_sha,
+				"container-runner build"
+			),
+			None => tracing::info!(
+				actor_id = %actor_id,
+				version = crate::VERSION,
+				"container-runner build"
+			),
+		}
+
 		tracing::info!(
 			boot_id = crate::boot_id(),
 			actor_id = %actor_id,
