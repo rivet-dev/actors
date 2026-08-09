@@ -12,6 +12,29 @@ Before diving into specific errors, try these general troubleshooting steps:
 - Check if any of your backend processes have crashed or restarted unexpectedly.
 - If you need more diagnostics, set `RIVET_LOG_LEVEL=DEBUG` for verbose logging. See [Logging](/docs/general/logging) for more options.
 
+## Cannot connect to an actor
+
+If your client opens a WebSocket to an actor and never receives a response, while the dashboard shows the actor as `running` but the inspector only loads metadata, the connection is likely being rejected by the gateway.
+
+The gateway returns a WebSocket close frame with debug info after ~10 seconds when something is wrong. Inspect the close event in your client to see a code and reason like:
+
+```
+code=1011 reason=guard.websocket_service_unavailable#<ray_id>
+```
+
+The `<ray_id>` is a unique identifier for that connection attempt and can be used by Rivet engineers to filter engine logs. Include it when [reporting an issue](#reporting-issues).
+
+To check whether an actor is reachable without opening a WebSocket, send an HTTP ping:
+
+```sh
+curl -v '{engine url}/gateway/{actor id}/ping'
+```
+
+Errors are also surfaced in the dashboard:
+
+- **Close reason** is shown on the actor's dashboard page when the connection fails.
+- **Provider pool warnings** appear in **Settings > Providers**. Hover the warning icon next to a provider row to see why it cannot accept actors (e.g. no runners online, region misconfigured).
+
 ## Reporting Issues
 
 If you're stuck, reach out on [Discord](https://rivet.dev/discord) or file an issue on [GitHub](https://github.com/rivet-dev/rivet/issues).
