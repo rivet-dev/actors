@@ -11,7 +11,7 @@
 	},
 	"dependencies": {
 		"@rivetkit/react": "^2.3.7",
-		"hono": "4.9.8",
+		"hono": "4.12.27",
 		"on-change": "^5.0.1",
 		"react": "^19.0.0",
 		"react-dom": "^19.0.0",
