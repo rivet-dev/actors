@@ -66,6 +66,14 @@ Loading ──Start──▶ Ready ──spawn driver──▶ Started
 
 1. Action handler executes
 
+**On Fetch Request** (per HTTP request to `/actors/{actorName}/http/*`)
+
+1. `onRequest` handler executes
+
+**On WebSocket Connection** (per WebSocket upgrade to `/actors/{actorName}/ws/*`)
+
+1. `onWebSocket` handler executes
+
 **On Inbound Queue Publish** (per `handle.send(...)`)
 
 1. `queues.<name>.canPublish` (if defined)
