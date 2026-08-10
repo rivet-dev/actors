@@ -76,13 +76,15 @@ jobs:
 
       - name: Copy generated skills
         run: |
+          # Ensure skills directory exists
+          mkdir -p "skills-repo/skills"
+          
           # Only delete and replace the specific skill directories being updated
-          rm -rf "skills-repo/rivetkit-typescript"
           for skill_dir in website/dist/metadata/skills/*/; do
             skill_name=$(basename "$skill_dir")
             echo "Updating skill: $skill_name"
-            rm -rf "skills-repo/$skill_name"
-            cp -r "$skill_dir" "skills-repo/$skill_name"
+            rm -rf "skills-repo/skills/$skill_name"
+            cp -r "$skill_dir" "skills-repo/skills/$skill_name"
           done
 
       - name: Commit and push
