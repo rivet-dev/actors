@@ -1,0 +1,70 @@
+---
+title: "Destroying Actors"
+description: "Actors can be permanently destroyed. Common use cases include:"
+skill: true
+---
+
+- User account deletion
+- Ending a user session
+- Closing a room or game
+- Cleaning up temporary resources
+- GDPR/compliance data removal
+
+Actors sleep when idle, so destruction is only needed to permanently remove data — not to save compute.
+
+## Destroying An Actor
+
+### Destroy via Action
+
+To destroy an actor, use `c.destroy()` like this:
+
+<CodeSnippet file="examples/docs/actors-destroy/destroy-via-action.ts" />
+
+### Destroy via HTTP
+
+Send a DELETE request to destroy an actor. This requires a token for authentication:
+
+- **Rivet Cloud**: Use the service key (`sk_*`) from your `RIVET_ENDPOINT` URL. Find this in the dashboard under **Settings > Advanced > Backend Configuration** (e.g. the `sk_...` portion of `https://default:sk_abc123@api.rivet.dev`).
+- **Self-hosted**: Use an admin token.
+
+<CodeGroup>
+
+```typescript
+const actorId = "your-actor-id";
+const namespace = "default";
+const token = "your-token";
+
+await fetch(`https://api.rivet.dev/actors/${actorId}?namespace=${namespace}`, {
+  method: "DELETE",
+  headers: {
+    Authorization: `Bearer ${token}`,
+  },
+});
+```
+
+```bash
+curl -X DELETE "https://api.rivet.dev/actors/{actorId}?namespace={namespace}" \
+  -H "Authorization: Bearer {token}"
+```
+</CodeGroup>
+
+To find the actor ID, you can list actors first:
+
+```bash
+curl "https://api.rivet.dev/actors?namespace={namespace}" \
+  -H "Authorization: Bearer {token}"
+```
+
+### Destroy via Dashboard
+
+To destroy an actor via the dashboard, navigate to the actor and press the red "X" in the top right.
+
+## Lifecycle Hook
+
+Once destroyed, the `onDestroy` hook will be called. This can be used to clean up resources related to the actor. For example:
+
+<CodeSnippet file="examples/docs/actors-destroy/on-destroy.ts" />
+
+## Accessing Actor After Destroy
+
+Once an actor is destroyed, any subsequent requests to it will fail with an `actor.not_found` error (`{ group: "actor", code: "not_found" }`). The actor's state is permanently deleted.

@@ -1,0 +1,133 @@
+---
+title: "Supabase Functions Quickstart"
+description: "Set up a Rivet project locally targeting Supabase Edge Functions."
+skill: true
+---
+
+Set up a Rivet project locally that runs on Supabase Edge Functions. The `@rivetkit/supabase` package wires the WebAssembly runtime for you.
+
+<Note>
+Prefer to start from a complete project? See the runnable [`hello-world-supabase-functions`](https://github.com/rivet-dev/rivet/tree/main/examples/hello-world-supabase-functions) example.
+</Note>
+
+## Steps
+
+<Steps>
+<Step title="Prerequisites">
+
+- [Node.js](https://nodejs.org/)
+- [Supabase CLI](https://supabase.com/docs/guides/cli)
+- Docker, for Supabase's local Edge Runtime
+
+The CLI runs the local Rivet engine as a bundled native binary, so Docker is only needed for Supabase itself. A Supabase project is only needed to deploy.
+
+</Step>
+<Step title="Create the Function">
+
+```sh
+npx supabase functions new rivet
+```
+
+Add the packages used by the function:
+
+```sh
+npm install rivetkit @rivetkit/supabase
+```
+
+</Step>
+<Step title="Configure the Function">
+
+Call `serve` from `@rivetkit/supabase`. It loads the WebAssembly runtime and serves the Rivet handler.
+
+```ts supabase/functions/rivet/index.ts @nocheck
+import { actor } from "rivetkit";
+import { serve, setup } from "@rivetkit/supabase";
+
+const counter = actor({
+  state: { count: 0 },
+  actions: {
+    increment: (c, amount = 1) => {
+      c.state.count += amount;
+      return c.state.count;
+    },
+  },
+});
+
+// `setup` returns a typed registry, so a client can type itself with
+// `typeof registry`.
+export const registry = setup({ use: { counter } });
+
+await serve(registry);
+```
+
+Add a `deno.json` next to the function so the deploy bundles only the WebAssembly runtime. It points `rivetkit` at the pre-bundled `@rivetkit/supabase`, keeping the deploy small. Without it, the deploy pulls Rivet's native engine and 413s.
+
+```json supabase/functions/rivet/deno.json
+{
+  "imports": {
+    "rivetkit": "npm:@rivetkit/supabase",
+    "@rivetkit/supabase": "npm:@rivetkit/supabase"
+  }
+}
+```
+
+Your function code keeps importing from `rivetkit` as usual. The import map only changes how Deno resolves it at bundle time.
+
+</Step>
+<Step title="Run Locally">
+
+Start the local Supabase stack. `supabase functions serve` fails without it:
+
+```sh
+npx supabase start
+```
+
+Start Rivet. The CLI runs the local engine, spawns `supabase functions serve` for you, and populates the connection values:
+
+```sh
+npx @rivetkit/cli dev --provider supabase
+```
+
+The edge runtime runs in a container, so the CLI points the function at the control plane on the host with `RIVET_ENDPOINT=http://host.docker.internal:6420`. Override it by passing your own `--env-file` to `supabase functions serve`:
+
+```sh
+npx @rivetkit/cli dev --provider supabase -- --env-file ./supabase/functions/.env.local
+```
+
+<Note>
+The control plane keeps running after the CLI exits so a later `rivet dev` can reattach. Changing `RIVET_ENDPOINT` therefore has no effect until the control plane restarts. Use `rivet engine` to manage it.
+</Note>
+
+Visit [http://localhost:6420](http://localhost:6420) in your browser (or point your AI agent at it) to open the Rivet developer tools and inspect your actors live.
+
+</Step>
+<Step title="Call the Actor">
+
+Connect to your actor from a client. This connects directly to the local engine on `http://localhost:6420`:
+
+```ts client.ts @nocheck
+import { createClient } from "rivetkit/client";
+import type { registry } from "./supabase/functions/rivet/index";
+
+const client = createClient<typeof registry>("http://localhost:6420");
+
+const counter = client.counter.getOrCreate(["my-counter"]);
+const count = await counter.increment(3);
+console.log("New count:", count);
+```
+
+See the [JavaScript client documentation](/actors/docs/clients/javascript) for more information.
+
+</Step>
+<Step title="Deploy">
+
+Ready to ship? See [Deploying to Supabase Functions](/actors/self-host/control-plane).
+
+</Step>
+</Steps>
+
+## Related
+
+- [Quickstart](/actors/docs)
+- [Deploying to Supabase Functions](/actors/self-host/control-plane)
+- [SQLite](/actors/docs/sqlite)

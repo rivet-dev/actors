@@ -1,0 +1,58 @@
+---
+title: "Registry Configuration"
+description: "This page documents the configuration options available when setting up a RivetKit registry. The registry configuration is passed to the `setup()` function."
+skill: true
+---
+
+import RegistryConfigSchema from "@/components/docs/RegistryConfigSchemaClient.astro";
+
+
+
+
+## Example Configurations
+
+### Basic Setup
+
+<CodeSnippet file="examples/docs/general-registry-configuration/basic-setup.ts" />
+
+### Connecting to Rivet control plane
+
+<CodeGroup>
+
+<CodeSnippet file="examples/docs/general-registry-configuration/environment-variables.ts" title="Environment-Variables" />
+
+<CodeSnippet file="examples/docs/general-registry-configuration/config.ts" title="Config" />
+
+</CodeGroup>
+
+## Starting Your App
+
+After configuring your registry, start it:
+
+<CodeGroup>
+
+<CodeSnippet file="examples/docs/general-registry-configuration/registry-start.ts" title="registry.start()" />
+
+<CodeSnippet file="examples/docs/general-registry-configuration/serverless.ts" title="Serverless" />
+
+<CodeSnippet file="examples/docs/general-registry-configuration/serverless-with-router.ts" title="Serverless-with-Router" />
+
+<CodeSnippet file="examples/docs/general-registry-configuration/envoy.ts" title="Envoy" />
+
+</CodeGroup>
+
+See [Runtime Modes](/actors/docs/general/runtime-modes) for details on when to use each mode.
+
+## Environment Variables
+
+Many configuration options can be set via environment variables. See [Environment Variables](/actors/docs/general/environment-variables) for a complete reference.
+
+
+## Configuration Reference
+
+<RegistryConfigSchema />
+
+## Related
+
+- [Actor Configuration](/actors/docs/general/actor-configuration): Configure individual actors
+- [HTTP Server Setup](/actors/docs/general/http-server): Set up HTTP routing and middleware

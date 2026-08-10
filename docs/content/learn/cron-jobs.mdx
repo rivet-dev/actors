@@ -1,0 +1,68 @@
+---
+title: "Cron Jobs and Scheduled Tasks"
+description: "Patterns for durable one-shot, calendar, and fixed-interval work on Rivet Actors."
+templates: ["scheduling"]
+---
+
+Rivet Actor schedules are durable actor-local timers. They survive actor sleep, restarts, upgrades, deploys, and crashes without a separate cron service.
+
+## Choose a schedule type
+
+| API | Use it for |
+| --- | --- |
+| `c.schedule.after(delayMs, action, ...args)` | One-time work after a relative delay. |
+| `c.schedule.at(timestamp, action, ...args)` | One-time work at an exact Unix timestamp in milliseconds. |
+| `c.cron.set({ ... })` | Named calendar recurrence in an IANA timezone. |
+| `c.cron.every({ ... })` | Named fixed intervals of at least 5 seconds. |
+
+All callbacks are ordinary actions on the same actor. Keep the action name fixed in your code rather than accepting an arbitrary action name from a client.
+
+See [Schedule & Cron](/actors/docs/schedule) for the full API, history, cancellation, failure behavior, and limits.
+
+## Calendar job
+
+Use `cron.set` instead of manually re-arming a one-shot action:
+
+<CodeSnippet file="examples/docs/cookbook-cron-jobs/daily-report.ts" />
+
+Install fixed background jobs in `onCreate` so setup runs once per actor. The job name remains an upsert key, so a later `cron.set` call updates the existing job rather than creating a duplicate. `cron.set` also handles timezone and daylight-saving transitions.
+
+## Fixed-interval job
+
+Use `cron.every` for frequent work such as presence sweeps or cache refreshes:
+
+```ts
+await c.cron.every({
+  name: "presence-sweep",
+	interval: 15_000, // Minimum 5 seconds.
+  action: "sweepPresence",
+  maxHistory: 25,
+});
+```
+
+Intervals remain anchored to scheduled deadlines rather than drifting by the action's runtime. If a previous run is still active, the overlapping occurrence is skipped.
+
+## Cancellation and updates
+
+Keep the ID returned by a one-shot schedule when it may need cancellation:
+
+```ts
+const id = await c.schedule.after(60_000, "expireSession", sessionId);
+await c.schedule.cancel(id);
+```
+
+Recurring jobs are managed by name:
+
+```ts
+await c.cron.delete("presence-sweep");
+```
+
+Calling `cron.set` or `cron.every` again with the same name replaces its configuration.
+
+## Failure and idempotency
+
+Keep scheduled actions idempotent when duplicate work would be harmful. See [Execution behavior](/actors/docs/schedule#execution-behavior) for retry behavior and workflow guidance.
+
+## Topology
+
+Use a singleton actor key for one global job, such as `jobs["daily-report"]`. Use an actor per user or resource for isolated reminders, trials, billing periods, or other per-entity schedules.

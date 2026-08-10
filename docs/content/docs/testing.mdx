@@ -1,0 +1,52 @@
+---
+title: "Testing"
+description: "Rivet provides a straightforward testing framework to build reliable and maintainable applications. This guide covers how to write effective tests for your actor-based services."
+skill: true
+---
+
+## Setup
+
+To set up testing with Rivet:
+
+```bash
+# Install Vitest
+npm install -D vitest
+
+# Run tests
+npm test
+```
+
+## Basic Testing Setup
+
+Rivet includes a test helper called `setupTest` that starts your registry in test mode and returns a client connected to it. This allows for fast, isolated tests without external dependencies.
+
+<CodeSnippet file="examples/docs/actors-testing/basic-setup.ts" />
+
+## Testing Actor State
+
+State persists within each test, allowing you to verify that your actor correctly maintains state between operations.
+
+<CodeSnippet file="examples/docs/actors-testing/testing-state.ts" />
+
+## Testing Events
+
+For actors that emit events, you can verify events are correctly triggered by subscribing to them:
+
+<CodeSnippet file="examples/docs/actors-testing/testing-events.ts" />
+
+## Testing Schedules
+
+Rivet's schedule functionality can be tested by scheduling work and waiting for it to run:
+
+<CodeSnippet file="examples/docs/actors-testing/testing-schedules.ts" />
+
+Use a short schedule and `expect.poll` the action's observable result. Vitest's fake date and fake JavaScript timers do not advance RivetKit's scheduler, which runs outside the test's JavaScript timer queue.
+
+## Best Practices
+
+1. **Isolate tests**: Each test should run independently, avoiding shared state.
+2. **Test edge cases**: Verify how your actor handles invalid inputs, concurrent operations, and error conditions.
+3. **Test scheduled operations**: Poll observable state or output with a bounded timeout instead of sleeping for an exact duration.
+4. **Use realistic data**: Test with data that resembles production scenarios.
+
+`setupTest` starts the registry and disposes the returned client when the test finishes, so you can focus on writing effective tests for your business logic.

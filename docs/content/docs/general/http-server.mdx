@@ -1,0 +1,128 @@
+---
+title: "HTTP Server"
+description: "Different ways to run your RivetKit HTTP server."
+skill: true
+---
+
+## Methods of Running Your Server
+
+### registry.start()
+
+The simplest way to run your server. Starts a local RivetKit server, serves static files from a `public` directory, and starts the actor runner:
+
+<CodeSnippet file="examples/docs/general-http-server/index.ts" title="index.ts" />
+
+Run with `npx tsx --watch index.ts` (Node.js), `bun --watch index.ts` (Bun), or `deno run --allow-net --allow-read --allow-env --watch index.ts` (Deno). Clients connect to the Rivet control plane on `http://localhost:6420`.
+
+### With Fetch Handlers
+
+A [fetch handler](https://wintercg.org/) is a function that takes a `Request` and returns a `Response`. This is the standard pattern used by Cloudflare Workers, Deno Deploy, Bun, and other modern runtimes.
+
+Use `registry.serve()` to get a fetch handler:
+
+<CodeSnippet file="examples/docs/general-http-server/serve.ts" title="server.ts" />
+
+To integrate with a router like [Hono](https://hono.dev/) or [Elysia](https://elysiajs.com/), use `registry.handler()`:
+
+<Tabs>
+
+<Tab title="Hono">
+
+<CodeSnippet file="examples/docs/general-http-server/hono-handler.ts" title="server.ts" />
+
+</Tab>
+
+<Tab title="Elysia">
+
+<CodeSnippet file="examples/docs/general-http-server/elysia-handler.ts" title="server.ts" />
+
+</Tab>
+
+</Tabs>
+
+Then run your server:
+
+<CodeGroup>
+
+```bash Node.js
+npx tsx --watch server.ts
+```
+
+```bash Bun
+bun --watch server.ts
+```
+
+```bash Deno
+deno run --allow-net --allow-read --allow-env --watch server.ts
+```
+
+</CodeGroup>
+
+### Explicit HTTP Server
+
+If you need to explicitly start the HTTP server instead of using the fetch handler pattern:
+
+<Tabs>
+
+<Tab title="Node.js (Hono)">
+
+Using Hono with `@hono/node-server`:
+
+<CodeSnippet file="examples/docs/general-http-server/node-hono.ts" title="server.ts" />
+
+</Tab>
+
+
+<Tab title="Node.js (Adapter)">
+
+Using `@whatwg-node/server` to adapt the fetch handler to Node's HTTP server:
+
+```ts server.ts @nocheck
+import { actor, setup } from "rivetkit";
+import { createServer } from "node:http";
+import { createServerAdapter } from "@whatwg-node/server";
+
+const myActor = actor({ state: {}, actions: {} });
+const registry = setup({ use: { myActor } });
+
+const handler = createServerAdapter(registry.serve().fetch);
+const server = createServer(handler);
+server.listen(3000);
+```
+
+</Tab>
+
+<Tab title="Bun">
+
+Using Bun's native server:
+
+```ts server.ts @nocheck
+import { actor, setup } from "rivetkit";
+
+const myActor = actor({ state: {}, actions: {} });
+const registry = setup({ use: { myActor } });
+
+Bun.serve({
+  port: 3000,
+  fetch: (request: Request) => registry.handler(request),
+});
+```
+
+</Tab>
+
+<Tab title="Deno">
+
+Using Deno's native server:
+
+```ts server.ts @nocheck
+import { actor, setup } from "rivetkit";
+
+const myActor = actor({ state: {}, actions: {} });
+const registry = setup({ use: { myActor } });
+
+Deno.serve({ port: 3000 }, (request: Request) => registry.handler(request));
+```
+
+</Tab>
+
+</Tabs>

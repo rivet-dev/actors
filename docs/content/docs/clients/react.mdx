@@ -1,0 +1,111 @@
+---
+title: "React"
+description: "Connect React apps to Rivet Actors."
+skill: true
+---
+
+import { InstallPackage } from "@/components/docs/InstallPackage";
+
+## Getting Started
+
+See the [React quickstart guide](/actors/docs/quickstart/react) for getting started.
+
+## Install
+
+<InstallPackage name="rivetkit @rivetkit/react" />
+
+## Minimal Client
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/clients-react/minimal-client/Counter.tsx" title="Counter.tsx" />
+</CodeGroup>
+
+## Stateless vs Stateful
+
+<CodeSnippet file="examples/docs/clients-react/stateful-counter.tsx" />
+
+<CodeSnippet file="examples/docs/clients-react/stateless-client.tsx" />
+
+## Getting Actors
+
+<CodeSnippet file="examples/docs/clients-react/getting-actors.tsx" />
+
+## Connection Parameters
+
+<CodeSnippet file="examples/docs/clients-react/connection-parameters.tsx" />
+
+## Subscribing to Events
+
+<CodeSnippet file="examples/docs/clients-react/subscribing-to-events.tsx" />
+
+## Connection Lifecycle
+
+<CodeSnippet file="examples/docs/clients-react/connection-lifecycle.tsx" />
+
+## Low-Level HTTP & WebSocket
+
+Use the JavaScript client for raw HTTP and WebSocket access:
+
+```tsx @nocheck
+import { createClient } from "rivetkit/client";
+
+const client = createClient();
+const handle = client.chatRoom.getOrCreate(["general"]);
+
+const response = await handle.fetch("history");
+const history = await response.json();
+
+const ws = await handle.webSocket("stream");
+ws.addEventListener("message", (event) => {
+  console.log("message:", event.data);
+});
+ws.send("hello");
+```
+
+## Calling from Backend
+
+Use the JavaScript client on your backend (Node.js/Bun). See the [JavaScript client docs](/actors/docs/clients/javascript).
+
+## Error Handling
+
+<CodeSnippet file="examples/docs/clients-react/error-handling.tsx" />
+
+## Concepts
+
+### Keys
+
+Keys uniquely identify actor instances. Use compound keys (arrays) for hierarchical addressing:
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/clients-react/keys/ChatRoom.tsx" title="ChatRoom.tsx" />
+</CodeGroup>
+
+Don't build keys with string interpolation like `"org:${userId}"` when `userId` contains user data. Use arrays instead to prevent key injection attacks.
+
+### Environment Variables
+
+`createRivetKit()` (and the underlying `createClient()` instance) automatically read:
+
+- `RIVET_ENDPOINT`
+- `RIVET_NAMESPACE`
+- `RIVET_TOKEN`
+- `RIVET_POOL`
+
+Defaults to `http://localhost:6420` when unset. RivetKit runs on port 6420 by default.
+
+### Endpoint Format
+
+Endpoints support URL auth syntax:
+
+```
+https://namespace:token@api.rivet.dev
+```
+
+You can also pass the endpoint without auth and provide `RIVET_NAMESPACE` and `RIVET_TOKEN` separately. For serverless deployments, use your app's `/api/rivet` URL. See [Endpoints](/actors/docs/general/endpoints#url-auth-syntax) for details.
+
+## API Reference
+
+**Package:** [@rivetkit/react](https://www.npmjs.com/package/@rivetkit/react)
+
+- [`createRivetKit`](/actors/docs/clients/react) - Create hooks for React
+- [`useActor`](/actors/docs/clients/react) - Hook for actor instances

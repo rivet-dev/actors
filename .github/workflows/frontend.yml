@@ -7,8 +7,6 @@ on:
       - frontend/**
       - engine/sdks/typescript/**
       - rivetkit-typescript/**
-      - website/**
-
 concurrency:
   group: frontend-${{ github.ref }}
   cancel-in-progress: true

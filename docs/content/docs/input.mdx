@@ -1,0 +1,54 @@
+---
+title: "Input Parameters"
+description: "Pass initialization data to actors when creating instances"
+skill: true
+---
+
+Actors can receive input parameters when created, allowing for flexible initialization and configuration. Input is passed during actor creation and is available in lifecycle hooks.
+
+## Passing Input to Actors
+
+Input is provided when creating actor instances using the `input` property:
+
+<CodeSnippet file="examples/docs/actors-input/passing-input.ts" />
+
+## Accessing Input in Lifecycle Hooks
+
+Input is available as the second argument to the `createState` and `onCreate` lifecycle hooks:
+
+<CodeSnippet file="examples/docs/actors-input/lifecycle-hooks.ts" />
+
+## Input Validation
+
+You can validate input parameters in the `createState` or `onCreate` hooks:
+
+<CodeSnippet file="examples/docs/actors-input/input-validation.ts" />
+
+## Input vs Connection Parameters
+
+Input parameters are different from connection parameters:
+
+- **Input**:
+  - Passed when creating the actor instance
+  - Use for actor-wide configuration
+  - Available in lifecycle hooks
+- **Connection parameters**:
+  - Passed when connecting to an existing actor
+  - Used for connection-specific configuration
+  - Available in connection hooks
+
+<CodeSnippet file="examples/docs/actors-input/input-vs-connection.ts" />
+
+## Input Best Practices
+
+### Use Type Safety
+
+Define input types to ensure type safety:
+
+<CodeSnippet file="examples/docs/actors-input/type-safety.ts" />
+
+### Store Input in State
+
+Input is only available in `createState` and `onCreate` lifecycle hooks. If you need to access input data later (in actions, timers, or other hooks), store it in the actor's state during creation. This is the recommended pattern because input shapes can evolve over time, and persisting input in state ensures you always have access to the values the actor was created with:
+
+<CodeSnippet file="examples/docs/actors-input/store-input-in-state.ts" />

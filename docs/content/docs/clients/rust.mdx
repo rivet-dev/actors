@@ -1,0 +1,366 @@
+---
+title: "Rust (Beta)"
+description: "Connect Rust apps to Rivet Actors."
+skill: true
+---
+
+<Note>
+Rust support is in beta. The supported public Rust API is `rivetkit` and `rivetkit::client`; lower-level crates are internal implementation details and do not carry a stability guarantee. See the full API reference on [docs.rs/rivetkit](https://docs.rs/rivetkit), or the runnable [`hello-world-rust`](https://github.com/rivet-dev/rivet/tree/main/examples/hello-world-rust) example.
+</Note>
+
+## Getting Started
+
+See the [Rust quickstart guide](/actors/docs/quickstart/rust) for getting started.
+
+## Install
+
+Add the `rivetkit` crate and its companions:
+
+```sh
+cargo add rivetkit anyhow async-trait
+cargo add serde --features derive
+cargo add tokio --features full
+```
+
+The Rust client is strongly typed. It shares the same action and event types as your actor, so define your actor in `src/lib.rs` and import those types from both your server and your client. There is no need to redefine the actor on the client. See [Define Your Actor](/actors/docs/quickstart/rust#define-your-actor) in the quickstart for the actor definition this page builds on.
+
+## Minimal Client
+
+```rust @nocheck
+use counter::{Counter, Increment};
+use rivetkit::{
+	client::{Client, ClientConfig},
+	prelude::*,
+	TypedClientExt,
+};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+	let client = Client::new(ClientConfig::new("http://localhost:6420").namespace("default"));
+
+	let counter = client.get_or_create_typed_default::<Counter>("counter", ["my-counter"])?;
+	let count = counter.send(Increment { amount: 1 }).await?;
+	println!("New count: {count}");
+
+	Ok(())
+}
+```
+
+`counter` here is your crate name (the package `name` in `Cargo.toml`, with dashes as underscores). `Counter` and `Increment` are the types you defined alongside your actor.
+
+## Stateless vs Stateful
+
+```rust @nocheck
+use counter::{Counter, Increment, NewCount};
+use rivetkit::{
+	client::{Client, ClientConfig},
+	prelude::*,
+	TypedClientExt,
+};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+	let client = Client::new(ClientConfig::new("http://localhost:6420").namespace("default"));
+	let counter = client.get_or_create_typed_default::<Counter>("counter", ["my-counter"])?;
+
+	// Stateless: each call is independent
+	counter.send(Increment { amount: 1 }).await?;
+
+	// Stateful: keep a connection open for realtime events
+	let connection = counter.connect();
+	connection
+		.on::<NewCount>(|event| println!("count: {}", event.count))
+		.await;
+	connection.send(Increment { amount: 1 }).await?;
+
+	connection.disconnect().await;
+	Ok(())
+}
+```
+
+A stateless call on the handle opens a short-lived request per action. A connection keeps a WebSocket open so you can receive events and reuse it across calls.
+
+## Getting Actors
+
+```rust @nocheck
+use counter::Counter;
+use rivetkit::{
+	client::{Client, ClientConfig, GetOrCreateOptions},
+	prelude::*,
+	TypedClientExt,
+};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+	let client = Client::new(ClientConfig::new("http://localhost:6420").namespace("default"));
+
+	// Get or create an actor
+	let room = client.get_or_create_typed_default::<Counter>("counter", ["room-42"])?;
+
+	// Get an existing actor handle (fails when used if the actor does not exist)
+	let existing = client.get_typed_default::<Counter>("counter", ["room-42"])?;
+
+	// Create a new actor with input
+	let created = client.get_or_create_typed::<Counter>(
+		"counter",
+		["game-1"],
+		GetOrCreateOptions {
+			create_with_input: Some(json!({ "mode": "ranked" })),
+			..Default::default()
+		},
+	)?;
+
+	// Get an actor handle by ID
+	let by_id = client.get_for_id("counter", "actor-id", Default::default())?;
+
+	// Resolve the actor ID
+	let resolved_id = room.inner().resolve().await?;
+	println!("Resolved ID: {resolved_id}");
+
+	Ok(())
+}
+```
+
+`get_typed_default` / `get_or_create_typed_default` use default options. The non-default variants (`get_typed` / `get_or_create_typed`) take `GetOptions` / `GetOrCreateOptions` for connection parameters, input, and region. Set `pool_name` on `GetOrCreateOptions` or `CreateOptions` to override the client's configured pool for a single actor.
+
+## Connection Parameters
+
+Pass connection parameters through the handle options. They are delivered to the actor's `create_conn_state` callback:
+
+```rust @nocheck
+use counter::Counter;
+use rivetkit::{
+	client::{Client, ClientConfig, GetOrCreateOptions},
+	prelude::*,
+	TypedClientExt,
+};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+	let client = Client::new(ClientConfig::new("http://localhost:6420").namespace("default"));
+
+	let chat = client.get_or_create_typed::<Counter>(
+		"counter",
+		["general"],
+		GetOrCreateOptions {
+			params: Some(json!({ "authToken": "jwt-token-here" })),
+			..Default::default()
+		},
+	)?;
+
+	let connection = chat.connect();
+	connection.disconnect().await;
+	Ok(())
+}
+```
+
+## Subscribing to Events
+
+`on` registers a typed callback for an event and returns once the subscription is registered:
+
+```rust @nocheck
+use counter::{Counter, NewCount};
+use rivetkit::{
+	client::{Client, ClientConfig},
+	prelude::*,
+	TypedClientExt,
+};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+	let client = Client::new(ClientConfig::new("http://localhost:6420").namespace("default"));
+	let connection = client
+		.get_or_create_typed_default::<Counter>("counter", ["general"])?
+		.connect();
+
+	connection
+		.on::<NewCount>(|event| println!("count changed: {}", event.count))
+		.await;
+
+	Ok(())
+}
+```
+
+Event callbacks are synchronous and run for every matching event. The actor's emitted event type (here `NewCount`) is decoded into the typed value for you.
+
+## Connection Lifecycle
+
+The lower-level connection exposes lifecycle callbacks and the current status. Reach it with `connection.inner()`:
+
+```rust @nocheck
+use counter::Counter;
+use rivetkit::{
+	client::{Client, ClientConfig},
+	prelude::*,
+	TypedClientExt,
+};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+	let client = Client::new(ClientConfig::new("http://localhost:6420").namespace("default"));
+	let connection = client
+		.get_or_create_typed_default::<Counter>("counter", ["general"])?
+		.connect();
+	let inner = connection.inner().clone();
+
+	inner.on_open(|| println!("connected")).await;
+	inner.on_close(|| println!("disconnected")).await;
+	inner.on_error(|message| eprintln!("error: {message}")).await;
+	inner
+		.on_status_change(|status| println!("status: {status:?}"))
+		.await;
+
+	println!("current status: {:?}", inner.conn_status());
+
+	connection.disconnect().await;
+	Ok(())
+}
+```
+
+`ConnectionStatus` is one of `Idle`, `Connecting`, `Connected`, or `Disconnected`. Connections reconnect automatically with backoff until you call `disconnect`.
+
+## Low-Level HTTP & WebSocket
+
+For actors that implement `on_request` or `on_websocket`, call them directly on the untyped handle (`handle.inner()`). `fetch` returns a `reqwest::Response`, and `web_socket` returns a `tokio_tungstenite` stream. This example also needs a few extra crates:
+
+```sh
+cargo add futures-util tokio-tungstenite
+cargo add reqwest --features json
+```
+
+```rust @nocheck
+use counter::Counter;
+use futures_util::{SinkExt, StreamExt};
+use reqwest::{header::HeaderMap, Method};
+use rivetkit::{
+	client::{Client, ClientConfig},
+	prelude::*,
+	TypedClientExt,
+};
+use tokio_tungstenite::tungstenite::Message;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+	let client = Client::new(ClientConfig::new("http://localhost:6420").namespace("default"));
+	let handle = client.get_or_create_typed_default::<Counter>("counter", ["general"])?;
+
+	// Raw HTTP request
+	let response = handle
+		.inner()
+		.fetch("history", Method::GET, HeaderMap::new(), None)
+		.await?;
+	let history: Vec<String> = response.json().await?;
+	println!("history: {history:?}");
+
+	// Raw WebSocket connection
+	let mut ws = handle.inner().web_socket("stream", None).await?;
+	ws.send(Message::text("hello")).await?;
+	if let Some(message) = ws.next().await {
+		println!("received: {:?}", message?);
+	}
+
+	Ok(())
+}
+```
+
+## Calling from Backend
+
+The client is a normal Tokio type, so you can hold it in your backend (Axum, Actix, etc.) and call actors from request handlers. The client is `Clone` and cheap to share:
+
+```rust @nocheck
+use counter::{Counter, Increment};
+use rivetkit::{
+	client::{Client, ClientConfig},
+	prelude::*,
+	TypedClientExt,
+};
+
+async fn increment(client: Client) -> Result<i64> {
+	let counter = client.get_or_create_typed_default::<Counter>("counter", ["server-counter"])?;
+	let count = counter.send(Increment { amount: 1 }).await?;
+	Ok(count)
+}
+```
+
+## Error Handling
+
+Action and connection calls return `anyhow::Result`. Actor-side errors surface as an `anyhow::Error` carrying the error group, code, message, and metadata:
+
+```rust @nocheck
+use counter::{Counter, Increment};
+use rivetkit::{
+	client::{Client, ClientConfig},
+	prelude::*,
+	TypedClientExt,
+};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+	let client = Client::new(ClientConfig::new("http://localhost:6420").namespace("default"));
+	let counter = client.get_or_create_typed_default::<Counter>("counter", ["my-counter"])?;
+
+	match counter.send(Increment { amount: 1 }).await {
+		Ok(count) => println!("count: {count}"),
+		Err(error) => eprintln!("action failed: {error:#}"),
+	}
+
+	Ok(())
+}
+```
+
+## Concepts
+
+### Keys
+
+Keys uniquely identify actor instances. Use compound keys (arrays) for hierarchical addressing:
+
+```rust @nocheck
+use counter::Counter;
+use rivetkit::{
+	client::{Client, ClientConfig},
+	prelude::*,
+	TypedClientExt,
+};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+	let client = Client::new(ClientConfig::new("http://localhost:6420").namespace("default"));
+
+	// Compound key: [org, room]
+	let room = client.get_or_create_typed_default::<Counter>("counter", ["org-acme", "general"])?;
+	let actor_id = room.inner().resolve().await?;
+	println!("Actor ID: {actor_id}");
+
+	Ok(())
+}
+```
+
+Keys accept arrays of `&str` or `String` (`["org-acme", "general"]`). Don't build keys with string interpolation like `format!("org:{user_id}")` when `user_id` contains user data. Use arrays instead to prevent key injection attacks.
+
+### Configuration
+
+`ClientConfig::new(endpoint)` is a builder. The endpoint is always required; there is no default. Common options:
+
+```rust @nocheck
+use rivetkit::client::ClientConfig;
+
+let config = ClientConfig::new("http://localhost:6420")
+	.namespace("default")
+	.token("pk_...")
+	.pool_name("my-pool")
+	.header("x-custom", "value");
+```
+
+- `namespace` - target namespace (defaults to the control plane's configured namespace).
+- `token` - authentication token for the control plane.
+- `pool_name` - runner pool to target.
+- `header` / `headers` - extra HTTP headers sent with each request.
+- `max_input_size` - cap on encoded action input size.
+
+For serverless deployments, set the endpoint to your app's `/api/rivet` URL. See [Endpoints](/actors/docs/general/endpoints) for details.
+
+## API Reference
+
+See the full client API documentation on [docs.rs/rivetkit-client](https://docs.rs/rivetkit-client/latest/rivetkit_client/).

@@ -1,0 +1,456 @@
+---
+title: "Swift"
+description: "Connect Swift apps to Rivet Actors."
+skill: true
+---
+
+## Install
+
+Add the Swift package dependency and import `RivetKitClient`:
+
+```swift
+// Package.swift
+dependencies: [
+    .package(url: "https://github.com/rivet-dev/rivetkit-swift", from: "2.0.0")
+]
+
+targets: [
+    .target(
+        name: "MyApp",
+        dependencies: [
+            .product(name: "RivetKitClient", package: "rivetkit-swift")
+        ]
+    )
+]
+```
+
+## Minimal Client
+
+<Tabs>
+<Tab title="Endpoint URL">
+
+```swift
+import RivetKitClient
+
+let config = try ClientConfig(
+    endpoint: "https://my-namespace:pk_...@api.rivet.dev"
+)
+let client = RivetKitClient(config: config)
+
+let handle = client.getOrCreate("counter", ["my-counter"])
+let count: Int = try await handle.action("increment", 1, as: Int.self)
+```
+
+</Tab>
+<Tab title="Explicit Fields">
+
+```swift
+import RivetKitClient
+
+let config = try ClientConfig(
+    endpoint: "https://api.rivet.dev",
+    namespace: "my-namespace",
+    token: "pk_..."
+)
+let client = RivetKitClient(config: config)
+
+let handle = client.getOrCreate("counter", ["my-counter"])
+let count: Int = try await handle.action("increment", 1, as: Int.self)
+```
+
+</Tab>
+</Tabs>
+
+## Stateless vs Stateful
+
+```swift
+import RivetKitClient
+
+let config = try ClientConfig(endpoint: "http://localhost:6420")
+let client = RivetKitClient(config: config)
+
+let handle = client.getOrCreate("counter", ["my-counter"])
+
+// Stateless: each call is independent
+let current: Int = try await handle.action("getCount", as: Int.self)
+print("Current count: \(current)")
+
+// Stateful: keep a connection open for realtime events
+let conn = handle.connect()
+
+// Subscribe to events using AsyncStream
+let eventTask = Task {
+    for await count in await conn.events("count", as: Int.self) {
+        print("Event: \(count)")
+    }
+}
+
+_ = try await conn.action("increment", 1, as: Int.self)
+
+eventTask.cancel()
+await conn.dispose()
+await client.dispose()
+```
+
+## Getting Actors
+
+```swift
+import RivetKitClient
+
+struct GameInput: Encodable {
+    let mode: String
+}
+
+let config = try ClientConfig(endpoint: "http://localhost:6420")
+let client = RivetKitClient(config: config)
+
+// Get or create an actor
+let room = client.getOrCreate("chatRoom", ["room-42"])
+
+// Get an existing actor (fails if not found)
+let existing = client.get("chatRoom", ["room-42"])
+
+// Create a new actor with input
+let created = try await client.create(
+    "game",
+    ["game-1"],
+    options: CreateOptions(input: GameInput(mode: "ranked"))
+)
+
+// Get actor by ID
+let byId = client.getForId("chatRoom", "actor-id")
+
+// Resolve actor ID
+let resolvedId = try await room.resolve()
+print("Resolved ID: \(resolvedId)")
+
+await client.dispose()
+```
+
+Actions support positional overloads for 0–5 args:
+
+```swift
+import RivetKitClient
+
+let config = try ClientConfig(endpoint: "http://localhost:6420")
+let client = RivetKitClient(config: config)
+let handle = client.getOrCreate("counter", ["my-counter"])
+
+let count: Int = try await handle.action("getCount")
+let updated: String = try await handle.action("rename", "new-name")
+let ok: Bool = try await handle.action("setScore", "user-1", 42)
+
+print("Count: \(count), Updated: \(updated), OK: \(ok)")
+await client.dispose()
+```
+
+If you need more than 5 arguments, use the raw JSON fallback:
+
+```swift
+import RivetKitClient
+
+let config = try ClientConfig(endpoint: "http://localhost:6420")
+let client = RivetKitClient(config: config)
+let handle = client.getOrCreate("counter", ["my-counter"])
+
+let args: [JSONValue] = [
+    .string("user-1"),
+    .number(.int(42)),
+    .string("extra"),
+    .string("more"),
+    .string("args"),
+    .string("here")
+]
+let ok: Bool = try await handle.action("setScore", args: args, as: Bool.self)
+print("OK: \(ok)")
+
+await client.dispose()
+```
+
+## Connection Parameters
+
+```swift
+import RivetKitClient
+
+struct ConnParams: Encodable {
+    let authToken: String
+}
+
+let config = try ClientConfig(endpoint: "http://localhost:6420")
+let client = RivetKitClient(config: config)
+
+let chat = client.getOrCreate(
+    "chatRoom",
+    ["general"],
+    options: GetOrCreateOptions(params: ConnParams(authToken: "jwt-token-here"))
+)
+
+let conn = chat.connect()
+
+// Use the connection...
+for await status in await conn.statusChanges() {
+    print("Status: \(status.rawValue)")
+    if status == .connected {
+        break
+    }
+}
+
+await conn.dispose()
+await client.dispose()
+```
+
+## Subscribing to Events
+
+```swift
+import RivetKitClient
+
+let config = try ClientConfig(endpoint: "http://localhost:6420")
+let client = RivetKitClient(config: config)
+let conn = client.getOrCreate("chatRoom", ["general"]).connect()
+
+// Subscribe to events using AsyncStream
+let messageTask = Task {
+    for await (from, body) in await conn.events("message", as: (String, String).self) {
+        print("\(from): \(body)")
+    }
+}
+
+// For one-time events, break after receiving
+let gameOverTask = Task {
+    for await _ in await conn.events("gameOver", as: Void.self) {
+        print("done")
+        break
+    }
+}
+
+// Let it run for a bit
+try await Task.sleep(for: .seconds(5))
+
+// Cancel when done
+messageTask.cancel()
+gameOverTask.cancel()
+await conn.dispose()
+await client.dispose()
+```
+
+Event streams support 0–5 typed arguments. If you need raw values or more than 5 arguments, use `JSONValue`:
+
+```swift
+import RivetKitClient
+
+let config = try ClientConfig(endpoint: "http://localhost:6420")
+let client = RivetKitClient(config: config)
+let conn = client.getOrCreate("chatRoom", ["general"]).connect()
+
+let rawTask = Task {
+    for await args in await conn.events("message") {
+        print(args)
+    }
+}
+
+try await Task.sleep(for: .seconds(5))
+rawTask.cancel()
+await conn.dispose()
+await client.dispose()
+```
+
+## Connection Lifecycle
+
+```swift
+import RivetKitClient
+
+let config = try ClientConfig(endpoint: "http://localhost:6420")
+let client = RivetKitClient(config: config)
+let conn = client.getOrCreate("chatRoom", ["general"]).connect()
+
+// Monitor status changes (immediately yields current status)
+let statusTask = Task {
+    for await status in await conn.statusChanges() {
+        print("status: \(status.rawValue)")
+    }
+}
+
+// Monitor errors
+let errorTask = Task {
+    for await error in await conn.errors() {
+        print("error: \(error.group).\(error.code)")
+    }
+}
+
+// Monitor open/close events
+let openTask = Task {
+    for await _ in await conn.opens() {
+        print("connected")
+    }
+}
+
+let closeTask = Task {
+    for await _ in await conn.closes() {
+        print("disconnected")
+    }
+}
+
+// Check current status
+let current = await conn.currentStatus
+print("Current status: \(current.rawValue)")
+
+// Let it run for a bit
+try await Task.sleep(for: .seconds(5))
+
+// Cleanup
+statusTask.cancel()
+errorTask.cancel()
+openTask.cancel()
+closeTask.cancel()
+await conn.dispose()
+await client.dispose()
+```
+
+## Low-Level HTTP & WebSocket
+
+For actors that implement `onRequest` or `onWebSocket`, you can call them directly:
+
+```swift
+import RivetKitClient
+
+let config = try ClientConfig(endpoint: "http://localhost:6420")
+let client = RivetKitClient(config: config)
+let handle = client.getOrCreate("chatRoom", ["general"])
+
+// Raw HTTP request
+let response = try await handle.fetch("history")
+let history: [String] = try response.json([String].self)
+print("History: \(history)")
+
+// Raw WebSocket connection
+let websocket = try await handle.websocket(path: "stream")
+try await websocket.send(text: "hello")
+let message = try await websocket.receive()
+print("Received: \(message)")
+
+await client.dispose()
+```
+
+## Calling from Backend
+
+Use the same client in server-side Swift (Vapor, Hummingbird, etc.):
+
+```swift
+import RivetKitClient
+
+let config = try ClientConfig(endpoint: "http://localhost:6420")
+let client = RivetKitClient(config: config)
+
+let handle = client.getOrCreate("counter", ["server-counter"])
+let count: Int = try await handle.action("increment", 1, as: Int.self)
+print("Count: \(count)")
+
+await client.dispose()
+```
+
+## Error Handling
+
+```swift
+import RivetKitClient
+
+let config = try ClientConfig(endpoint: "http://localhost:6420")
+let client = RivetKitClient(config: config)
+
+do {
+    _ = try await client.getOrCreate("user", ["user-123"])
+        .action("updateUsername", "ab", as: String.self)
+} catch let error as ActorError {
+    print("Error code: \(error.code)")
+    print("Metadata: \(String(describing: error.metadata))")
+}
+
+await client.dispose()
+```
+
+If you need an untyped response, you can decode to `JSONValue`:
+
+```swift
+import RivetKitClient
+
+let config = try ClientConfig(endpoint: "http://localhost:6420")
+let client = RivetKitClient(config: config)
+let handle = client.getOrCreate("data", ["raw"])
+
+let value: JSONValue = try await handle.action("getRawPayload")
+print("Raw value: \(value)")
+
+await client.dispose()
+```
+
+## Concepts
+
+### Keys
+
+Keys uniquely identify actor instances. Use compound keys (arrays) for hierarchical addressing:
+
+```swift
+import RivetKitClient
+
+let config = try ClientConfig(endpoint: "http://localhost:6420")
+let client = RivetKitClient(config: config)
+
+// Use compound keys for hierarchical addressing
+let room = client.getOrCreate("chatRoom", ["org-acme", "general"])
+let actorId = try await room.resolve()
+print("Actor ID: \(actorId)")
+
+await client.dispose()
+```
+
+Don't build keys with string interpolation like `"org:\(userId)"` when `userId` contains user data. Use arrays instead to prevent key injection attacks.
+
+### Environment Variables
+
+`ClientConfig` reads optional values from environment variables:
+
+- `RIVET_NAMESPACE` - Namespace (can also be in endpoint URL)
+- `RIVET_TOKEN` - Authentication token (can also be in endpoint URL)
+- `RIVET_RUNNER` - Runner name (defaults to `"default"`)
+
+The `endpoint` parameter is always required. There is no default endpoint.
+
+### Endpoint Format
+
+Endpoints support URL auth syntax:
+
+```
+https://namespace:token@api.rivet.dev
+```
+
+You can also pass the endpoint without auth and provide `RIVET_NAMESPACE` and `RIVET_TOKEN` separately. For serverless deployments, set the endpoint to your app's `/api/rivet` URL. See [Endpoints](/actors/docs/general/endpoints#url-auth-syntax) for details.
+
+## API Reference
+
+### Client
+- `RivetKitClient(config:)` - Create a client with a config
+- `ClientConfig` - Configure endpoint, namespace, and token
+- `client.get()` / `getOrCreate()` / `getForId()` / `create()` - Get actor handles
+- `client.dispose()` - Dispose the client and all connections
+
+### ActorHandle
+- `handle.action(name, args..., as:)` - Stateless action call
+- `handle.connect()` - Create a stateful connection
+- `handle.resolve()` - Get the actor ID
+- `handle.getGatewayUrl()` - Get the raw gateway URL
+- `handle.fetch(path, request:)` - Raw HTTP request
+- `handle.websocket(path:)` - Raw WebSocket connection
+
+### ActorConnection
+- `conn.action(name, args..., as:)` - Action call over WebSocket
+- `conn.events(name, as:)` - AsyncStream of typed events
+- `conn.statusChanges()` - AsyncStream of status changes
+- `conn.errors()` - AsyncStream of connection errors
+- `conn.opens()` - AsyncStream that yields on connection open
+- `conn.closes()` - AsyncStream that yields on connection close
+- `conn.currentStatus` - Current connection status
+- `conn.dispose()` - Close the connection
+
+### Types
+- `ActorConnStatus` - Connection status enum (`.idle`, `.connecting`, `.connected`, `.disconnected`, `.disposed`)
+- `ActorError` - Typed actor errors with `group`, `code`, `message`, `metadata`
+- `JSONValue` - Raw JSON value for untyped responses

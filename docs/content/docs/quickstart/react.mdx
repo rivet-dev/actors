@@ -1,0 +1,115 @@
+---
+title: "React Quickstart"
+description: "Build realtime React applications with Rivet Actors"
+skill: true
+---
+
+import { Hosting } from "@/components/docs/Hosting";
+import { ConfigurationOptions } from "@/components/docs/ConfigurationOptions";
+
+
+
+## Steps
+
+<Steps>
+<Step title="Add Rivet Skill to Coding Agent (Optional)">
+
+If you're using an AI coding assistant (like Claude Code, Cursor, Windsurf, etc.), add Rivet skills for enhanced development assistance:
+
+```sh
+npx skills add rivet-dev/skills
+```
+
+</Step>
+
+<Step title="Install Dependencies">
+
+```sh
+npm install rivetkit @rivetkit/react
+```
+
+</Step>
+
+<Step title="Create Backend Actor and Start Server">
+
+Create your actor registry on the backend and start the server:
+
+<CodeSnippet file="examples/docs/actors-quickstart-react/index.ts" title="backend/index.ts" />
+
+</Step>
+
+<Step title="Create React Frontend">
+
+Set up your React application:
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-quickstart-react/Counter.tsx" title="Counter.tsx" />
+</CodeGroup>
+
+For detailed information about the React client API, see the [React Client API Reference](/actors/docs/clients/react).
+
+</Step>
+
+<Step title="Setup Vite Configuration">
+
+Configure Vite for development:
+
+```ts vite.config.ts @nocheck
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: 5173,
+  },
+})
+```
+
+</Step>
+
+<Step title="Run Your Application">
+
+Start both the backend and frontend:
+
+**Terminal 1**: Start the backend
+
+<CodeGroup>
+
+```sh Node.js
+npx tsx --watch backend/index.ts
+```
+
+```sh Bun
+bun --watch backend/index.ts
+```
+
+```sh Deno
+deno run --allow-net --allow-read --allow-env --watch backend/index.ts
+```
+
+</CodeGroup>
+
+**Terminal 2**: Start the frontend
+
+```sh Frontend
+npx vite
+```
+
+Open `http://localhost:5173` in your browser. Try opening multiple tabs to see realtime sync in action.
+
+Visit [http://localhost:6420](http://localhost:6420) in your browser (or point your AI agent at it) to open the Rivet developer tools and inspect your actors live.
+
+</Step>
+
+<Step title="Deploy">
+
+<Hosting />
+
+</Step>
+
+</Steps>
+
+## Configuration Options
+
+<ConfigurationOptions />

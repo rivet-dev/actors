@@ -1,0 +1,151 @@
+---
+title: "Troubleshooting"
+description: "Common issues with Rivet Actors and how to resolve them."
+skill: true
+---
+
+## Common Steps
+
+Before diving into specific errors, try these general troubleshooting steps:
+
+- Check your server logs for `level=ERROR` or `level=WARN` messages.
+- Check if any of your backend processes have crashed or restarted unexpectedly.
+- If you need more diagnostics, set `RIVET_LOG_LEVEL=DEBUG` for verbose logging. See [Logging](/actors/docs/general/logging) for more options.
+
+## Reporting Issues
+
+If you're stuck, reach out on [Discord](https://rivet.dev/discord) or file an issue on [GitHub](https://github.com/rivet-dev/rivet/issues).
+
+When reporting, please include:
+
+- **Symptoms**
+  - Whether this is happening in local dev, deployed, or both
+  - The error you're seeing (screenshot or error message)
+  - Relevant source code related to the issue
+- **What you've tried to solve it**
+- **Environment**
+  - RivetKit version
+  - Runtime (Node, Bun, etc.) including version
+  - If applicable, provider in use (e.g. Vercel, Railway, Cloudflare)
+  - If applicable, HTTP router in use (e.g. Hono, Express, Elysia)
+
+## Actor status is crashed
+
+See [Actor Statuses](/actors/docs/statuses) for more about this status.
+
+The dashboard will show the specific failure reason. Common errors include:
+
+### `crashed`
+
+The actor's `run` handler threw an unhandled exception or exited unexpectedly. Check your actor logs for the error message and stack trace.
+
+### `no_capacity`
+
+No server was available to run your actor. The cause depends on your [runtime mode](/actors/docs/general/runtime-modes):
+
+**Serverless**:
+
+- Your provider configuration does not have the region enabled that the actor is trying to run in. This is uncommon and usually only happens if an actor was created and then the provider config was updated to remove the region.
+- There is an issue connecting to your backend. If the control plane is hitting `/api/rivet/start` and failing, check your backend logs for errors.
+
+**Runners**:
+
+- You don't have enough runners online. Check your runner list in the dashboard to verify runners are visible and connected.
+- Your runners are full. Each runner has a limited number of actor slots (configured via `RIVET_TOTAL_SLOTS`, default: 100,000). Check the dashboard to see if your runners have available capacity and scale up if needed.
+
+### `runner_no_response`
+
+The server running your actor did not respond in time. This can happen if your server is overloaded or experienced a network issue. Try restarting your server or checking its health.
+
+### `runner_connection_lost`
+
+The server running your actor lost its connection to Rivet. This is usually caused by a network interruption or your server restarting.
+
+### `runner_draining_timeout`
+
+Your server is shutting down and the actor did not finish in time. Consider handling graceful shutdown in your actor or increasing your shutdown timeout.
+
+### `concurrent_actor_limit_reached`
+
+The actor could not be allocated because the concurrent actor limit was reached. Reduce the number of concurrently running actors or increase your limit.
+
+### `no_envoys`
+
+No server was available to run your actor. This is equivalent to `no_capacity` on the current allocation path. See the `no_capacity` section above for the causes and fixes for your [runtime mode](/actors/docs/general/runtime-modes).
+
+### `envoy_no_response`
+
+The server running your actor did not respond in time. This can happen if your server is overloaded or experienced a network issue. Try restarting your server or checking its health.
+
+### `envoy_connection_lost`
+
+The server running your actor lost its connection to Rivet. This is usually caused by a network interruption or your server restarting.
+
+### `serverless_http_error`
+
+Your serverless endpoint returned an HTTP error. Common causes:
+
+- Your backend is returning an error before the actor can start. Check your server logs.
+- Your endpoint is behind authentication or a firewall that is blocking Rivet's requests.
+- Your serverless function crashed during startup. Check your platform's function logs (e.g. Vercel, Cloudflare).
+
+### `serverless_connection_error`
+
+Rivet was unable to connect to your serverless endpoint. Check that:
+
+- Your backend is deployed and the endpoint URL is correct.
+- Your server is publicly reachable from the internet.
+- There are no DNS or firewall issues blocking the connection.
+
+### `serverless_stream_ended_early`
+
+The connection to your serverless endpoint was terminated before the actor finished. This usually means your serverless function hit its execution time limit. Ensure that your Rivet provider's request lifespan is configured to match the max duration of your serverless platform.
+
+### `serverless_invalid_sse_payload`
+
+Rivet received an unexpected response from your serverless endpoint. This typically means something is intercepting or modifying the request before it reaches your RivetKit handler. Check that:
+
+- Your server routes requests to `registry.start()`, `registry.serve()`, or `registry.handler()` correctly.
+- No middleware is modifying the request or response body.
+
+### `internal_error`
+
+An unexpected error occurred within Rivet. If this persists, please [contact support](https://rivet.dev/actors/docs).
+
+## Actors crashing immediately on startup
+
+If your actors are being created and then immediately destroyed or crashing, there is likely an error being thrown in your `createState` or `onCreate` lifecycle hooks. These hooks run during actor initialization before the actor is marked as ready.
+
+Check your server logs for the error message and stack trace. Common causes include:
+
+- An exception thrown in `createState` (e.g. invalid input, failed validation, or a runtime error when computing initial state)
+- An exception thrown in `onCreate` (e.g. a failing external API call, missing configuration, or invalid setup logic)
+
+Fix the error in the relevant lifecycle hook and redeploy.
+
+## Actors not upgrading to new code
+
+If your actors are still running old code after deploying a new version, your [versioning](/actors/docs/versions) is likely not configured correctly.
+
+Without versioning, Rivet has no way to distinguish old deployments from new ones. The behavior depends on your [runtime mode](/actors/docs/general/runtime-modes):
+
+- **Serverless**: Old requests may still be open from the previous deployment, so actors continue running on the old version's connection until those requests close.
+- **Runners**: The old runner container is still running and will continue accepting new actors. New actors may be scheduled on the old runner instead of the new one.
+
+To fix this, configure a version number in your [registry configuration](/actors/docs/general/registry-configuration). When a new version is deployed, Rivet will allocate new actors to the latest version and optionally drain old actors to migrate them.
+
+## Actor status is pending
+
+See [Actor Statuses](/actors/docs/statuses) for more about this status.
+
+An actor stays in "pending" status when Rivet is waiting for a server to accept it. The cause depends on your [runtime mode](/actors/docs/general/runtime-modes):
+
+**Serverless**:
+
+- A region may have been removed from your provider configuration while an existing actor still lives in that region. The actor has no available server to start on because no provider serves that region anymore. Re-add the region to your provider config or destroy the affected actors.
+- Check your backend logs for errors on the `/api/rivet/start` endpoint.
+
+**Runners**:
+
+- You don't have enough runners online. Check the dashboard to verify your runners are connected.
+- Your runners may be at capacity. Check the dashboard to see if runners have available actor slots and scale up if needed.

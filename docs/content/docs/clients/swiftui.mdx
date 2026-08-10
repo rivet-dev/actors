@@ -1,0 +1,358 @@
+---
+title: "SwiftUI"
+description: "Build SwiftUI apps with Rivet Actors."
+skill: true
+---
+
+## Install
+
+Add the Swift package dependency and import `RivetKitSwiftUI`:
+
+```swift
+// Package.swift
+dependencies: [
+    .package(url: "https://github.com/rivet-dev/rivetkit-swift", from: "2.0.0")
+]
+
+targets: [
+    .target(
+        name: "MyApp",
+        dependencies: [
+            .product(name: "RivetKitSwiftUI", package: "rivetkit-swift")
+        ]
+    )
+]
+```
+
+`RivetKitSwiftUI` re-exports `RivetKitClient` and `SwiftUI`, so a single import covers both.
+
+## Minimal Client
+
+<CodeGroup workspace>
+```swift HelloWorldApp.swift
+import RivetKitSwiftUI
+import SwiftUI
+
+@main
+struct HelloWorldApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .rivetKit(endpoint: "https://my-namespace:pk_...@api.rivet.dev")
+        }
+    }
+}
+```
+
+```swift ContentView.swift
+import RivetKitSwiftUI
+import SwiftUI
+
+struct ContentView: View {
+    @Actor("counter", key: ["my-counter"]) private var counter
+    @State private var count = 0
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("\(count)")
+                .font(.system(size: 64, weight: .bold, design: .rounded))
+
+            Button("Increment") {
+                counter.send("increment", 1)
+            }
+            .disabled(!counter.isConnected)
+        }
+        .task {
+            count = (try? await counter.action("getCount")) ?? 0
+        }
+        .onActorEvent(counter, "newCount") { (newCount: Int) in
+            count = newCount
+        }
+    }
+}
+```
+</CodeGroup>
+
+## Actor Options
+
+The `@Actor` property wrapper always uses get-or-create semantics and accepts:
+
+- `name` (required)
+- `key` as `String` or `[String]` (required)
+- `params` (optional connection parameters)
+- `createWithInput` (optional creation input)
+- `createInRegion` (optional creation hint)
+- `enabled` (toggle connection lifecycle)
+
+```swift
+import RivetKitSwiftUI
+import SwiftUI
+
+struct ConnParams: Encodable {
+    let authToken: String
+}
+
+struct ChatView: View {
+    @Actor(
+        "chatRoom",
+        key: ["general"],
+        params: ConnParams(authToken: "jwt-token"),
+        enabled: true
+    ) private var chat
+
+    var body: some View {
+        Text("Chat: \(chat.connStatus.rawValue)")
+    }
+}
+```
+
+## Actions
+
+```swift
+import RivetKitSwiftUI
+import SwiftUI
+
+struct CounterView: View {
+    @Actor("counter", key: ["my-counter"]) private var counter
+    @State private var count = 0
+    @State private var name = ""
+
+    var body: some View {
+        VStack {
+            Text("Count: \(count)")
+            Text("Name: \(name)")
+
+            Button("Fetch") {
+                Task {
+                    count = try await counter.action("getCount")
+                    name = try await counter.action("rename", "new-name")
+                }
+            }
+
+            Button("Increment") {
+                counter.send("increment", 1)
+            }
+        }
+    }
+}
+```
+
+## Subscribing to Events
+
+```swift
+import RivetKitSwiftUI
+import SwiftUI
+
+struct GameView: View {
+    @Actor("game", key: ["game-1"]) private var game
+    @State private var count = 0
+    @State private var isGameOver = false
+
+    var body: some View {
+        VStack {
+            Text("Count: \(count)")
+            if isGameOver {
+                Text("Game Over!")
+            }
+        }
+        .onActorEvent(game, "newCount") { (newCount: Int) in
+            count = newCount
+        }
+        .onActorEvent(game, "gameOver") {
+            isGameOver = true
+        }
+    }
+}
+```
+
+## Async Event Streams
+
+```swift
+import RivetKitSwiftUI
+import SwiftUI
+
+struct ChatView: View {
+    @Actor("chatRoom", key: ["general"]) private var chat
+    @State private var messages: [String] = []
+
+    var body: some View {
+        List(messages, id: \.self) { message in
+            Text(message)
+        }
+        .task {
+            for await message in chat.events("message", as: String.self) {
+                messages.append(message)
+            }
+        }
+    }
+}
+```
+
+## Connection Status
+
+```swift
+import RivetKitSwiftUI
+import SwiftUI
+
+struct StatusView: View {
+    @Actor("counter", key: ["my-counter"]) private var counter
+    @State private var count = 0
+
+    var body: some View {
+        VStack {
+            Text("Status: \(counter.connStatus.rawValue)")
+
+            if counter.connStatus == .connected {
+                Text("Connected!")
+                    .foregroundStyle(.green)
+            }
+
+            Button("Fetch via Handle") {
+                Task {
+                    if let handle = counter.handle {
+                        count = try await handle.action("getCount", as: Int.self)
+                    }
+                }
+            }
+            .disabled(!counter.isConnected)
+        }
+    }
+}
+```
+
+## Error Handling
+
+```swift
+import RivetKitSwiftUI
+import SwiftUI
+
+struct UserView: View {
+    @Actor("user", key: ["user-123"]) private var user
+    @State private var errorMessage: String?
+    @State private var username = ""
+
+    var body: some View {
+        VStack {
+            TextField("Username", text: $username)
+
+            Button("Update Username") {
+                Task {
+                    do {
+                        let _: String = try await user.action("updateUsername", username)
+                    } catch let error as ActorError {
+                        errorMessage = "\(error.code): \(String(describing: error.metadata))"
+                    }
+                }
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
+            }
+        }
+        .onActorError(user) { error in
+            errorMessage = "\(error.group).\(error.code): \(error.message)"
+        }
+    }
+}
+```
+
+## Concepts
+
+### Keys
+
+Keys uniquely identify actor instances. Use compound keys (arrays) for hierarchical addressing:
+
+```swift
+import RivetKitSwiftUI
+import SwiftUI
+
+struct OrgChatView: View {
+    @Actor("chatRoom", key: ["org-acme", "general"]) private var room
+
+    var body: some View {
+        Text("Room: \(room.connStatus.rawValue)")
+    }
+}
+```
+
+Don't build keys with string interpolation like `"org:\(userId)"` when `userId` contains user data. Use arrays instead to prevent key injection attacks.
+
+### Environment Configuration
+
+Call `.rivetKit(endpoint:)` or `.rivetKit(client:)` once at the root of your view tree:
+
+```swift
+// With endpoint string (recommended for most apps)
+@main
+struct MyApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .rivetKit(endpoint: "https://my-namespace:pk_...@api.rivet.dev")
+        }
+    }
+}
+
+// With custom client (for advanced configuration)
+@main
+struct MyApp: App {
+    private let client = RivetKitClient(
+        config: try! ClientConfig(endpoint: "https://api.rivet.dev", token: "pk_...")
+    )
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .rivetKit(client: client)
+        }
+    }
+}
+```
+
+When using `.rivetKit(endpoint:)`, the client is created once and cached per endpoint. When using `.rivetKit(client:)`, store the client as a property on `App` (not inside `body`) since SwiftUI can call `body` multiple times.
+
+### Environment Variables
+
+`ClientConfig` reads optional values from environment variables:
+
+- `RIVET_NAMESPACE` - Namespace (can also be in endpoint URL)
+- `RIVET_TOKEN` - Authentication token (can also be in endpoint URL)
+- `RIVET_RUNNER` - Runner name (defaults to `"default"`)
+
+The endpoint is always required. There is no default endpoint.
+
+### Endpoint Format
+
+Endpoints support URL auth syntax:
+
+```
+https://namespace:token@api.rivet.dev
+```
+
+You can also pass the endpoint without auth and provide `RIVET_NAMESPACE` and `RIVET_TOKEN` separately. For serverless deployments, set the endpoint to your app's `/api/rivet` URL. See [Endpoints](/actors/docs/general/endpoints#url-auth-syntax) for details.
+
+## API Reference
+
+### Property Wrapper
+- `@Actor(name, key:, params:, createWithInput:, createInRegion:, enabled:)` - SwiftUI property wrapper for actor connections
+
+### View Modifiers
+- `.rivetKit(endpoint:)` - Configure client with an endpoint URL (creates cached client)
+- `.rivetKit(client:)` - Configure client with a custom instance
+- `.onActorEvent(actor, event) { ... }` - Subscribe to actor events (supports 0–5 typed args)
+- `.onActorError(actor) { error in ... }` - Handle actor errors
+
+### ActorObservable
+- `actor.action(name, args..., as:)` - Async action call
+- `actor.send(name, args...)` - Fire-and-forget action
+- `actor.events(name, as:)` - AsyncStream of typed events
+- `actor.connStatus` - Current connection status
+- `actor.isConnected` - Whether connected
+- `actor.handle` - Underlying `ActorHandle` (optional)
+- `actor.connection` - Underlying `ActorConnection` (optional)
+- `actor.error` - Most recent error (optional)
+
+### Types
+- `ActorConnStatus` - Connection status enum (`.idle`, `.connecting`, `.connected`, `.disconnected`, `.disposed`)
+- `ActorError` - Typed actor errors with `group`, `code`, `message`, `metadata`

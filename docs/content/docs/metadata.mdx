@@ -1,0 +1,47 @@
+---
+title: "Metadata"
+description: "Metadata provides information about the currently running actor."
+skill: true
+---
+
+## Actor ID
+
+Get the unique instance ID of the actor:
+
+<CodeSnippet file="examples/docs/actors-metadata/actor-id.ts" />
+
+## Actor Name
+
+Get the actor type name:
+
+<CodeSnippet file="examples/docs/actors-metadata/actor-name.ts" />
+
+This is useful when you need to know which actor type is running, especially if you have generic utility functions that are shared between different actor implementations.
+
+## Actor Key
+
+Get the actor key used to identify this actor instance:
+
+<CodeSnippet file="examples/docs/actors-metadata/actor-key.ts" />
+
+The key is used to route requests to the correct actor instance and can include parameters passed when creating the actor.
+
+Learn more about using keys for actor addressing and configuration in the [keys documentation](/actors/docs/keys).
+
+## Region
+
+Region can be accessed from the context object via `c.region`.
+
+<CodeSnippet file="examples/docs/actors-metadata/region.ts" />
+
+<Warning>`c.region` is only supported on Rivet at the moment.</Warning>
+
+## Example Usage
+
+<CodeGroup>
+
+<CodeSnippet file="examples/docs/actors-metadata/index.ts" title="index.ts" />
+
+<CodeSnippet file="examples/docs/actors-metadata/client.ts" title="client.ts" />
+
+</CodeGroup>

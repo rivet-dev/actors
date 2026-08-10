@@ -1,0 +1,146 @@
+---
+title: "Next.js Quickstart"
+description: "Get started with Rivet Actors in Next.js"
+skill: true
+---
+
+import { Hosting } from "@/components/docs/Hosting";
+import { InstallPackage } from "@/components/docs/InstallPackage";
+
+
+
+<Steps>
+<Step title="Add Rivet Skill to Coding Agent (Optional)">
+
+If you're using an AI coding assistant (like Claude Code, Cursor, Windsurf, etc.), add Rivet skills for enhanced development assistance:
+
+```sh
+npx skills add rivet-dev/skills
+```
+
+</Step>
+
+<Step title="Create a Next.js App">
+
+```sh
+npx create-next-app@latest my-app
+cd my-app
+```
+
+</Step>
+
+<Step title="Install RivetKit">
+
+<InstallPackage name="rivetkit @rivetkit/next-js" />
+
+</Step>
+
+<Step title="Create an Actor">
+
+Create a file at `src/rivet/registry.ts` with a simple counter actor:
+
+<CodeSnippet file="examples/docs/actors-quickstart-next-js/registry.ts" title="src/rivet/registry.ts" />
+
+</Step>
+
+<Step title="Setup Rivet API route">
+
+Create a file at `src/app/api/rivet/[...all]/route.ts` to setup the API routes:
+
+```ts src/app/api/rivet/[...all]/route.ts @nocheck
+import { toNextHandler } from "@rivetkit/next-js";
+import { registry } from "@/rivet/registry";
+
+export const maxDuration = 300;
+
+export const { GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS } = toNextHandler(registry);
+```
+
+</Step>
+
+<Step title="Use the Actor in a component">
+
+Create a Counter component and add it to your page:
+
+<CodeGroup>
+```tsx src/components/Counter.tsx @nocheck
+"use client";
+
+import { createRivetKit } from "@rivetkit/next-js/client";
+import type { registry } from "@/rivet/registry";
+import { useState } from "react";
+
+export const { useActor } = createRivetKit<typeof registry>({
+	endpoint:
+		process.env.NEXT_PUBLIC_RIVET_ENDPOINT ?? "http://localhost:3000/api/rivet",
+	namespace: process.env.NEXT_PUBLIC_RIVET_NAMESPACE,
+	token: process.env.NEXT_PUBLIC_RIVET_TOKEN,
+});
+
+export function Counter() {
+	const [count, setCount] = useState(0);
+
+	// Get or create a counter actor for the key "my-counter"
+	const counter = useActor({
+		name: "counter",
+		key: ["my-counter"]
+	});
+
+	// Listen to realtime events
+	counter.useEvent("newCount", (x: number) => setCount(x));
+
+	const increment = async () => {
+		// Call actions
+		await counter.connection?.increment(1);
+	};
+
+	return (
+		<div>
+			<p>Count: {count}</p>
+			<button onClick={increment}>Increment</button>
+		</div>
+	);
+}
+```
+
+```tsx src/app/page.tsx @nocheck
+import { Counter } from "@/components/Counter";
+
+export default function Home() {
+	return (
+		<main>
+			<h1>My App</h1>
+			<Counter />
+		</main>
+	);
+}
+```
+</CodeGroup>
+
+For information about the Next.js client API, see the [React Client API Reference](/actors/docs/clients/react).
+
+</Step>
+
+<Step title="Run Locally">
+
+Start the Next.js dev server. Rivet auto-starts a local engine alongside it:
+
+```sh
+npm run dev
+```
+
+Open `http://localhost:3000` in your browser to use the app.
+
+Visit [http://localhost:6420](http://localhost:6420) in your browser (or point your AI agent at it) to open the Rivet developer tools and inspect your actors live.
+
+</Step>
+
+<Step title="Deploy to Vercel">
+
+See the [Vercel deployment guide](/actors/self-host/control-plane) for detailed instructions on deploying your Rivet app to Vercel.
+
+</Step>
+
+</Steps>
+
+

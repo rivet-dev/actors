@@ -1,0 +1,437 @@
+{
+	"docs": [
+		{
+			"title": "General",
+			"pages": [
+				{
+					"title": "Introduction",
+					"href": "/actors/docs",
+					"icon": "faSquareInfo"
+				},
+				{
+					"title": "Quickstart",
+					"icon": "faFastForward",
+					"collapsible": true,
+					"pages": [
+						{
+							"title": "Node.js & Bun",
+							"href": "/actors/docs/quickstart/backend",
+							"icon": "faNodeJs"
+						},
+						{
+							"title": "React",
+							"href": "/actors/docs/quickstart/react",
+							"icon": "faReact"
+						},
+						{
+							"title": "Next.js",
+							"href": "/actors/docs/quickstart/next-js",
+							"icon": "faNextjs"
+						},
+						{
+							"title": "Rust",
+							"href": "/actors/docs/quickstart/rust",
+							"icon": "faRust",
+							"badge": "Beta"
+						},
+						{
+							"title": "Effect.ts",
+							"href": "/actors/docs/quickstart/effect",
+							"icon": "faLayerGroup",
+							"badge": "Beta"
+						},
+						{
+							"title": "Cloudflare Workers",
+							"href": "/actors/docs/quickstart/cloudflare",
+							"icon": "faCloudflare"
+						},
+						{
+							"title": "Supabase Functions",
+							"href": "/actors/docs/quickstart/supabase",
+							"icon": "faSupabase"
+						}
+					]
+				}
+			]
+		},
+		{
+			"title": "Features",
+			"pages": [
+				{
+					"title": "In-Memory State",
+					"href": "/actors/docs/state",
+					"icon": "faFloppyDisk"
+				},
+				{
+					"title": "Actions",
+					"href": "/actors/docs/actions",
+					"icon": "faBolt"
+				},
+				{
+					"title": "Realtime",
+					"href": "/actors/docs/events",
+					"icon": "faTowerBroadcast"
+				},
+				{
+					"title": "Queues",
+					"href": "/actors/docs/queues",
+					"icon": "faMailbox"
+				},
+				{
+					"title": "Schedule & Cron",
+					"href": "/actors/docs/schedule",
+					"icon": "faClock"
+				},
+				{
+					"title": "SQLite",
+					"href": "/actors/docs/sqlite",
+					"icon": "faSqlite"
+				}
+			]
+		},
+		{
+			"title": "Concepts",
+			"pages": [
+				{
+					"title": "Crash Course",
+					"href": "/actors/docs/crash-course"
+				},
+				{
+					"title": "Design Patterns",
+					"href": "/actors/docs/design-patterns"
+				},
+				{
+					"title": "Communication & Networking",
+					"collapsible": true,
+					"pages": [
+						{
+							"title": "Authentication",
+							"href": "/actors/docs/authentication"
+						},
+						{
+							"title": "Access Control",
+							"href": "/actors/docs/access-control"
+						},
+						{
+							"title": "Connections",
+							"href": "/actors/docs/connections"
+						},
+						{
+							"title": "Actor-Actor Communication",
+							"href": "/actors/docs/communicating-between-actors"
+						},
+						{
+							"title": "Low-Level WebSocket Handler",
+							"href": "/actors/docs/websocket-handler"
+						},
+						{
+							"title": "Low-Level HTTP Handler",
+							"href": "/actors/docs/request-handler"
+						},
+						{
+							"title": "Vanilla HTTP API",
+							"href": "/actors/docs/http-api"
+						}
+					]
+				},
+				{
+					"title": "Lifecycle & Config",
+					"collapsible": true,
+					"pages": [
+						{
+							"title": "Lifecycle",
+							"href": "/actors/docs/lifecycle"
+						},
+						{
+							"title": "Input Parameters",
+							"href": "/actors/docs/input"
+						},
+						{
+							"title": "Keys",
+							"href": "/actors/docs/keys"
+						},
+						{
+							"title": "Metadata",
+							"href": "/actors/docs/metadata"
+						},
+						{
+							"title": "Destroying",
+							"href": "/actors/docs/destroy"
+						},
+						{
+							"title": "Statuses",
+							"href": "/actors/docs/statuses"
+						}
+					]
+				},
+				{
+					"title": "More",
+					"collapsible": true,
+					"pages": [
+						{
+							"title": "SQLite + Drizzle",
+							"href": "/actors/docs/sqlite-drizzle"
+						},
+						{
+							"title": "Logging",
+							"href": "/actors/docs/general/logging"
+						},
+						{
+							"title": "Errors",
+							"href": "/actors/docs/errors"
+						},
+						{
+							"title": "Testing",
+							"href": "/actors/docs/testing"
+						},
+						{
+							"title": "Debugging",
+							"href": "/actors/docs/debugging"
+						},
+						{
+							"title": "Types",
+							"href": "/actors/docs/types"
+						},
+						{
+							"title": "CORS",
+							"href": "/actors/docs/general/cors"
+						},
+						{
+							"title": "Versions & Upgrades",
+							"href": "/actors/docs/versions"
+						},
+						{
+							"title": "Icons & Names",
+							"href": "/actors/docs/appearance"
+						},
+						{
+							"title": "Custom Inspector Tabs",
+							"href": "/actors/docs/inspector-tabs"
+						},
+						{
+							"title": "Actor Runtime Socket",
+							"href": "/actors/docs/actor-runtime-socket",
+							"badge": "Beta"
+						},
+						{
+							"title": "Limits",
+							"href": "/actors/docs/limits"
+						},
+						{
+							"title": "Regions & Multi-Region",
+							"href": "/actors/docs/general/edge"
+						}
+					]
+				}
+			]
+		},
+		{
+			"title": "Clients",
+			"pages": [
+				{
+					"title": "Overview",
+					"href": "/actors/docs/clients"
+				},
+				{
+					"title": "Languages & Frameworks",
+					"collapsible": true,
+					"pages": [
+						{
+							"title": "JavaScript",
+							"href": "/actors/docs/clients/javascript",
+							"icon": "faNodeJs"
+						},
+						{
+							"title": "React",
+							"href": "/actors/docs/clients/react",
+							"icon": "faReact"
+						},
+						{
+							"title": "Rust",
+							"href": "/actors/docs/clients/rust",
+							"icon": "faRust"
+						},
+						{
+							"title": "Swift",
+							"href": "/actors/docs/clients/swift",
+							"icon": "faSwift"
+						},
+						{
+							"title": "SwiftUI",
+							"href": "/actors/docs/clients/swiftui",
+							"icon": "faSwift"
+						}
+					]
+				}
+			]
+		},
+		{
+			"title": "Reference",
+			"pages": [
+				{
+					"title": "Troubleshooting",
+					"href": "/actors/docs/troubleshooting"
+				},
+				{
+					"title": "Production Checklist",
+					"href": "/actors/docs/general/production-checklist"
+				},
+				{
+					"title": "CLI",
+					"href": "/actors/docs/cli"
+				},
+				{
+					"title": "Configuration",
+					"collapsible": true,
+					"pages": [
+						{
+							"title": "Runtime Modes",
+							"href": "/actors/docs/general/runtime-modes"
+						},
+						{
+							"title": "WASM vs Native SDK",
+							"href": "/actors/docs/general/wasm-vs-native-sdk"
+						},
+						{
+							"title": "Registry Configuration",
+							"href": "/actors/docs/general/registry-configuration"
+						},
+						{
+							"title": "Actor Configuration",
+							"href": "/actors/docs/general/actor-configuration"
+						},
+						{
+							"title": "Environment Variables",
+							"href": "/actors/docs/general/environment-variables"
+						},
+						{
+							"title": "HTTP Server",
+							"href": "/actors/docs/general/http-server"
+						},
+						{
+							"title": "Endpoints",
+							"href": "/actors/docs/general/endpoints"
+						},
+						{
+							"title": "Pool Configuration",
+							"href": "/actors/docs/general/pool-configuration"
+						},
+						{
+							"title": "Container Runner",
+							"href": "/actors/docs/container-runner"
+						}
+					]
+				},
+				{
+					"title": "API Reference",
+					"collapsible": true,
+					"pages": [
+						{
+							"title": "OpenAPI",
+							"href": "https://github.com/rivet-dev/rivet/tree/main/rivetkit-openapi",
+							"external": true
+						},
+						{
+							"title": "AsyncAPI",
+							"href": "https://github.com/rivet-dev/rivet/tree/main/rivetkit-asyncapi",
+							"external": true
+						}
+					]
+				},
+				{
+					"title": "AI Integration",
+					"collapsible": true,
+					"pages": [
+						{
+							"title": "Skill File",
+							"href": "/actors/docs/general/skill"
+						}
+					]
+				}
+			]
+		}
+	],
+	"learn": [
+		{
+			"title": "General",
+			"pages": [
+				{
+					"title": "Overview",
+					"href": "/actors/learn",
+					"icon": "faSquareInfo"
+				}
+			]
+		},
+		{
+			"title": "Architecture",
+			"pages": [
+				{
+					"title": "A Radically Simpler Architecture",
+					"href": "/actors/learn/a-radically-simpler-architecture"
+				}
+			]
+		},
+		{
+			"title": "Guides",
+			"pages": [
+				{
+					"title": "AI Agent",
+					"href": "/actors/learn/ai-agent"
+				},
+				{
+					"title": "Chat Room",
+					"href": "/actors/learn/chat-room"
+				},
+				{
+					"title": "Collaborative Text Editor",
+					"href": "/actors/learn/collaborative-text-editor"
+				},
+				{
+					"title": "Cron Jobs and Scheduled Tasks",
+					"href": "/actors/learn/cron-jobs"
+				},
+				{
+					"title": "Database per Tenant",
+					"href": "/actors/learn/per-tenant-database"
+				},
+				{
+					"title": "Live Cursors and Presence",
+					"href": "/actors/learn/live-cursors"
+				},
+				{
+					"title": "Multiplayer Game",
+					"href": "/actors/learn/multiplayer-game"
+				}
+			]
+		}
+	],
+	"integrations": [
+		{
+			"title": "General",
+			"pages": [
+				{
+					"title": "Overview",
+					"href": "/actors/integrations",
+					"icon": "faSquareInfo"
+				}
+			]
+		},
+		{
+			"title": "Integrations",
+			"pages": [
+				{
+					"title": "Flue",
+					"href": "/actors/integrations/flue"
+				},
+				{
+					"title": "Vercel Eve",
+					"href": "/actors/integrations/vercel-eve"
+				},
+				{
+					"title": "Vercel Workflows (Beta)",
+					"href": "/actors/integrations/vercel-workflows"
+				}
+			]
+		}
+	]
+}

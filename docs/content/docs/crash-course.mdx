@@ -1,0 +1,298 @@
+---
+title: "Crash Course"
+description: "Learn the core concepts of Rivet Actors: state, actions, realtime events, and clients."
+skill: false
+---
+
+{/* SKILL_OVERVIEW_START */}
+
+## Features
+
+- **Long-Lived, Stateful Compute**: Each unit of compute is like a tiny server that remembers things between requests – no need to re-fetch data from a database or worry about timeouts. Like AWS Lambda, but with memory and no timeouts.
+- **Blazing-Fast Reads & Writes**: State is stored on the same machine as your compute, so reads and writes are ultra-fast. No database round trips, no latency spikes. State is persisted to Rivet for long term storage, so it survives server restarts.
+- **Realtime**: Update state and broadcast changes in realtime with WebSockets. No external pub/sub systems, no polling – just built-in low-latency events.
+- **Infinitely Scalable**: Automatically scale from zero to millions of concurrent actors. Pay only for what you use with instant scaling and no cold starts.
+- **Fault Tolerant**: Built-in error handling and recovery. Actors automatically restart on failure while preserving state integrity and continuing operations.
+
+## When to Use Rivet Actors
+
+- **AI agents & sandboxes**: multi-step toolchains, conversation memory, sandbox orchestration.
+- **Multiplayer or collaborative apps**: CRDT docs, shared cursors, realtime dashboards, chat.
+- **Workflow automation**: background jobs, cron, rate limiters, durable queues, backpressure control.
+- **Data-intensive backends**: geo-distributed or per-tenant databases, in-memory caches, sharded SQL.
+- **Networking workloads**: WebSocket servers, custom protocols, local-first sync, edge fanout.
+
+## Minimal Project
+
+### Backend
+
+**index.ts**
+
+<CodeSnippet file="examples/docs/actors-crash-course/minimal-project.ts" />
+
+### Client Docs
+
+Use the client SDK that matches your app:
+
+- [JavaScript Client](/actors/docs/clients/javascript)
+- [React Client](/actors/docs/clients/react)
+- [Swift Client](/actors/docs/clients/swift)
+
+## Actor Quick Reference
+
+### In-Memory State
+
+Persistent data that survives restarts, crashes, and deployments. State is persisted on Rivet Cloud or Rivet self-hosted, so it survives restarts if the current process crashes or exits.
+
+<Tabs>
+<Tab title="Static Initial State">
+<CodeSnippet file="examples/docs/actors-crash-course/state-static.ts" />
+</Tab>
+<Tab title="Dynamic Initial State">
+<CodeSnippet file="examples/docs/actors-crash-course/state-dynamic.ts" />
+
+</Tab>
+</Tabs>
+
+[Documentation](/actors/docs/state)
+
+### Keys
+
+Keys uniquely identify actor instances. Use compound keys (arrays) for hierarchical addressing:
+
+<CodeSnippet file="examples/docs/actors-crash-course/keys.ts" />
+
+Don't build keys with string interpolation like `"org:${userId}"` when `userId` contains user data. Use arrays instead to prevent key injection attacks.
+
+[Documentation](/actors/docs/keys)
+
+### Input
+
+Pass initialization data when creating actors. Input is only available in `createState` and `onCreate`, so store it in state if you need it later.
+
+<CodeSnippet file="examples/docs/actors-crash-course/input.ts" />
+
+[Documentation](/actors/docs/input)
+
+### Temporary Variables
+
+Temporary data that doesn't survive restarts. Use for non-serializable objects (event emitters, connections, etc).
+
+<Tabs>
+<Tab title="Static Initial Vars">
+<CodeSnippet file="examples/docs/actors-crash-course/vars-static.ts" />
+</Tab>
+<Tab title="Dynamic Initial Vars">
+<CodeSnippet file="examples/docs/actors-crash-course/vars-dynamic.ts" />
+
+</Tab>
+</Tabs>
+
+[Documentation](/actors/docs/state)
+
+### Actions
+
+Actions are the primary way clients and other actors communicate with an actor.
+
+<CodeSnippet file="examples/docs/actors-crash-course/actions.ts" />
+
+Actions can be nested to group related behavior. For example, `handle.users.add("Ada")` calls the low-level action name `users.add`.
+
+[Documentation](/actors/docs/actions)
+
+### Events & Broadcasts
+
+Events enable real-time communication from actors to connected clients.
+
+<CodeSnippet file="examples/docs/actors-crash-course/events.ts" />
+
+[Documentation](/actors/docs/events)
+
+### Connections
+
+Access the current connection via `c.conn` or all connected clients via `c.conns`. Use `c.conn.id` or `c.conn.state` to securely identify who is calling an action. `c.conn` is only available for actions invoked through a connected client; stateless actor-handle calls run without a connection, so guard against that. Connection state is initialized via `connState` or `createConnState`, which receives parameters passed by the client on connect.
+
+<Tabs>
+<Tab title="Static Connection Initial State">
+<CodeSnippet file="examples/docs/actors-crash-course/conn-static.ts" />
+</Tab>
+<Tab title="Dynamic Connection Initial State">
+<CodeSnippet file="examples/docs/actors-crash-course/conn-dynamic.ts" />
+
+</Tab>
+</Tabs>
+
+[Documentation](/actors/docs/connections)
+
+### Queues
+
+Use queues to process durable messages in order inside a `run` loop.
+
+<CodeSnippet file="examples/docs/actors-crash-course/queues.ts" />
+
+[Documentation](/actors/docs/queues)
+
+### Workflows
+
+Use workflows when your `run` logic needs durable, replayable multi-step execution.
+
+<CodeSnippet file="examples/docs/actors-crash-course/workflows.ts" />
+
+[Documentation](/workflows/docs)
+
+### Actor-to-Actor Communication
+
+Actors can call other actors using `c.client()`.
+
+<CodeSnippet file="examples/docs/actors-crash-course/actor-to-actor.ts" />
+
+[Documentation](/actors/docs/communicating-between-actors)
+
+### Schedule & Cron
+
+Run one-shot actions after a delay or at a specific time. Use named cron jobs for calendar schedules and fixed intervals. Both persist across sleep, restarts, upgrades, and crashes.
+
+<CodeSnippet file="examples/docs/actors-crash-course/scheduling.ts" />
+
+[Documentation](/actors/docs/schedule)
+
+### Destroying Actors
+
+Permanently delete an actor and its state using `c.destroy()`.
+
+<CodeSnippet file="examples/docs/actors-crash-course/destroying.ts" />
+
+[Documentation](/actors/docs/destroy)
+
+### Lifecycle Hooks
+
+Actors support hooks for initialization, background processing, connections, networking, and state changes. Use `run` for long-lived background loops, and use `c.aborted` or `c.abortSignal` for graceful shutdown.
+
+<CodeSnippet file="examples/docs/actors-crash-course/lifecycle.ts" />
+
+[Documentation](/actors/docs/lifecycle)
+
+### Context Types
+
+When writing helper functions outside the actor definition, use `*ContextOf<typeof myActor>` to extract the correct context type. Helpers like `ActionContextOf`, `CreateContextOf`, `ConnContextOf`, and `ConnInitContextOf` are exported from `"rivetkit"`. Do not manually define your own context interface. Always derive it from the actor definition.
+
+<CodeSnippet file="examples/docs/actors-crash-course/context-types.ts" />
+
+[Documentation](/actors/docs/types)
+
+### Errors
+
+Use `UserError` to throw errors that are safely returned to clients. Pass `metadata` to include structured data. Other errors are converted to generic "internal error" for security.
+
+<Tabs>
+<Tab title="Actor">
+<CodeSnippet file="examples/docs/actors-crash-course/errors-actor.ts" />
+</Tab>
+<Tab title="Client">
+<CodeSnippet file="examples/docs/actors-crash-course/errors-client.ts" />
+
+</Tab>
+</Tabs>
+
+[Documentation](/actors/docs/errors)
+
+### Low-Level HTTP & WebSocket Handlers
+
+For custom protocols or integrating libraries that need direct access to HTTP `Request`/`Response` or WebSocket connections, use `onRequest` and `onWebSocket`.
+
+[HTTP Handler Documentation](/actors/docs/request-handler) · [WebSocket Handler Documentation](/actors/docs/websocket-handler)
+
+### Icons & Names
+
+Customize how actors appear in the UI with display names and icons. It's recommended to always provide a name and icon to actors in order to make them easier to distinguish in the dashboard.
+
+```typescript
+import { actor } from "rivetkit";
+
+const chatRoom = actor({
+	options: {
+		name: "Chat Room",
+		icon: "💬", // or FontAwesome: "comments", "chart-line", etc.
+	},
+	// ...
+});
+```
+
+[Documentation](/actors/docs/appearance)
+
+## Client Documentation
+
+Find the full client guides here:
+
+- [JavaScript Client](/actors/docs/clients/javascript)
+- [React Client](/actors/docs/clients/react)
+- [Swift Client](/actors/docs/clients/swift)
+
+## Common Patterns
+
+Actors scale naturally through isolated state and message-passing. Structure your applications with these patterns:
+
+[Documentation](/actors/docs/design-patterns)
+
+### Actor Per Entity
+
+Create one actor per user, document, or room. Use compound keys to scope entities:
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-crash-course/actor-per-entity/client.ts" title="client.ts" />
+<CodeSnippet file="examples/docs/actors-crash-course/actor-per-entity/index.ts" title="index.ts" />
+</CodeGroup>
+
+### Coordinator & Data Actors
+
+**Data actors** handle core logic (chat rooms, game sessions, user data). **Coordinator actors** track and manage collections of data actors—think of them as an index.
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-crash-course/coordinator/index.ts" title="index.ts" />
+<CodeSnippet file="examples/docs/actors-crash-course/coordinator/client.ts" title="client.ts" />
+</CodeGroup>
+
+### Run Loop
+
+Use a `run` loop for continuous background work inside an actor. Process queue messages in order, run logic on intervals, stream AI responses, or coordinate long-running tasks.
+
+<CodeSnippet file="examples/docs/actors-crash-course/run-loop.ts" />
+
+### Workflow Loop
+
+Use this pattern for long-lived, durable workflows that initialize resources, process commands in a loop, then clean up.
+
+<CodeSnippet file="examples/docs/actors-crash-course/workflow-loop.ts" />
+
+[Documentation](/workflows/docs)
+
+### Actions vs Queues
+
+- **Actions** are not durable. Use them for realtime reads, ephemeral data, and low-latency communication like player input.
+- **Queues** are durable. Use them to serialize mutations through the run loop, avoiding race conditions with SQLite and other local state. Callers can still wait for a response from queued work.
+
+### Authentication, Security, & CORS
+
+- Validate credentials in `onBeforeConnect` or `createConnState` and throw an error to reject unauthorized connections.
+- Use `c.conn.state` to securely identify users in actions rather than trusting action parameters.
+- For cross-origin access, validate the request origin in `onBeforeConnect`.
+
+[Authentication Documentation](/actors/docs/authentication) · [CORS Documentation](/actors/docs/general/cors)
+
+### Versions & Upgrades
+
+When deploying new code, set a version number so Rivet can route new actors to the latest runner and optionally drain old ones. Use a build timestamp, git commit count, or CI build number as the version. It is very important to [configure versioning](/actors/docs/versions) before deploying to production. Without versioning, actors can regress by running on older runner versions, and existing actors will never be forced to migrate to new runners. They will continue running indefinitely on the old runners until they exit.
+
+[Documentation](/actors/docs/versions)
+
+### Anti-Patterns
+
+#### Never build a "god" actor
+
+Do not put all your logic in a single actor. A god actor serializes every operation through one bottleneck, kills parallelism, and makes the entire system fail as a unit. Split into focused actors per entity.
+
+#### Never create an actor per request
+
+Actors are long-lived and maintain state across requests. Creating a new actor for every incoming request throws away the core benefit of the model and wastes resources on actor creation and teardown. Use actors for persistent entities and regular functions for stateless work.
+
+{/* SKILL_OVERVIEW_END */}

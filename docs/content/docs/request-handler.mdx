@@ -1,0 +1,96 @@
+---
+title: "Low-Level HTTP Request Handler"
+description: "Actors can handle HTTP requests through the `onRequest` handler."
+skill: true
+---
+
+For most use cases, [actions](/actors/docs/actions) provide high-level API powered by HTTP that's easier to work with than low-level HTTP. However, low-level handlers are required when implementing custom use cases or integrating external libraries that need direct access to the underlying HTTP `Request`/`Response` objects or WebSocket connections.
+
+## Handling HTTP Requests
+
+The `onRequest` handler processes HTTP requests sent to your actor. It receives the actor context and a standard `Request` object and returns a `Response` object.
+
+<Tabs>
+<Tab title="Raw HTTP">
+
+<CodeSnippet file="examples/docs/actors-request-handler/raw-http.ts" />
+
+</Tab>
+<Tab title="Hono">
+
+<CodeSnippet file="examples/docs/actors-request-handler/hono.ts" />
+
+</Tab>
+</Tabs>
+
+See also the [raw fetch handler example](https://github.com/rivet-dev/rivet/tree/main/examples/raw-fetch-handler).
+
+## Sending Requests To Actors
+
+### Via RivetKit Client
+
+Use the `.fetch()` method on an actor handle to send HTTP requests to the actor's `onRequest` handler. This can be executed from either your frontend or backend.
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-request-handler/via-client/client.ts" title="client.ts" />
+</CodeGroup>
+
+### Via getGatewayUrl
+
+Use `.getGatewayUrl()` to get the raw gateway URL for the actor. This is useful when you need to use the URL with external tools or custom HTTP clients.
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-request-handler/via-gateway/client.ts" title="client.ts" />
+</CodeGroup>
+
+### Via HTTP API
+
+This handler can be accessed with raw HTTP using `https://api.rivet.dev/gateway/{actorId}/request/{...path}`.
+
+For example, to call `POST /increment` on the counter actor above:
+
+<CodeGroup>
+
+<CodeSnippet file="examples/docs/actors-request-handler/http-api-fetch.ts" region="fetch" />
+
+```bash
+curl -X POST "https://api.rivet.dev/gateway/{actorId}/request/increment" \
+  -H "x-rivet-token: {token}"
+```
+
+</CodeGroup>
+
+The request is routed to the actor's `onRequest` handler where:
+
+- `request.method` is `"POST"`
+- `request.url` ends with `/increment` (the path after `/request/`)
+- Headers, body, and other request properties are passed through unchanged
+
+See the [HTTP API reference](/actors/docs/http-api) for more information on HTTP routing and authentication.
+
+### Via Proxying Requests
+
+You can proxy HTTP requests from your own server to actor handlers using the RivetKit client. This is useful when you need to add custom authentication, rate limiting, or request transformation before forwarding to actors.
+
+<CodeSnippet file="examples/docs/actors-request-handler/proxy.ts" />
+
+## Connection & Lifecycle Hooks
+
+`onRequest` will trigger the `onBeforeConnect`, `onConnect`, and `onDisconnect` hooks. Read more about [lifecycle hooks](/actors/docs/lifecycle).
+
+Requests in flight will be listed in `c.conns`. Read more about [connections](/actors/docs/connections).
+
+## WinterTC Compliance
+
+The `onRequest` handler is WinterTC compliant and will work with existing libraries using the standard `Request` and `Response` types.
+
+## Limitations
+
+- Does not support streaming responses & server-sent events at the moment. See the [tracking issue](https://github.com/rivet-dev/rivet/issues/3529).
+- `OPTIONS` requests currently are handled by Rivet and are not passed to `onRequest`
+
+## Advanced
+
+### Skip Ready Wait
+
+Requests are normally held at the gateway until the actor is ready. Pass `skipReadyWait: true` on `handle.fetch()` to deliver immediately, including while the actor is still starting or in the [sleep grace period](/actors/docs/lifecycle#shutdown-sequence). See [Skip Ready Wait](/actors/docs/clients/javascript#skip-ready-wait) for details.

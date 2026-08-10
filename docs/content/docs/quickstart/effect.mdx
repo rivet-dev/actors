@@ -1,0 +1,270 @@
+---
+title: "Effect.ts Quickstart (Beta)"
+description: "Build a Rivet Actor with the Effect SDK"
+skill: true
+---
+
+import { Hosting } from "@/components/docs/Hosting";
+
+<Note>
+Effect support is in beta. The `@rivetkit/effect` API may change between releases. See the [`hello-world-effect`](https://github.com/rivet-dev/rivet/tree/main/examples/hello-world-effect) and [`chat-room-effect`](https://github.com/rivet-dev/rivet/tree/main/examples/chat-room-effect) examples for complete runnable projects.
+</Note>
+
+## Steps
+
+<Steps>
+<Step title="Install Rivet">
+
+Add `rivetkit`, the Effect SDK, and its Effect peers:
+
+```sh
+npm install rivetkit @rivetkit/effect effect @effect/platform-node
+```
+
+</Step>
+
+<Step title="Define Your Actor">
+
+Split each actor into a public contract and a server-only implementation so the contract can be imported from client code without leaking server details.
+
+The contract declares the actor and its actions. Actions are standalone values with explicit [`effect/Schema`](https://effect.website/docs/schema/introduction/) payloads and successes, validated end to end:
+
+```ts src/actors/counter/api.ts @nocheck
+import { Action, Actor } from "@rivetkit/effect";
+import { Schema } from "effect";
+
+export const Increment = Action.make("Increment", {
+	payload: { amount: Schema.Number },
+	success: Schema.Number,
+});
+
+export const GetCount = Action.make("GetCount", {
+	success: Schema.Number,
+});
+
+export const Counter = Actor.make("Counter", {
+	actions: [Increment, GetCount],
+});
+```
+
+The implementation registers the actor with `.toLayer`. The wake function runs once when the actor awakes and returns the action handlers. Persisted state is accessed through a `SubscriptionRef`-like `State` API:
+
+```ts src/actors/counter/live.ts @nocheck
+import { Actor, State } from "@rivetkit/effect";
+import { Effect, Schema } from "effect";
+import { Counter } from "./api.ts";
+
+export const CounterLive = Counter.toLayer(
+	Effect.fnUntraced(function* ({ rawRivetkitContext, state }) {
+		return Counter.of({
+			Increment: Effect.fnUntraced(function* ({ payload }) {
+				const next = yield* State.updateAndGet(state, (current) => ({
+					count: current.count + payload.amount,
+				})).pipe(Effect.orDie);
+
+				// Broadcast the new value to every connected client.
+				rawRivetkitContext.broadcast("newCount", next.count);
+
+				return next.count;
+			}),
+			GetCount: () =>
+				State.get(state).pipe(
+					Effect.map((current) => current.count),
+					Effect.orDie,
+				),
+		});
+	}),
+	{
+		state: {
+			schema: Schema.Struct({ count: Schema.Number }),
+			initialValue: () => ({ count: 0 }),
+		},
+		name: "Counter",
+		icon: "calculator",
+	},
+);
+```
+
+</Step>
+
+<Step title="Serve The Registry">
+
+Compose the actor layers and serve them with `Registry.serve`. `Registry.layer()` reads engine config from the environment, and the actor layer is provided a `Client` so actors can call other actors:
+
+```ts src/main.ts @nocheck
+import { NodeRuntime } from "@effect/platform-node";
+import { Client, Registry } from "@rivetkit/effect";
+import { Layer } from "effect";
+import { CounterLive } from "./actors/counter/live.ts";
+
+const endpoint = process.env.RIVET_ENDPOINT ?? "http://127.0.0.1:6420";
+
+const ActorsLayer = CounterLive.pipe(Layer.provide(Client.layer({ endpoint })));
+
+const MainLayer = Registry.serve(ActorsLayer).pipe(Layer.provide(Registry.layer()));
+
+// Keeps the layer alive. Tears down on SIGINT/SIGTERM.
+Layer.launch(MainLayer).pipe(NodeRuntime.runMain);
+```
+
+</Step>
+
+<Step title="Run The Server">
+
+Set `RIVET_RUN_ENGINE=1` to spawn a local Rivet control plane alongside the server. The control plane binary is downloaded and cached the first time you run, so there is nothing else to install:
+
+```sh
+RIVET_RUN_ENGINE=1 npx tsx --watch src/main.ts
+```
+
+Your server now connects to the Rivet control plane on `http://localhost:6420`. Clients connect directly to the control plane on this port.
+
+Visit [http://localhost:6420](http://localhost:6420) in your browser (or point your AI agent at it) to open the Rivet developer tools and inspect your actors live.
+
+<Note>
+To point at a remote engine instead, set `RIVET_ENDPOINT=https://...` and omit `RIVET_RUN_ENGINE`.
+</Note>
+
+</Step>
+
+<Step title="Connect To The Rivet Actor">
+
+This code can run either in your frontend or within your backend:
+
+<Tabs>
+
+<Tab title="Effect">
+
+The Effect client imports the same actor contract from your registry. `Counter.client` yields a typed accessor backed by the client layer:
+
+```ts src/client.ts @nocheck
+import { NodeRuntime } from "@effect/platform-node";
+import { Client } from "@rivetkit/effect";
+import { Effect } from "effect";
+import { Counter } from "./actors/counter/api.ts";
+
+const program = Effect.gen(function* () {
+	const counter = (yield* Counter.client).getOrCreate("my-counter");
+
+	const count = yield* counter.Increment({ amount: 3 });
+	yield* Effect.log(`New count: ${count}`);
+
+	const total = yield* counter.GetCount();
+	yield* Effect.log(`Total: ${total}`);
+});
+
+const ClientLayer = Client.layer({ endpoint: "http://localhost:6420" });
+
+program.pipe(Effect.provide(ClientLayer), NodeRuntime.runMain);
+```
+
+With the server still running, start the client in another terminal:
+
+```sh
+npx tsx src/client.ts
+```
+
+See the [`chat-room-effect`](https://github.com/rivet-dev/rivet/tree/main/examples/chat-room-effect) example for a larger project with typed errors and actor-to-actor calls.
+
+</Tab>
+
+<Tab title="TypeScript">
+
+A plain RivetKit client can call your Effect actor by name through the same engine. Actor and action names are resolved at runtime, so the client is untyped here:
+
+```ts client.ts @nocheck
+import { createClient } from "rivetkit/client";
+
+const client = createClient("http://localhost:6420");
+
+const counter = client.Counter.getOrCreate(["my-counter"]);
+
+const count = await counter.Increment({ amount: 3 });
+console.log("New count:", count);
+```
+
+See the [JavaScript client documentation](/actors/docs/clients/javascript) for more information.
+
+</Tab>
+
+</Tabs>
+
+</Step>
+
+<Step title="Deploy">
+
+<Hosting />
+
+</Step>
+
+</Steps>
+
+## Feature Support
+
+The Effect SDK wraps the most common actor features with typed, schema-validated APIs. Everything else is still fully usable through the raw RivetKit context (see [Raw Escape Hatch](#raw-escape-hatch) below), so no feature is off limits, it just isn't typed yet.
+
+| Feature | Effect-native API | Access |
+| --- | --- | --- |
+| Actor contract & actions | `Actor.make`, `Action.make` | Typed |
+| Persisted state | `State.get` / `set` / `update` / `updateAndGet` / `changes` | Typed |
+| Typed client | `Actor.client`, `Client.layer` | Typed |
+| Typed errors | `RivetError` | Typed |
+| Logging | `RivetLogger` | Typed |
+| Sleep request | `Actor.Sleep` | Typed |
+| Actor address (`actorId` / `name` / `key`) | `Actor.CurrentAddress` | Typed |
+| Registry serve / test / web handler | `Registry` | Typed |
+| [Events & broadcast](/actors/docs/events) | Not yet wrapped | `rawRivetkitContext.broadcast(...)` |
+| [Schedule](/actors/docs/schedule) | Not yet wrapped | `rawRivetkitContext.schedule.*` |
+| [Embedded SQLite](/actors/docs/sqlite) | Not yet wrapped | `rawRivetkitContext.db.execute(...)` |
+| [Destroy](/actors/docs/lifecycle) | Not yet wrapped | `rawRivetkitContext.destroy()` |
+| Queues, connections, vars, alarms | Not yet wrapped | `rawRivetkitContext.*` |
+| Lifecycle hooks (`onSleep` / `onDestroy`) | Not yet wrapped | `rawRivetkitContext.*` |
+| Raw HTTP / WebSocket handlers | Not yet wrapped | `rawRivetkitContext.*` |
+
+### Raw Escape Hatch
+
+Every wake function receives `rawRivetkitContext`, the underlying RivetKit [actor context](/actors/docs). Reach for it to use any feature that does not have a typed wrapper yet. The typed `state` argument and the raw context point at the same actor, so you can mix both:
+
+```ts src/actors/counter/live.ts @nocheck
+export const CounterLive = Counter.toLayer(
+	Effect.fnUntraced(function* ({ rawRivetkitContext, state }) {
+		return Counter.of({
+			Increment: Effect.fnUntraced(function* ({ payload }) {
+				// Typed state wrapper
+				const next = yield* State.updateAndGet(state, (current) => ({
+					count: current.count + payload.amount,
+				})).pipe(Effect.orDie);
+
+				// Untyped features run through the raw context
+				rawRivetkitContext.broadcast("newCount", next.count);
+				rawRivetkitContext.schedule.after(1_000, "tick", {});
+
+				return next.count;
+			}),
+		});
+	}),
+	{
+		state: {
+			schema: Schema.Struct({ count: Schema.Number }),
+			initialValue: () => ({ count: 0 }),
+		},
+		name: "Counter",
+	},
+);
+```
+
+Calls through `rawRivetkitContext` are not validated by `effect/Schema` and their payloads are typed as they are in the base RivetKit API.
+
+## Next Steps
+
+<CardGroup>
+	<Card title="Actions" href="/actors/docs/actions">
+		Define the RPC surface clients call on your actor.
+	</Card>
+	<Card title="State" href="/actors/docs/state">
+		Persist and load actor state across sleeps and restarts.
+	</Card>
+	<Card title="Events" href="/actors/docs/events">
+		Broadcast realtime updates to connected clients.
+	</Card>
+</CardGroup>

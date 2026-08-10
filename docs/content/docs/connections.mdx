@@ -1,0 +1,119 @@
+---
+title: "Connections"
+description: "Connections represent client connections to your actor. They provide a way to handle client authentication, manage connection-specific data, and control the connection lifecycle."
+skill: true
+---
+
+For documentation on connecting to actors from clients, see the [Clients documentation](/actors/docs/clients).
+
+## Parameters
+
+When clients connect to an actor, they can pass connection parameters that are handled during the connection process. Use `params` for static values, or `getParams` when you need fresh connection data each time a connection opens.
+
+For example:
+
+<CodeGroup>
+
+<CodeSnippet file="examples/docs/actors-connections/params-client.ts" title="Client" />
+
+<CodeSnippet file="examples/docs/actors-connections/params-actor.ts" title="Actor" />
+
+</CodeGroup>
+
+## Connection State
+
+There are two ways to define an actor's connection state:
+
+<Tabs>
+	<Tab title="connState">
+		Define connection state as a constant value:
+
+		<CodeSnippet file="examples/docs/actors-connections/conn-state-const.ts" />
+
+		This value will be cloned for every new connection using `structuredClone`.
+	</Tab>
+
+	<Tab title="createConnState">
+		Create connection state dynamically with a function called for each connection:
+
+		<CodeSnippet file="examples/docs/actors-connections/conn-state-dynamic.ts" />
+	</Tab>
+</Tabs>
+
+## Connection Lifecycle
+
+Each client connection goes through a series of lifecycle hooks that allow you to validate, initialize, and clean up connection-specific resources.
+
+**On Connect** (per client)
+
+- `onBeforeConnect`
+- `createConnState`
+- `onConnect`
+
+Pending connections are not visible in `c.conns` while `onBeforeConnect` or `createConnState` is running. RivetKit adds the connection to `c.conns` after those hooks succeed and before `onConnect` runs.
+
+**On Disconnect** (per client)
+
+- `onDisconnect`
+
+### `createConnState` and `connState`
+
+There are two ways to define the initial state for connections:
+1. `connState`: Define a constant object that will be used as the initial state for all connections
+2. `createConnState`: A function that dynamically creates initial connection state based on connection parameters. Can be async.
+
+Connections are not visible in `c.conns` until `createConnState` completes successfully.
+
+### `onBeforeConnect`
+
+The `onBeforeConnect` hook is called whenever a new client connects to the actor. Can be async. Clients can pass parameters when connecting, accessible via `params`. This hook is used for connection validation and can throw errors to reject connections.
+
+The `onBeforeConnect` hook does NOT return connection state - it's used solely for validation.
+
+Connections are not visible in `c.conns` while `onBeforeConnect` is running.
+
+<CodeSnippet file="examples/docs/actors-connections/on-before-connect.ts" />
+
+Connections cannot interact with the actor until this method completes successfully. Throwing an error will abort the connection. This can be used for authentication, see [Authentication](/actors/docs/authentication) for details.
+
+### `onConnect`
+
+Executed after the client has successfully connected. Can be async. Receives the connection object as a second parameter.
+
+By the time `onConnect` runs, the connection is visible in `c.conns`.
+
+<CodeSnippet file="examples/docs/actors-connections/on-connect.ts" />
+
+Messages will not be processed for this actor until this hook succeeds. Errors thrown from this hook will cause the client to disconnect.
+
+### `onDisconnect`
+
+Called when a client disconnects from the actor. Can be async. Receives the connection object as a second parameter. Use this to clean up any connection-specific resources.
+
+<CodeSnippet file="examples/docs/actors-connections/on-disconnect.ts" />
+
+## Connection List
+
+All active connections can be accessed through the context object's `conns` property. This is a `Map<string, Conn>` of all current connections, keyed by connection ID.
+
+This is frequently used with `conn.send(name, event)` to send messages directly to clients. To send an event to all connections at once, use `c.broadcast()` instead. See [Events](/actors/docs/events) for more details on broadcasting.
+
+For example:
+
+<CodeSnippet file="examples/docs/actors-connections/connection-list.ts" />
+
+<Note>
+`conn.send()` has no effect on [low-level WebSocket connections](/actors/docs/websocket-handler). For low-level WebSockets, use the WebSocket API directly (e.g., `websocket.send()`).
+</Note>
+
+## Disconnecting clients
+
+Connections can be disconnected from within an action:
+
+<CodeSnippet file="examples/docs/actors-connections/disconnect-clients.ts" />
+
+If you need to wait for the disconnection to complete, you can use `await`:
+
+<CodeSnippet file="examples/docs/actors-connections/disconnect-await.ts" />
+
+This ensures the underlying network connections close cleanly before continuing.
