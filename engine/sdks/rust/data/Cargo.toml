@@ -10,7 +10,6 @@ edition.workspace = true
 anyhow.workspace = true
 gas.workspace = true
 rivet-runner-protocol.workspace = true
-rivet-util.workspace = true
 serde_bare.workspace = true
 serde.workspace = true
 vbare.workspace = true

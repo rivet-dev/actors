@@ -31,22 +31,22 @@ impl OwnedVersionedData for NamespaceRunnerConfig {
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
 			1 => Ok(NamespaceRunnerConfig::V1(
-				rivet_util::serde::bare_from_slice!(payload)?,
+				serde_bare::from_slice(payload)?,
 			)),
 			2 => Ok(NamespaceRunnerConfig::V2(
-				rivet_util::serde::bare_from_slice!(payload)?,
+				serde_bare::from_slice(payload)?,
 			)),
 			3 => Ok(NamespaceRunnerConfig::V3(
-				rivet_util::serde::bare_from_slice!(payload)?,
+				serde_bare::from_slice(payload)?,
 			)),
 			4 => Ok(NamespaceRunnerConfig::V4(
-				rivet_util::serde::bare_from_slice!(payload)?,
+				serde_bare::from_slice(payload)?,
 			)),
 			5 => Ok(NamespaceRunnerConfig::V5(
-				rivet_util::serde::bare_from_slice!(payload)?,
+				serde_bare::from_slice(payload)?,
 			)),
 			6 => Ok(NamespaceRunnerConfig::V6(
-				rivet_util::serde::bare_from_slice!(payload)?,
+				serde_bare::from_slice(payload)?,
 			)),
 			_ => bail!("invalid version: {version}"),
 		}
@@ -55,22 +55,22 @@ impl OwnedVersionedData for NamespaceRunnerConfig {
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
 			NamespaceRunnerConfig::V1(data) => {
-				rivet_util::serde::bare_to_vec!(&data).map_err(Into::into)
+				serde_bare::to_vec(&data).map_err(Into::into)
 			}
 			NamespaceRunnerConfig::V2(data) => {
-				rivet_util::serde::bare_to_vec!(&data).map_err(Into::into)
+				serde_bare::to_vec(&data).map_err(Into::into)
 			}
 			NamespaceRunnerConfig::V3(data) => {
-				rivet_util::serde::bare_to_vec!(&data).map_err(Into::into)
+				serde_bare::to_vec(&data).map_err(Into::into)
 			}
 			NamespaceRunnerConfig::V4(data) => {
-				rivet_util::serde::bare_to_vec!(&data).map_err(Into::into)
+				serde_bare::to_vec(&data).map_err(Into::into)
 			}
 			NamespaceRunnerConfig::V5(data) => {
-				rivet_util::serde::bare_to_vec!(&data).map_err(Into::into)
+				serde_bare::to_vec(&data).map_err(Into::into)
 			}
 			NamespaceRunnerConfig::V6(data) => {
-				rivet_util::serde::bare_to_vec!(&data).map_err(Into::into)
+				serde_bare::to_vec(&data).map_err(Into::into)
 			}
 		}
 	}

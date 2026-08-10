@@ -1731,7 +1731,6 @@ name = "epoxy-protocol"
 version = "2.3.7"
 dependencies = [
  "anyhow",
- "rivet-util",
  "rivet-vbare-compiler",
  "serde",
  "serde_bare",
@@ -5340,7 +5339,6 @@ dependencies = [
  "anyhow",
  "gasoline",
  "rivet-runner-protocol",
- "rivet-util",
  "rivet-vbare-compiler",
  "serde",
  "serde_bare",
@@ -5385,7 +5383,6 @@ name = "rivet-depot-protocol"
 version = "2.3.7"
 dependencies = [
  "anyhow",
- "rivet-util",
  "rivet-vbare-compiler",
  "serde",
  "serde_bare",
@@ -5520,7 +5517,6 @@ dependencies = [
  "anyhow",
  "hex",
  "rand 0.8.5",
- "rivet-util",
  "rivet-vbare-compiler",
  "serde",
  "serde_bare",
@@ -5983,7 +5979,6 @@ version = "2.3.7"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "rivet-util",
  "rivet-vbare-compiler",
  "serde",
  "serde_bare",
