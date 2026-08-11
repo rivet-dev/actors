@@ -121,6 +121,7 @@ pub async fn router(
 			.route("/ui", axum::routing::get(ui::serve_index))
 			.route("/ui/", axum::routing::get(ui::serve_index))
 			.route("/ui/{*path}", axum::routing::get(ui::serve_ui))
+			.route("/assets/{*path}", axum::routing::get(ui::serve_asset))
 			// MARK: Middleware (must go after all routes)
 			// Add CORS layer that mirrors the request origin
 			.layer(
@@ -171,6 +172,7 @@ async fn auth_middleware(
 		&& path != "/"
 		&& path != "/ui"
 		&& !path.starts_with("/ui/")
+		&& !path.starts_with("/assets/")
 		&& !ctx.is_auth_handled()
 	{
 		return Err((
