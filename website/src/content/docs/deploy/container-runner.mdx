@@ -78,8 +78,9 @@ All flags can also be set through environment variables:
 | `--actor-name` | `RIVET_ACTOR_NAME` | `game` | Actor name this runner serves. |
 | `--runner-version` | `RIVET_RUNNER_VERSION` | `1` | Version reported to the engine, used to drain old runners on deploy. |
 | `--base-path` | `RIVET_SERVERLESS_BASE_PATH` | `/api/rivet` | Base path the engine calls for serverless start. |
-| `--stop-grace-secs` | `RIVET_STOP_GRACE_SECS` | `25` | `SIGTERM` to `SIGKILL` grace period when stopping the child. Capped to a few seconds when the platform itself is reclaiming the instance, so shutdown fits inside the platform's own kill window. |
+| `--stop-grace-secs` | `RIVET_STOP_GRACE_SECS` | `10` | `SIGTERM` to `SIGKILL` grace period when stopping the child. Capped to a fraction of the platform's SIGTERM budget when the platform itself is reclaiming the instance, so shutdown fits inside the platform's own kill window. |
 | `--readiness-timeout-secs` | `RIVET_READINESS_TIMEOUT_SECS` | `30` | How long to wait for the child's port to open before failing the start. |
+| — | `RIVET_SIGTERM_BUDGET_SECS` | `10` | How long the platform gives the container between `SIGTERM` and `SIGKILL`. The signal-path shutdown splits this budget across the engine drain, the child stop grace, and a straggler sweep, so keep it in sync with the platform's actual kill window. |
 
 ### Per-Actor Input
 
@@ -89,11 +90,12 @@ The actor's `input` payload can override the launch spec per actor. All fields a
 {
 	"command": ["./GameServer", "-batchmode"],
 	"args": ["-extra-flag"],
-	"env": { "MATCH_MODE": "ranked" }
+	"env": { "MATCH_MODE": "ranked" },
+	"port": 7770
 }
 ```
 
-`command` replaces the entrypoint command template, `args` are appended to it, and `env` adds environment variables for the child.
+`command` replaces the entrypoint command template, `args` are appended to it, `env` adds environment variables for the child, and `port` overrides the child's listen port (exported to the child as `PORT`), falling back to `--child-port` when omitted.
 
 ## Source and Examples
 
