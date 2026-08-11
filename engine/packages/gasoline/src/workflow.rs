@@ -33,7 +33,7 @@ impl<'a, T: DeserializeOwned + Serialize> StateGuard<'a, T> {
 	pub(crate) fn new(
 		guard: MutexGuard<'a, (Box<serde_json::value::RawValue>, bool)>,
 	) -> Result<Self> {
-		let value = serde_json::from_str::<T>(guard.0.get())?;
+		let value = rivet_util::serde::json_from_str!(guard.0.get())?;
 
 		Ok(Self {
 			guard,
@@ -60,7 +60,7 @@ impl<'a, T: DeserializeOwned + Serialize> std::ops::DerefMut for StateGuard<'a, 
 impl<'a, T: DeserializeOwned + Serialize> Drop for StateGuard<'a, T> {
 	fn drop(&mut self) {
 		// TODO: Somehow don't panic when committing state back into mutex
-		self.guard.0 = serde_json::value::to_raw_value(&self.inner).expect("bad state");
+		self.guard.0 = rivet_util::serde::json_to_raw_value!(&self.inner).expect("bad state");
 	}
 }
 

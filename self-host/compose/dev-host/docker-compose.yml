@@ -72,14 +72,18 @@ services:
     network_mode: host
   postgres:
     restart: unless-stopped
-    image: postgres:17-alpine
+    image: postgres:18-alpine
+    command:
+      - postgres
+      - '-c'
+      - max_connections=500
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=postgres
     volumes:
       - ./postgres/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
     healthcheck:
       test:
         - CMD-SHELL
@@ -90,7 +94,7 @@ services:
     network_mode: host
   rivet-shell:
     build:
-      context: ../../..
+      context: ../..
       dockerfile: docker/engine/Dockerfile
       target: engine-full
       args:
@@ -144,7 +148,7 @@ services:
     network_mode: host
   rivet-engine:
     build:
-      context: ../../..
+      context: ../..
       dockerfile: docker/engine/Dockerfile
       target: engine-full
       args:
@@ -153,6 +157,7 @@ services:
     restart: unless-stopped
     environment:
       - RUST_LOG_ANSI_COLOR=1
+      - RUST_LOG=universaldb::driver::postgres=debug
       - RIVET_OTEL_ENABLED=1
       - RIVET_OTEL_SAMPLER_RATIO=1
       - RIVET_OTEL_GRPC_ENDPOINT=http://127.0.0.1:4317
@@ -179,20 +184,42 @@ services:
     network_mode: host
   runner:
     build:
-      context: ../../..
-      dockerfile: engine/sdks/rust/test-envoy/Dockerfile
+      context: ../..
+      dockerfile: examples/kitchen-sink/Dockerfile
+      args:
+        NODE_IMAGE: node:22-trixie-slim
     platform: linux/amd64
     restart: unless-stopped
     environment:
+      - RIVET_KITCHEN_SINK_MODE=serverful
       - RIVET_ENDPOINT=http://127.0.0.1:6420
-      - INTERNAL_SERVER_PORT=5050
-      - RIVET_POOL_NAME=test-envoy
-      - AUTOSTART_ENVOY=1
-      - AUTOCONFIGURE_SERVERLESS=0
+      - RIVET_TOKEN=dev
+      - RIVET_NAMESPACE=default
+      - RIVET_POOL=default
+      - PORT=8080
     stop_grace_period: 4s
     depends_on:
       rivet-engine:
         condition: service_healthy
+      runner-config-init:
+        condition: service_completed_successfully
+    network_mode: host
+  runner-config-init:
+    image: curlimages/curl:latest
+    restart: 'no'
+    depends_on:
+      rivet-engine:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - '-c'
+    command:
+      - >-
+        until curl -fsS -X PUT
+        "http://127.0.0.1:6420/runner-configs/default?namespace=default" -H
+        "Authorization: Bearer dev" -H "Content-Type: application/json" -d
+        '{"datacenters":{"default":{"normal":{}}}}'; do echo "waiting for engine
+        to accept runner config"; sleep 2; done; echo "runner config upserted"
     network_mode: host
 networks:
   rivet-core-network:

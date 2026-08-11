@@ -1,4 +1,9 @@
-FROM node:22-slim
+# Base image is overridable so local builds can match the host glibc. The cloud
+# build keeps the node:22-slim default and supplies a glibc-compatible napi
+# binary; a modern dev host (newer glibc) should override this with a newer base
+# such as node:22-trixie-slim so the host-built napi binary loads.
+ARG NODE_IMAGE=node:22-slim
+FROM ${NODE_IMAGE}
 RUN corepack enable && corepack prepare pnpm@10.13.1 --activate
 WORKDIR /app
 ENV NODE_OPTIONS=--max-old-space-size=7168

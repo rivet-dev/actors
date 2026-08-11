@@ -26,16 +26,20 @@ impl OwnedVersionedData for CommittedValue {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			2 => Ok(CommittedValue::V2(serde_bare::from_slice(payload)?)),
-			3 => Ok(CommittedValue::V3(serde_bare::from_slice(payload)?)),
+			2 => Ok(CommittedValue::V2(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
+			3 => Ok(CommittedValue::V3(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			CommittedValue::V2(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			CommittedValue::V3(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			CommittedValue::V2(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			CommittedValue::V3(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 
@@ -89,16 +93,20 @@ impl OwnedVersionedData for CachedValue {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			2 => Ok(CachedValue::V2(serde_bare::from_slice(payload)?)),
-			3 => Ok(CachedValue::V3(serde_bare::from_slice(payload)?)),
+			2 => Ok(CachedValue::V2(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
+			3 => Ok(CachedValue::V3(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			CachedValue::V2(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			CachedValue::V3(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			CachedValue::V2(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			CachedValue::V3(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 
@@ -153,16 +161,20 @@ impl OwnedVersionedData for AcceptedValue {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			2 => Ok(AcceptedValue::V2(serde_bare::from_slice(payload)?)),
-			3 => Ok(AcceptedValue::V3(serde_bare::from_slice(payload)?)),
+			2 => Ok(AcceptedValue::V2(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
+			3 => Ok(AcceptedValue::V3(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			AcceptedValue::V2(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			AcceptedValue::V3(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			AcceptedValue::V2(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			AcceptedValue::V3(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 
@@ -216,16 +228,16 @@ impl OwnedVersionedData for Request {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			2 => Ok(Request::V2(serde_bare::from_slice(payload)?)),
-			3 => Ok(Request::V3(serde_bare::from_slice(payload)?)),
+			2 => Ok(Request::V2(rivet_util::serde::bare_from_slice!(payload)?)),
+			3 => Ok(Request::V3(rivet_util::serde::bare_from_slice!(payload)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			Request::V2(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			Request::V3(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			Request::V2(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			Request::V3(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 

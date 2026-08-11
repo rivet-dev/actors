@@ -2,12 +2,8 @@
 	"auth": {
 		"admin_token": "dev"
 	},
-	"guard": {
-		"port": 6420
-	},
 	"api_peer": {
-		"host": "0.0.0.0",
-		"port": 6421
+		"host": "0.0.0.0"
 	},
 	"topology": {
 		"datacenter_label": 2,
@@ -50,14 +46,10 @@
 	"postgres": {
 		"url": "postgresql://postgres:postgres@postgres-dc-b:5432/rivet_engine"
 	},
-	"cache": {
-		"driver": "in_memory"
-	},
 	"clickhouse": {
 		"http_url": "http://clickhouse:9300",
 		"native_url": "http://clickhouse:9301",
 		"username": "system",
-		"password": "default",
-		"secure": false
+		"password": "default"
 	}
 }

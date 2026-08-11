@@ -8,7 +8,7 @@ use scc::HashMap;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use rivet_util::backoff::Backoff;
+use rivet_util::throttle::Backoff;
 
 use crate::chunking::{ChunkTracker, FastPath, encode_chunk, split_payload_into_chunks};
 use crate::driver::{PubSubDriverHandle, PublishOpts, SubscriberDriverHandle};

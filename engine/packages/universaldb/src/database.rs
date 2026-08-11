@@ -106,4 +106,9 @@ impl Database {
 	pub fn checkpoint(&self, path: &Path) -> Result<()> {
 		self.driver.checkpoint(path)
 	}
+
+	/// Gracefully release process-wide driver resources before shutdown.
+	pub async fn shutdown(&self) {
+		self.driver.shutdown().await;
+	}
 }

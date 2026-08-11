@@ -173,21 +173,40 @@ async fn run_event_loop(
 	dirty: &Arc<AtomicBool>,
 	events: &mut ActorEvents,
 ) {
-	while let Some(event) = events.recv().await {
+	loop {
 		pump_registered_tasks(tasks, registered_task_rx);
-		dispatch_event(
-			event,
-			bindings,
-			config,
-			ctx,
-			abort,
-			tasks,
-			registered_task_rx,
-			dirty,
-		)
-		.await;
-		if ctx.has_end_reason() {
-			break;
+
+		tokio::select! {
+			// Reap completed background tasks as they finish. A tokio JoinSet
+			// retains each finished task's allocation until it is joined, so
+			// without this the set grows for the entire actor lifetime and
+			// shows up as native (non-V8) RSS growth.
+			Some(result) = tasks.join_next(), if !tasks.is_empty() => {
+				if let Err(error) = result {
+					if !error.is_cancelled() {
+						tracing::error!(?error, "napi background task failed to join");
+					}
+				}
+			}
+			event = events.recv() => {
+				let Some(event) = event else {
+					break;
+				};
+				dispatch_event(
+					event,
+					bindings,
+					config,
+					ctx,
+					abort,
+					tasks,
+					registered_task_rx,
+					dirty,
+				)
+				.await;
+				if ctx.has_end_reason() {
+					break;
+				}
+			}
 		}
 	}
 }

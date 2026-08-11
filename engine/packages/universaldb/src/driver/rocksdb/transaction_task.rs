@@ -2,17 +2,17 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use rocksdb::{
-	OptimisticTransactionDB, ReadOptions, Transaction as RocksDbTransaction, WriteOptions,
+	OptimisticTransactionDB, ReadOptions, SnapshotWithThreadMode,
+	Transaction as RocksDbTransaction, WriteOptions,
 };
 use tokio::sync::{mpsc, oneshot};
 
-use super::transaction_conflict_tracker::TransactionConflictTracker;
 use crate::{
 	atomic::apply_atomic_op,
+	conflict_tracker::TransactionConflictTracker,
 	error::DatabaseError,
-	key_selector::KeySelector,
 	options::{ConflictRangeType, MutationType},
-	tx_ops::Operation,
+	tx_ops::{self, Operation},
 	value::{KeyValue, Slice, Values},
 	versionstamp::{generate_versionstamp, substitute_raw_versionstamp},
 };
@@ -34,6 +34,9 @@ fn iter_bytes_to_vec(bytes: &[u8]) -> Vec<u8> {
 		bytes.to_vec()
 	}
 }
+
+/// The point-in-time view a single UDB transaction reads from.
+type Snapshot<'a> = SnapshotWithThreadMode<'a, OptimisticTransactionDB>;
 
 pub enum TransactionCommand {
 	Get {
@@ -92,10 +95,17 @@ impl TransactionTask {
 	}
 
 	pub async fn run(mut self) {
+		// One pinned snapshot per UDB transaction, taken at the first read. FDB pins a read version at
+		// the first read so every read in a transaction observes the same point in time; without this
+		// a commit landing mid-transaction would be partially visible. It is released on commit so a
+		// reused task takes a fresh snapshot for the next transaction.
+		let mut snapshot: Option<SnapshotWithThreadMode<'_, OptimisticTransactionDB>> = None;
+
 		while let Some(command) = self.receiver.recv().await {
 			match command {
 				TransactionCommand::Get { key, response } => {
-					let result = self.handle_get(&key).await;
+					let snapshot = snapshot.get_or_insert_with(|| self.db.snapshot());
+					let result = Self::handle_get(snapshot, &key);
 					let _ = response.send(result);
 				}
 				TransactionCommand::GetKey {
@@ -104,7 +114,8 @@ impl TransactionTask {
 					offset,
 					response,
 				} => {
-					let result = self.handle_get_key(&key, or_equal, offset).await;
+					let snapshot = snapshot.get_or_insert_with(|| self.db.snapshot());
+					let result = Self::handle_get_key(snapshot, &key, or_equal, offset);
 					let _ = response.send(result);
 				}
 				TransactionCommand::GetRange {
@@ -118,18 +129,18 @@ impl TransactionTask {
 					reverse,
 					response,
 				} => {
-					let result = self
-						.handle_get_range(
-							begin,
-							begin_or_equal,
-							begin_offset,
-							end,
-							end_or_equal,
-							end_offset,
-							limit,
-							reverse,
-						)
-						.await;
+					let snapshot = snapshot.get_or_insert_with(|| self.db.snapshot());
+					let result = Self::handle_get_range(
+						snapshot,
+						begin,
+						begin_or_equal,
+						begin_offset,
+						end,
+						end_or_equal,
+						end_offset,
+						limit,
+						reverse,
+					);
 					let _ = response.send(result);
 				}
 				TransactionCommand::Commit {
@@ -138,6 +149,10 @@ impl TransactionTask {
 					conflict_ranges,
 					response,
 				} => {
+					// The commit reads the latest committed state, not this transaction's snapshot, so
+					// release the snapshot before applying.
+					snapshot = None;
+
 					let result = self
 						.handle_commit(start_version, operations, conflict_ranges)
 						.await;
@@ -148,7 +163,7 @@ impl TransactionTask {
 					end,
 					response,
 				} => {
-					let result = self.handle_get_estimated_range_size(&begin, &end).await;
+					let result = self.handle_get_estimated_range_size(&begin, &end);
 					let _ = response.send(result);
 				}
 			}
@@ -162,27 +177,19 @@ impl TransactionTask {
 		self.db.transaction_opt(&write_opts, &txn_opts)
 	}
 
-	async fn handle_get(&mut self, key: &[u8]) -> Result<Option<Slice>> {
-		let txn = self.create_transaction();
-
-		let read_opts = ReadOptions::default();
-
-		Ok(txn
-			.get_opt(key, &read_opts)
+	fn handle_get(snapshot: &Snapshot<'_>, key: &[u8]) -> Result<Option<Slice>> {
+		Ok(snapshot
+			.get(key)
 			.context("failed to read key from rocksdb")?
 			.map(|v| v.into()))
 	}
 
-	async fn handle_get_key(
-		&mut self,
+	fn handle_get_key(
+		snapshot: &Snapshot<'_>,
 		key: &[u8],
 		or_equal: bool,
 		offset: i32,
 	) -> Result<Option<Slice>> {
-		let txn = self.create_transaction();
-
-		let read_opts = ReadOptions::default();
-
 		// Based on PostgreSQL's interpretation:
 		// (false, 1) => first_greater_or_equal
 		// (true, 1) => first_greater_than
@@ -192,7 +199,7 @@ impl TransactionTask {
 		match (or_equal, offset) {
 			(false, 1) => {
 				// first_greater_or_equal: find first key >= search_key
-				let mut iter = txn.raw_iterator_opt(read_opts);
+				let mut iter = snapshot.raw_iterator();
 				iter.seek(key);
 				let result = iter.key().map(iter_bytes_to_vec);
 				iter.status()
@@ -201,7 +208,7 @@ impl TransactionTask {
 			}
 			(true, 1) => {
 				// first_greater_than: find first key > search_key
-				let mut iter = txn.raw_iterator_opt(read_opts);
+				let mut iter = snapshot.raw_iterator();
 				iter.seek(key);
 				while iter.valid() {
 					let k = iter.key().expect("iterator should be valid");
@@ -219,7 +226,7 @@ impl TransactionTask {
 			(false, 0) => {
 				// last_less_than: find last key < search_key
 				// Use reverse iterator starting just before the key
-				let mut iter = txn.raw_iterator_opt(read_opts);
+				let mut iter = snapshot.raw_iterator();
 				iter.seek_for_prev(key);
 				while iter.valid() {
 					let k = iter.key().expect("iterator should be valid");
@@ -236,7 +243,7 @@ impl TransactionTask {
 			(true, 0) => {
 				// last_less_or_equal: find last key <= search_key
 				// Use reverse iterator starting from the key
-				let mut iter = txn.raw_iterator_opt(read_opts);
+				let mut iter = snapshot.raw_iterator();
 				iter.seek_for_prev(key);
 				while iter.valid() {
 					let k = iter.key().expect("iterator should be valid");
@@ -257,75 +264,19 @@ impl TransactionTask {
 		}
 	}
 
-	#[allow(dead_code)]
-	fn resolve_key_selector(
-		&self,
-		txn: &RocksDbTransaction<OptimisticTransactionDB>,
-		selector: &KeySelector<'_>,
-		_read_opts: &ReadOptions,
-	) -> Result<Vec<u8>> {
-		let key = selector.key();
-		let offset = selector.offset();
-		let or_equal = selector.or_equal();
-
-		if offset == 0 && or_equal {
-			// Simple case: exact key
-			return Ok(key.to_vec());
-		}
-
-		// Create an iterator to find the key
-		let mut iter = txn.raw_iterator_opt(ReadOptions::default());
-		iter.seek(key);
-
-		let mut keys: Vec<Vec<u8>> = Vec::new();
-
-		while iter.valid() {
-			let k = iter.key().expect("iterator should be valid");
-			keys.push(iter_bytes_to_vec(k));
-			if keys.len() > (offset.abs() + 1) as usize {
-				break;
-			}
-			iter.next();
-		}
-		iter.status()
-			.context("failed to iterate rocksdb for key selector")?;
-
-		// Apply the selector logic
-		let idx = if or_equal {
-			// If or_equal is true and the key exists, use it
-			if !keys.is_empty() && keys[0] == key {
-				offset.max(0) as usize
-			} else {
-				// Otherwise, use the next key
-				if offset >= 0 {
-					offset as usize
-				} else {
-					return Ok(Vec::new());
-				}
-			}
-		} else {
-			// If or_equal is false, skip the exact match
-			let skip = if !keys.is_empty() && keys[0] == key {
-				1
-			} else {
-				0
-			};
-			(skip + offset.max(0)) as usize
-		};
-
-		if idx < keys.len() {
-			Ok(keys[idx].clone())
-		} else {
-			Ok(Vec::new())
-		}
-	}
-
 	async fn handle_commit(
-		&mut self,
+		&self,
 		start_version: u64,
 		operations: Vec<Operation>,
 		conflict_ranges: Vec<(Vec<u8>, Vec<u8>, ConflictRangeType)>,
 	) -> Result<()> {
+		// A read-only transaction is never committed, matching FDB. Its reads all came from one pinned
+		// snapshot, so there is nothing to validate, and running the conflict check anyway would abort
+		// a transaction that cannot have observed anything inconsistent.
+		if tx_ops::is_read_only(&operations, &conflict_ranges) {
+			return Ok(());
+		}
+
 		// Create a new transaction for this commit
 		let txn = self.create_transaction();
 		let transaction_versionstamp = generate_versionstamp(0);
@@ -412,9 +363,11 @@ impl TransactionTask {
 			}
 		}
 
+		// rocksdb generates both start and commit versions from the in-process counter.
+		let commit_version = self.txn_conflict_tracker.next_global_version();
 		if self
 			.txn_conflict_tracker
-			.check_and_insert(start_version, conflict_ranges)
+			.check_and_insert(start_version, commit_version, conflict_ranges)
 			.await
 		{
 			return Err(DatabaseError::NotCommitted.into());
@@ -425,7 +378,7 @@ impl TransactionTask {
 			Ok(_) => Ok(()),
 			Err(e) => {
 				// If the txn failed due to a rocksdb error, remove it from the conflict tracker
-				self.txn_conflict_tracker.remove(start_version).await;
+				self.txn_conflict_tracker.remove(commit_version).await;
 
 				let err_str = e.to_string();
 
@@ -440,8 +393,8 @@ impl TransactionTask {
 		}
 	}
 
-	async fn handle_get_range(
-		&mut self,
+	fn handle_get_range(
+		snapshot: &Snapshot<'_>,
 		begin: Vec<u8>,
 		begin_or_equal: bool,
 		begin_offset: i32,
@@ -451,16 +404,13 @@ impl TransactionTask {
 		limit: Option<usize>,
 		reverse: bool,
 	) -> Result<Values> {
-		let txn = self.create_transaction();
-		let read_opts = ReadOptions::default();
-
 		// Resolve the begin selector
 		let resolved_begin =
-			self.resolve_key_selector_for_range(&txn, &begin, begin_or_equal, begin_offset)?;
+			Self::resolve_key_selector_for_range(snapshot, &begin, begin_or_equal, begin_offset)?;
 
 		// Resolve the end selector
 		let resolved_end =
-			self.resolve_key_selector_for_range(&txn, &end, end_or_equal, end_offset)?;
+			Self::resolve_key_selector_for_range(snapshot, &end, end_or_equal, end_offset)?;
 
 		let mut results = Vec::new();
 		let limit = limit.unwrap_or(usize::MAX);
@@ -470,7 +420,7 @@ impl TransactionTask {
 		// during a forward scan and reversing afterward would instead return the
 		// lowest keys, which is wrong for reverse range reads.
 		if reverse {
-			let mut iter = txn.raw_iterator_opt(read_opts);
+			let mut iter = snapshot.raw_iterator();
 			iter.seek_for_prev(&resolved_end);
 
 			while iter.valid() {
@@ -497,7 +447,7 @@ impl TransactionTask {
 			iter.status()
 				.context("failed to iterate rocksdb for get range")?;
 		} else {
-			let mut iter = txn.raw_iterator_opt(read_opts);
+			let mut iter = snapshot.raw_iterator();
 			iter.seek(&resolved_begin);
 
 			while iter.valid() {
@@ -524,8 +474,7 @@ impl TransactionTask {
 	}
 
 	fn resolve_key_selector_for_range(
-		&self,
-		txn: &RocksDbTransaction<OptimisticTransactionDB>,
+		snapshot: &Snapshot<'_>,
 		key: &[u8],
 		or_equal: bool,
 		offset: i32,
@@ -536,12 +485,10 @@ impl TransactionTask {
 		// (false, 0) => last_less_than
 		// (true, 0) => last_less_or_equal
 
-		let read_opts = ReadOptions::default();
-
 		match (or_equal, offset) {
 			(false, 1) => {
 				// first_greater_or_equal: find first key >= search_key
-				let mut iter = txn.raw_iterator_opt(read_opts);
+				let mut iter = snapshot.raw_iterator();
 				iter.seek(key);
 				let result = iter.key().map(iter_bytes_to_vec);
 				iter.status().context(
@@ -552,7 +499,7 @@ impl TransactionTask {
 			}
 			(true, 1) => {
 				// first_greater_than: find first key > search_key
-				let mut iter = txn.raw_iterator_opt(read_opts);
+				let mut iter = snapshot.raw_iterator();
 				iter.seek(key);
 				while iter.valid() {
 					let k = iter.key().expect("iterator should be valid");
@@ -576,7 +523,7 @@ impl TransactionTask {
 		}
 	}
 
-	async fn handle_get_estimated_range_size(&mut self, begin: &[u8], end: &[u8]) -> Result<i64> {
+	fn handle_get_estimated_range_size(&self, begin: &[u8], end: &[u8]) -> Result<i64> {
 		let range = rocksdb::Range::new(begin, end);
 
 		Ok(self

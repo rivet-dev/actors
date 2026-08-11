@@ -674,6 +674,7 @@ impl PegboardGateway2 {
 			);
 			let ws_to_tunnel = tokio::spawn(
 				ws_to_tunnel_task::task(
+					ctx.clone(),
 					in_flight_req.clone(),
 					ws_rx,
 					ingress_bytes.clone(),

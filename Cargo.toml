@@ -67,6 +67,7 @@ members = [
   "engine/sdks/rust/depot-protocol",
   "engine/sdks/rust/test-envoy",
   "engine/sdks/rust/ups-protocol",
+  "engine/sdks/rust/universaldb-commit",
   "rivetkit-rust/packages/actor-persist",
   "rivetkit-rust/packages/client",
   "rivetkit-rust/packages/engine-process",
@@ -655,6 +656,9 @@ members = [
     [workspace.dependencies.rivet-ups-protocol]
     path = "engine/sdks/rust/ups-protocol"
 
+    [workspace.dependencies.rivet-universaldb-commit]
+    path = "engine/sdks/rust/universaldb-commit"
+
 [profile.dev]
 overflow-checks = false
 # "line-tables-only" produces just the line-number DWARF needed for stack
@@ -671,6 +675,16 @@ debug = false
 lto = "fat"
 codegen-units = 1
 opt-level = 3
+
+# Release-grade optimization with DWARF line info and no symbol stripping so
+# heaptrack can resolve native allocation backtraces during leak investigation.
+# Uses thin LTO and more codegen units to keep frames un-inlined and builds fast.
+[profile.profiling]
+inherits = "release"
+debug = 1
+lto = "thin"
+codegen-units = 16
+strip = false
 
 [profile.quick]
 inherits = "dev"

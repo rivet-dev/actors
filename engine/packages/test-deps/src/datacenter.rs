@@ -73,7 +73,6 @@ pub async fn setup_single_datacenter(
 	let mut root = rivet_config::config::Root::default();
 	root.database = Some(db_config);
 	root.pubsub = Some(pubsub_config);
-	root.api_public = Some(Default::default());
 	root.api_peer = Some(rivet_config::config::ApiPeer {
 		port: Some(api_peer_port),
 		..Default::default()

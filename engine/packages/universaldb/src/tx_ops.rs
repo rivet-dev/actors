@@ -34,6 +34,22 @@ pub enum Operation {
 	},
 }
 
+/// Whether a transaction has nothing to commit: no mutations and no explicitly added write conflict
+/// ranges. FDB never commits a read-only transaction, so it can never conflict and never causes
+/// another transaction to conflict. Drivers use this to skip the commit path entirely.
+pub fn is_read_only(
+	operations: &[Operation],
+	conflict_ranges: &[(Vec<u8>, Vec<u8>, ConflictRangeType)],
+) -> bool {
+	operations.is_empty()
+		&& !conflict_ranges
+			.iter()
+			.any(|(_, _, conflict_type)| match conflict_type {
+				ConflictRangeType::Write => true,
+				ConflictRangeType::Read => false,
+			})
+}
+
 #[derive(Debug, Clone)]
 pub enum GetOutput {
 	Value(Vec<u8>),

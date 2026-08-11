@@ -120,6 +120,10 @@ pub(crate) async fn pegboard_actor_metrics(ctx: &mut WorkflowCtx, input: &Input)
 	})
 	.await?;
 
+	// The actor's kv is deleted on destroy, so remove its contribution from the running kv
+	// storage total.
+	ctx.v(2).activity(RemoveKvMetricsInput {}).await?;
+
 	Ok(())
 }
 
@@ -319,6 +323,37 @@ async fn record_kv_metrics(ctx: &ActivityCtx, input: &RecordKvMetricsInput) -> R
 		.await?;
 
 	state.last_kv_storage_size = new_kv_storage_size;
+
+	Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize, Hash)]
+struct RemoveKvMetricsInput {}
+
+#[activity(RemoveKvMetrics)]
+async fn remove_kv_metrics(ctx: &ActivityCtx, input: &RemoveKvMetricsInput) -> Result<()> {
+	let mut state = ctx.state::<State>()?;
+
+	let namespace_id = state.namespace_id;
+	let name = &state.name;
+	let last_kv_storage_size = state.last_kv_storage_size;
+
+	if last_kv_storage_size != 0 {
+		ctx.udb()?
+			.txn("pegboard_actor_remove_kv_metrics", |tx| async move {
+				namespace::keys::metric::inc(
+					&tx.with_subspace(namespace::keys::subspace()),
+					namespace_id,
+					namespace::keys::metric::Metric::KvStorageUsed(name.to_string()),
+					-last_kv_storage_size,
+				);
+
+				Ok(())
+			})
+			.await?;
+	}
+
+	state.last_kv_storage_size = 0;
 
 	Ok(())
 }

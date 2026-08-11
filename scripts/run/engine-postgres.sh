@@ -4,19 +4,26 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-if ! command -v nc >/dev/null 2>&1; then
-  echo "error: required command 'nc' not found."
-  exit 1
-fi
+POSTGRES_IMAGE="postgres:18"
 
-if ! nc -z localhost 5432 >/dev/null 2>&1; then
-  echo "Postgres is not reachable at localhost:5432."
+# pg_isready reports ready only once the server is actually accepting connections.
+# The Postgres entrypoint binds the port during its bootstrap phase and then
+# restarts, so a plain port check (nc -z) passes too early and the engine hits
+# "connection reset" / "early eof" on first connect. Run pg_isready from a throwaway
+# container on the host network so no client binary needs to be installed locally.
+postgres_ready() {
+  docker run --rm --network host "${POSTGRES_IMAGE}" \
+    pg_isready -h localhost -p 5432 -U postgres -d postgres >/dev/null 2>&1
+}
+
+if ! postgres_ready; then
+  echo "Postgres is not accepting connections."
   echo "Starting postgres container..."
   "${SCRIPT_DIR}/postgres.sh"
 
   echo "Waiting for postgres to be ready..."
   for i in {1..30}; do
-    if nc -z localhost 5432 >/dev/null 2>&1; then
+    if postgres_ready; then
       echo "Postgres is ready!"
       break
     fi

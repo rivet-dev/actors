@@ -21,10 +21,9 @@ use crate::{
 	value::{Slice, Value, Values},
 };
 
-use super::{
-	transaction_conflict_tracker::TransactionConflictTracker,
-	transaction_task::{TransactionCommand, TransactionTask},
-};
+use crate::conflict_tracker::TransactionConflictTracker;
+
+use super::transaction_task::{TransactionCommand, TransactionTask};
 
 pub struct RocksDbTransactionDriver {
 	db: Arc<OptimisticTransactionDB>,

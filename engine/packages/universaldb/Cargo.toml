@@ -8,7 +8,9 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-nats.workspace = true
 async-trait.workspace = true
+base64.workspace = true
 deadpool-postgres.workspace = true
 foundationdb-tuple.workspace = true
 futures-util.workspace = true
@@ -18,20 +20,25 @@ rand.workspace = true
 rivet-metrics.workspace = true
 rivet-postgres-util.workspace = true
 rivet-tracing-utils.workspace = true
+rivet-universaldb-commit.workspace = true
 rocksdb.workspace = true
+scc.workspace = true
 serde.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio-postgres-rustls.workspace = true
 tokio-postgres.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 tokio.workspace = true
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
+vbare.workspace = true
 
 [dev-dependencies]
 rivet-config.workspace = true
 rivet-env.workspace = true
 rivet-pools.workspace = true
 rivet-test-deps-docker.workspace = true
+tokio-postgres.workspace = true
 tracing-subscriber.workspace = true

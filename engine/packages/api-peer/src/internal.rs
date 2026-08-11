@@ -62,7 +62,7 @@ pub async fn set_tracing_config(
 	body: SetTracingConfigRequest,
 ) -> Result<SetTracingConfigResponse> {
 	// Broadcast message to all services via UPS
-	let message = serde_json::to_vec(&body)?;
+	let message = rivet_util::serde::json_to_vec!(&body)?;
 
 	ctx.ups()?
 		.publish(TracingConfigSubject, &message, PublishOpts::broadcast())

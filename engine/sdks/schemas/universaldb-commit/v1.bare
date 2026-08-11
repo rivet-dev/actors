@@ -1,0 +1,98 @@
+# Commit wire format for the multi-node Postgres leader-resolver UDB driver.
+#
+# In multi-node mode a follower encodes a CommitRequest and sends it to the
+# elected leader over NATS request/reply; the leader decodes it to resolve and
+# apply. Rust-only (never leaves the engine), but versioned so rolling deploys
+# can skew follower vs leader code.
+
+type ConflictRangeType enum {
+	READ
+	WRITE
+}
+
+type ConflictRange struct {
+	begin: data
+	end: data
+	kind: ConflictRangeType
+}
+
+# Order MUST match universaldb::options::MutationType declaration order so the
+# enum tag round-trips. 15 variants today; never reorder, only append.
+type MutationType enum {
+	ADD
+	AND
+	BIT_AND
+	OR
+	BIT_OR
+	XOR
+	BIT_XOR
+	APPEND_IF_FITS
+	MAX
+	MIN
+	SET_VERSIONSTAMPED_KEY
+	SET_VERSIONSTAMPED_VALUE
+	BYTE_MIN
+	BYTE_MAX
+	COMPARE_AND_CLEAR
+}
+
+type SetValue struct {
+	key: data
+	value: data
+}
+
+type Clear struct {
+	key: data
+}
+
+type ClearRange struct {
+	begin: data
+	end: data
+}
+
+type AtomicOp struct {
+	key: data
+	param: data
+	opType: MutationType
+}
+
+type Operation union {
+	SetValue |
+	Clear |
+	ClearRange |
+	AtomicOp
+}
+
+type CommitRequest struct {
+	readVersion: u64
+	conflictRanges: list<ConflictRange>
+	operations: list<Operation>
+	# Failover dedup key. `clientNodeId` is the submitting follower's node id and
+	# `clientSeq` a per-process monotonic counter, unique per logical commit. The
+	# leader records committed (clientNodeId, clientSeq) so a follower that resends
+	# the same commit after an indeterminate leader failure is applied exactly once.
+	clientNodeId: data
+	clientSeq: u64
+}
+
+# Reply the leader sends back to the follower over the NATS request/reply inbox
+# after resolving a commit. `CommitCommitted` carries the assigned commit
+# version; `CommitConflict` (read-write conflict or cold-window reject) carries
+# nothing and maps to the retryable NotCommitted on the follower.
+type CommitCommitted struct {
+	commitVersion: i64
+}
+
+type CommitConflict void
+
+type CommitReply union {
+	CommitCommitted |
+	CommitConflict
+}
+
+# Durable-version watermark the leader broadcasts on every applied batch so
+# followers advance their read-snapshot floor. Best-effort; a lease-row poll is
+# the backstop.
+type Watermark struct {
+	durableVersion: i64
+}

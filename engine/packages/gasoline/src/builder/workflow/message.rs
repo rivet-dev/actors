@@ -76,7 +76,7 @@ impl<'a, M: Message> MessageBuilder<'a, M> {
 			let start_instant = Instant::now();
 
 			// Serialize body
-			let body_val = serde_json::value::to_raw_value(&self.body)
+			let body_val = rivet_util::serde::json_to_raw_value!(&self.body)
 				.map_err(WorkflowError::SerializeMessageBody)?;
 			let topic = self.topic.unwrap_or_else(|| "*".to_string());
 			let tags = serde_json::Value::Object(

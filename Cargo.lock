@@ -3938,6 +3938,7 @@ dependencies = [
  "futures-util",
  "gasoline",
  "lazy_static",
+ "moka",
  "namespace",
  "nix 0.30.1",
  "portpicker",
@@ -4010,6 +4011,7 @@ dependencies = [
  "rivet-pools",
  "rivet-runtime",
  "rivet-types",
+ "rivet-util",
  "rusqlite",
  "scc",
  "serde",
@@ -4147,6 +4149,7 @@ dependencies = [
  "rivet-runner-protocol",
  "rivet-runtime",
  "rivet-types",
+ "rivet-util",
  "scc",
  "serde",
  "serde_bare",
@@ -5382,6 +5385,7 @@ name = "rivet-depot-protocol"
 version = "2.3.7"
 dependencies = [
  "anyhow",
+ "rivet-util",
  "rivet-vbare-compiler",
  "serde",
  "serde_bare",
@@ -5516,7 +5520,7 @@ dependencies = [
  "anyhow",
  "hex",
  "rand 0.8.5",
- "rivet-util-serde",
+ "rivet-util",
  "rivet-vbare-compiler",
  "serde",
  "serde_bare",
@@ -5940,6 +5944,17 @@ dependencies = [
  "strum",
  "universaldb",
  "utoipa",
+ "vbare",
+]
+
+[[package]]
+name = "rivet-universaldb-commit"
+version = "2.3.7"
+dependencies = [
+ "anyhow",
+ "rivet-vbare-compiler",
+ "serde",
+ "serde_bare",
  "vbare",
 ]
 
@@ -8251,12 +8266,14 @@ version = "2.3.7"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "deadpool-postgres",
  "foundationdb-tuple",
  "futures-util",
  "hex",
  "lazy_static",
  "rand 0.8.5",
+ "rivet-async-nats",
  "rivet-config",
  "rivet-env",
  "rivet-metrics",
@@ -8264,17 +8281,21 @@ dependencies = [
  "rivet-postgres-util",
  "rivet-test-deps-docker",
  "rivet-tracing-utils",
+ "rivet-universaldb-commit",
  "rocksdb",
+ "scc",
  "serde",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "url",
  "uuid",
+ "vbare",
 ]
 
 [[package]]
@@ -8283,8 +8304,6 @@ version = "2.3.7"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
- "deadpool-postgres",
  "futures-util",
  "lazy_static",
  "rand 0.8.5",
@@ -8294,19 +8313,15 @@ dependencies = [
  "rivet-error",
  "rivet-metrics",
  "rivet-perf",
- "rivet-postgres-util",
  "rivet-test-deps-docker",
  "rivet-ups-protocol",
  "rivet-util",
  "scc",
  "serde",
  "serde_json",
- "sha2",
  "tabled",
  "tempfile",
  "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
  "tokio-util",
  "tracing",
  "tracing-subscriber",

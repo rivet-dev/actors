@@ -20,6 +20,19 @@ impl Deref for UdbPool {
 pub async fn setup(config: &Config) -> Result<Option<UdbPool>> {
 	let db_driver = match config.database() {
 		config::Database::Postgres(pg) => {
+			// A NATS config (set directly or inherited from the UPS config in
+			// `validate_and_set_defaults`) selects UniversalDB multi-node mode.
+			let nats = pg
+				.nats
+				.as_ref()
+				.map(|nats| universaldb::driver::postgres::NatsConfig {
+					addresses: nats.addresses.clone(),
+					username: nats.username.clone(),
+					password: nats.password.as_ref().map(|p| p.read().clone()),
+					client_capacity: nats.client_capacity,
+					subscription_capacity: nats.subscription_capacity,
+				});
+
 			let postgres_config = universaldb::driver::postgres::PostgresConfig {
 				connection_string: pg.url.read().clone(),
 				ssl_config: pg.ssl.as_ref().map(|ssl| {
@@ -29,6 +42,7 @@ pub async fn setup(config: &Config) -> Result<Option<UdbPool>> {
 						ssl_client_key_path: ssl.client_key_path.clone(),
 					}
 				}),
+				nats,
 			};
 
 			Arc::new(

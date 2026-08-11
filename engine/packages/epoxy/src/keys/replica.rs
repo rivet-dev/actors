@@ -11,11 +11,11 @@ impl FormalKey for ConfigKey {
 	// TODO: this is mistakenly not versioned. Transition to vbare so future
 	// changes to ClusterConfig don't require hand-rolled LegacyXxx fallbacks.
 	fn deserialize(&self, raw: &[u8]) -> Result<Self::Value> {
-		serde_bare::from_slice(raw).map_err(Into::into)
+		rivet_util::serde::bare_from_slice!(raw).map_err(Into::into)
 	}
 
 	fn serialize(&self, value: Self::Value) -> Result<Vec<u8>> {
-		serde_bare::to_vec(&value).map_err(Into::into)
+		rivet_util::serde::bare_to_vec!(&value).map_err(Into::into)
 	}
 }
 

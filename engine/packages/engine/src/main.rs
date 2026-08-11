@@ -36,6 +36,8 @@ fn main() -> Result<()> {
 }
 
 async fn main_inner() -> Result<()> {
+	tracing::info!(version=%build_meta::VERSION, git_sha=%build_meta::GIT_SHA, built_at=%build_meta::BUILD_TIMESTAMP, "starting rivet");
+
 	let cli = Cli::parse();
 
 	// Load config

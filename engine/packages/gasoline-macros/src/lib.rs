@@ -403,7 +403,7 @@ pub fn signal(attr: TokenStream, item: TokenStream) -> TokenStream {
 			}
 
 			fn parse(_name: &str, body: &serde_json::value::RawValue) -> gas::prelude::WorkflowResult<Self> {
-				serde_json::from_str(body.get()).map_err(WorkflowError::DeserializeSignalBody)
+				rivet_util::serde::json_from_str!(body.get()).map_err(WorkflowError::DeserializeSignalBody)
 			}
 		}
 	};

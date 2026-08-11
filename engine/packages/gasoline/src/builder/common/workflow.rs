@@ -81,7 +81,7 @@ where
 			return self;
 		}
 
-		match serde_json::to_value(&v) {
+		match rivet_util::serde::json_to_value!(&v) {
 			Ok(v) => {
 				self.tags.insert(k.to_string(), v);
 			}
@@ -125,7 +125,7 @@ where
 		}
 
 		// Serialize input
-		let input_val = serde_json::value::to_raw_value(&input)
+		let input_val = rivet_util::serde::json_to_raw_value!(&input)
 			.map_err(WorkflowError::SerializeWorkflowInput)?;
 
 		let actual_workflow_id = self

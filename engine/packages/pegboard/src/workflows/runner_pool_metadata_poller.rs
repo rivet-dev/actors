@@ -164,7 +164,7 @@ async fn poll_metadata(ctx: &ActivityCtx, input: &PollMetadataInput) -> Result<P
 	let base_poll_interval = metadata_poll_interval
 		.unwrap_or(default_poll_interval)
 		.max(min_poll_interval);
-	let backoff = util::backoff::Backoff::new_at(
+	let backoff = util::throttle::Backoff::new_at(
 		8,
 		None,
 		base_poll_interval as usize,

@@ -160,8 +160,6 @@ pub async fn start(
 	let shutting_down = Arc::new(AtomicBool::new(false));
 
 	for service in services {
-		tracing::debug!(name=%service.name, kind=?service.kind, "server starting service");
-
 		match service.kind.behavior() {
 			ServiceBehavior::Service => {
 				let config = config.clone();
@@ -395,13 +393,16 @@ pub async fn start(
 				if abort {
 					// Give time for services to handle final abort
 					tokio::time::sleep(Duration::from_millis(50)).await;
-					rivet_runtime::shutdown().await; // TODO: Fix `JoinHandle polled after completion` error
+					rivet_runtime::shutdown().await;
 
 					break;
 				}
 			}
 		}
 	}
+
+	// Shut down udb
+	pools.udb()?.shutdown().await;
 
 	// Stops term signal handler bg task
 	rivet_runtime::TermSignal::stop();

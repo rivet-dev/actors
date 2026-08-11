@@ -34,6 +34,13 @@ pub trait DatabaseDriver: Send + Sync {
 	fn checkpoint(&self, _path: &Path) -> Result<()> {
 		bail!("checkpoint not supported by this database driver")
 	}
+
+	/// Gracefully release any process-wide resources before shutdown. The Postgres driver hands off
+	/// its leader lease here so a standby node takes over immediately instead of waiting out the
+	/// lease TTL. Default is a no-op.
+	fn shutdown<'a>(&'a self) -> BoxFut<'a, ()> {
+		Box::pin(async {})
+	}
 }
 
 pub trait TransactionDriver: Send + Sync {

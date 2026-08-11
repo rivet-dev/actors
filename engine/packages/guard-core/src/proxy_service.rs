@@ -33,7 +33,7 @@ use crate::RouteTarget;
 use crate::request_context::RequestContext;
 use crate::response_body::ResponseBody;
 use crate::route::{CacheKeyFn, ResolveRouteOutput, RouteCache, RoutingFn, RoutingOutput};
-use crate::utils::{InFlightCounter, RateLimiter};
+use crate::utils::InFlightCounter;
 use crate::{
 	WebSocketHandle, custom_serve::HibernationResult, errors, metrics, task_group::TaskGroup, utils,
 };
@@ -63,7 +63,7 @@ pub struct ProxyState {
 	>,
 	route_cache: RouteCache,
 	// We use moka::Cache instead of scc::HashMap because it automatically handles TTL and capacity
-	rate_limiters: Cache<std::net::IpAddr, Arc<Mutex<RateLimiter>>>,
+	rate_limiters: Cache<std::net::IpAddr, Arc<Mutex<rivet_util::throttle::RateLimiter>>>,
 	in_flight_counters: Cache<std::net::IpAddr, Arc<Mutex<InFlightCounter>>>,
 	in_flight_requests: Cache<protocol::RequestId, ()>,
 
@@ -105,11 +105,11 @@ impl ProxyState {
 			route_cache: RouteCache::new(route_cache_ttl),
 			rate_limiters: Cache::builder()
 				.max_capacity(10_000)
-				.time_to_live(PROXY_STATE_CACHE_TTL)
+				.time_to_idle(PROXY_STATE_CACHE_TTL)
 				.build(),
 			in_flight_counters: Cache::builder()
 				.max_capacity(10_000)
-				.time_to_live(PROXY_STATE_CACHE_TTL)
+				.time_to_idle(PROXY_STATE_CACHE_TTL)
 				.build(),
 			in_flight_requests: Cache::builder().max_capacity(10_000_000).build(),
 			tasks: TaskGroup::new(),
@@ -224,9 +224,11 @@ impl ProxyState {
 			if let Some(existing_limiter) = self.rate_limiters.get(&req_ctx.client_ip).await {
 				existing_limiter
 			} else {
-				let new_limiter = Arc::new(Mutex::new(RateLimiter::new(
-					req_ctx.rate_limit.requests,
-					req_ctx.rate_limit.period,
+				let new_limiter = Arc::new(Mutex::new(rivet_util::throttle::RateLimiter::new(
+					rivet_util::throttle::RateLimitMethod::FixedWindow {
+						requests: req_ctx.rate_limit.requests,
+						period: Duration::from_secs(req_ctx.rate_limit.period),
+					},
 				)));
 				self.rate_limiters
 					.insert(req_ctx.client_ip, new_limiter.clone())

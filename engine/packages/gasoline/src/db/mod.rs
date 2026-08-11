@@ -310,17 +310,19 @@ pub struct WorkflowData {
 
 impl WorkflowData {
 	pub fn parse_input<W: Workflow>(&self) -> WorkflowResult<W::Input> {
-		serde_json::from_str(self.input.get()).map_err(WorkflowError::DeserializeWorkflowInput)
+		rivet_util::serde::json_from_str!(self.input.get())
+			.map_err(WorkflowError::DeserializeWorkflowInput)
 	}
 
 	pub fn parse_state<T: DeserializeOwned>(&self) -> WorkflowResult<T> {
-		serde_json::from_str(self.state.get()).map_err(WorkflowError::DeserializeWorkflowState)
+		rivet_util::serde::json_from_str!(self.state.get())
+			.map_err(WorkflowError::DeserializeWorkflowState)
 	}
 
 	pub fn parse_output<W: Workflow>(&self) -> WorkflowResult<Option<W::Output>> {
 		self.output
 			.as_ref()
-			.map(|x| serde_json::from_str(x.get()))
+			.map(|x| rivet_util::serde::json_from_str!(x.get()))
 			.transpose()
 			.map_err(WorkflowError::DeserializeWorkflowOutput)
 	}

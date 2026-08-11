@@ -1,11 +1,13 @@
 use std::{
 	future::Future,
 	pin::Pin,
-	sync::atomic::{AtomicBool, Ordering},
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
 };
 
 use anyhow::{Context, Result};
-use deadpool_postgres::Pool;
 use tokio::sync::{OnceCell, mpsc, oneshot};
 
 use crate::{
@@ -18,33 +20,35 @@ use crate::{
 	value::{Slice, Value, Values},
 };
 
-use super::transaction_task::{TransactionCommand, TransactionTask};
+use super::{
+	shared::PostgresShared,
+	transaction_task::{TransactionCommand, TransactionTask},
+};
 
 pub struct PostgresTransactionDriver {
-	pool: Pool,
+	shared: Arc<PostgresShared>,
 	operations: TransactionOperations,
 	committed: AtomicBool,
 	tx_sender: OnceCell<mpsc::UnboundedSender<TransactionCommand>>,
 }
 
 impl PostgresTransactionDriver {
-	pub fn with_config(pool: Pool) -> Self {
+	pub fn new(shared: Arc<PostgresShared>) -> Self {
 		PostgresTransactionDriver {
-			pool,
+			shared,
 			operations: TransactionOperations::default(),
 			committed: AtomicBool::new(false),
 			tx_sender: OnceCell::new(),
 		}
 	}
 
-	/// Get or create the transaction task
+	/// Get or create the transaction task that owns this transaction's read snapshot.
 	async fn ensure_transaction(&self) -> Result<&mpsc::UnboundedSender<TransactionCommand>> {
 		self.tx_sender
 			.get_or_try_init(|| async {
 				let (sender, receiver) = mpsc::unbounded_channel();
 
-				// Spawn the transaction task with serializable isolation
-				let task = TransactionTask::new(self.pool.clone(), receiver);
+				let task = TransactionTask::new(self.shared.clone(), receiver);
 				tokio::spawn(task.run());
 
 				anyhow::Ok(sender)

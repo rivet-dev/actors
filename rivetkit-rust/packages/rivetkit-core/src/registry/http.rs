@@ -2,6 +2,7 @@ use super::dispatch::*;
 use super::inspector::*;
 use super::*;
 use crate::error::{ProtocolError, client_error_message, client_error_metadata};
+use crate::serde_metrics;
 use ::http;
 
 const HEADER_RIVET_ACTOR: &str = "x-rivet-actor";
@@ -773,6 +774,15 @@ pub(super) fn content_type_for_encoding(encoding: HttpResponseEncoding) -> &'sta
 	}
 }
 
+/// Bounded serde metric `format` label for the request/response encoding.
+fn encoding_format_label(encoding: HttpResponseEncoding) -> &'static str {
+	match encoding {
+		HttpResponseEncoding::Json => "json",
+		HttpResponseEncoding::Cbor => "cbor",
+		HttpResponseEncoding::Bare => "bare",
+	}
+}
+
 pub(super) fn serialize_http_response_error(
 	encoding: HttpResponseEncoding,
 	group: &str,
@@ -830,26 +840,31 @@ pub(super) fn decode_http_action_args(
 	encoding: HttpResponseEncoding,
 	body: &[u8],
 ) -> Result<Vec<u8>> {
-	match encoding {
-		HttpResponseEncoding::Json => {
-			let request: HttpActionRequestJson =
-				serde_json::from_slice(body).context("decode json HTTP action request")?;
-			let args = normalize_json_args(request.args);
-			encode_json_as_cbor(&args)
-		}
-		HttpResponseEncoding::Cbor => {
-			let request: HttpActionRequestJson = ciborium::from_reader(Cursor::new(body))
-				.context("decode cbor HTTP action request")?;
-			let args = normalize_json_args(request.args);
-			encode_json_as_cbor(&args)
-		}
-		HttpResponseEncoding::Bare => {
-			let request =
-				<client_protocol::versioned::HttpActionRequest as OwnedVersionedData>::deserialize_with_embedded_version(body)
-					.context("decode bare HTTP action request")?;
-			Ok(request.args)
-		}
-	}
+	serde_metrics::measure_deserialize(
+		encoding_format_label(encoding),
+		"http_action_request",
+		body.len(),
+		|| match encoding {
+			HttpResponseEncoding::Json => {
+				let request: HttpActionRequestJson =
+					serde_json::from_slice(body).context("decode json HTTP action request")?;
+				let args = normalize_json_args(request.args);
+				encode_json_as_cbor(&args)
+			}
+			HttpResponseEncoding::Cbor => {
+				let request: HttpActionRequestJson = ciborium::from_reader(Cursor::new(body))
+					.context("decode cbor HTTP action request")?;
+				let args = normalize_json_args(request.args);
+				encode_json_as_cbor(&args)
+			}
+			HttpResponseEncoding::Bare => {
+				let request =
+					<client_protocol::versioned::HttpActionRequest as OwnedVersionedData>::deserialize_with_embedded_version(body)
+						.context("decode bare HTTP action request")?;
+				Ok(request.args)
+			}
+		},
+	)
 }
 
 fn normalize_json_args(args: JsonValue) -> Vec<JsonValue> {
@@ -900,25 +915,34 @@ pub(super) fn encode_http_action_response(
 	encoding: HttpResponseEncoding,
 	output: Vec<u8>,
 ) -> Result<HttpResponse> {
-	let body = match encoding {
-		HttpResponseEncoding::Json => serde_json::to_vec(&json!({
-			"output": decode_cbor_json_or_null(&output),
-		}))?,
-		HttpResponseEncoding::Cbor => {
-			let mut out = Vec::new();
-			ciborium::into_writer(
-				&json!({
+	let body = serde_metrics::measure_serialize(
+		encoding_format_label(encoding),
+		"http_action_response",
+		|| {
+			let body = match encoding {
+				HttpResponseEncoding::Json => serde_json::to_vec(&json!({
 					"output": decode_cbor_json_or_null(&output),
-				}),
-				&mut out,
-			)?;
-			out
-		}
-		HttpResponseEncoding::Bare => client_protocol::versioned::HttpActionResponse::wrap_latest(
-			client_protocol::HttpActionResponse { output },
-		)
-		.serialize_with_embedded_version(client_protocol::PROTOCOL_VERSION)?,
-	};
+				}))?,
+				HttpResponseEncoding::Cbor => {
+					let mut out = Vec::new();
+					ciborium::into_writer(
+						&json!({
+							"output": decode_cbor_json_or_null(&output),
+						}),
+						&mut out,
+					)?;
+					out
+				}
+				HttpResponseEncoding::Bare => {
+					client_protocol::versioned::HttpActionResponse::wrap_latest(
+						client_protocol::HttpActionResponse { output },
+					)
+					.serialize_with_embedded_version(client_protocol::PROTOCOL_VERSION)?
+				}
+			};
+			Ok(body)
+		},
+	)?;
 	Ok(HttpResponse {
 		status: StatusCode::OK.as_u16(),
 		headers: HashMap::from([(

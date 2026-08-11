@@ -89,6 +89,8 @@ import {
 	uniqueVarActor,
 } from "./actors/state/vars.ts";
 // Testing
+import { churnDb } from "./actors/testing/churn-db.ts";
+import { growDb } from "./actors/testing/grow-db.ts";
 import { inlineClientActor } from "./actors/testing/inline-client.ts";
 import { loadTestAgent } from "./actors/testing/load-test-agent.ts";
 import { loadTestAgent2 } from "./actors/testing/load-test-agent-2.ts";
@@ -289,6 +291,8 @@ export const registry = setup({
 		sqliteRealworldBench,
 		rawSqliteFuzzer,
 		sqliteMemoryPressure,
+		growDb,
+		churnDb,
 		mockAgenticLoop,
 		sleepCloseFuzz,
 		loadTestAgent,

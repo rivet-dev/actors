@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CONTAINER_NAME="rivet-engine-postgres"
-POSTGRES_IMAGE="postgres:17"
+POSTGRES_IMAGE="postgres:18"
 
 if docker ps --all --format '{{.Names}}' | grep -qw "${CONTAINER_NAME}"; then
   if docker ps --format '{{.Names}}' | grep -qw "${CONTAINER_NAME}"; then

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::*;
 use futures_util::future::join_all;
-use rivet_test_deps_docker::{TestDatabase, TestPubSub};
+use rivet_test_deps_docker::TestPubSub;
 use std::future::Future;
 use tabled::{builder::Builder, settings::Style};
 use universalpubsub::{NextOutput, PubSub, PublishOpts};
@@ -654,98 +654,6 @@ async fn setup_nats_single_mem() -> Result<(PubSub, PubSub)> {
 	Ok((pubsub.clone(), pubsub))
 }
 
-async fn setup_pg_pair() -> Result<(PubSub, PubSub)> {
-	let test_id = Uuid::new_v4();
-	let (db_config, mut docker) = TestDatabase::Postgres.config(test_id, 1).await?;
-	if let Some(ref mut d) = docker {
-		d.start().await?;
-	}
-	tokio::time::sleep(Duration::from_secs(5)).await;
-	let rivet_config::config::Database::Postgres(pg) = db_config else {
-		unreachable!()
-	};
-	let url = pg.url.read().clone();
-	let driver_pub = universalpubsub::driver::postgres::PostgresDriver::connect(
-		url.clone(),
-		false,
-		None,
-		None,
-		None,
-	)
-	.await?;
-	let driver_sub =
-		universalpubsub::driver::postgres::PostgresDriver::connect(url, false, None, None, None)
-			.await?;
-	Ok((
-		PubSub::new_with_memory_optimization(Arc::new(driver_pub), false),
-		PubSub::new_with_memory_optimization(Arc::new(driver_sub), false),
-	))
-}
-
-async fn setup_pg_single() -> Result<(PubSub, PubSub)> {
-	let test_id = Uuid::new_v4();
-	let (db_config, mut docker) = TestDatabase::Postgres.config(test_id, 1).await?;
-	if let Some(ref mut d) = docker {
-		d.start().await?;
-	}
-	tokio::time::sleep(Duration::from_secs(5)).await;
-	let rivet_config::config::Database::Postgres(pg) = db_config else {
-		unreachable!()
-	};
-	let url = pg.url.read().clone();
-	let driver =
-		universalpubsub::driver::postgres::PostgresDriver::connect(url, false, None, None, None)
-			.await?;
-	let pubsub = PubSub::new_with_memory_optimization(Arc::new(driver), false);
-	Ok((pubsub.clone(), pubsub))
-}
-
-async fn setup_pg_pair_mem() -> Result<(PubSub, PubSub)> {
-	let test_id = Uuid::new_v4();
-	let (db_config, mut docker) = TestDatabase::Postgres.config(test_id, 1).await?;
-	if let Some(ref mut d) = docker {
-		d.start().await?;
-	}
-	tokio::time::sleep(Duration::from_secs(5)).await;
-	let rivet_config::config::Database::Postgres(pg) = db_config else {
-		unreachable!()
-	};
-	let url = pg.url.read().clone();
-	let driver_pub = universalpubsub::driver::postgres::PostgresDriver::connect(
-		url.clone(),
-		true,
-		None,
-		None,
-		None,
-	)
-	.await?;
-	let driver_sub =
-		universalpubsub::driver::postgres::PostgresDriver::connect(url, true, None, None, None)
-			.await?;
-	Ok((
-		PubSub::new_with_memory_optimization(Arc::new(driver_pub), true),
-		PubSub::new_with_memory_optimization(Arc::new(driver_sub), true),
-	))
-}
-
-async fn setup_pg_single_mem() -> Result<(PubSub, PubSub)> {
-	let test_id = Uuid::new_v4();
-	let (db_config, mut docker) = TestDatabase::Postgres.config(test_id, 1).await?;
-	if let Some(ref mut d) = docker {
-		d.start().await?;
-	}
-	tokio::time::sleep(Duration::from_secs(5)).await;
-	let rivet_config::config::Database::Postgres(pg) = db_config else {
-		unreachable!()
-	};
-	let url = pg.url.read().clone();
-	let driver =
-		universalpubsub::driver::postgres::PostgresDriver::connect(url, true, None, None, None)
-			.await?;
-	let pubsub = PubSub::new_with_memory_optimization(Arc::new(driver), true);
-	Ok((pubsub.clone(), pubsub))
-}
-
 async fn setup_mem_pair() -> Result<(PubSub, PubSub)> {
 	let test_id = Uuid::new_v4();
 	let (pubsub_config, _docker) = TestPubSub::Memory.config(test_id, 1).await?;
@@ -891,16 +799,6 @@ async fn main() -> Result<()> {
 	let results = run_benches("nats-mem", publisher.clone(), subscriber.clone(), iters).await?;
 	all_results.insert("nats-mem".to_string(), results);
 
-	// Postgres (no memory optimization)
-	let (publisher, subscriber) = setup_pg_pair().await?;
-	let results = run_benches("pg-nomem", publisher.clone(), subscriber.clone(), iters).await?;
-	all_results.insert("pg-nomem".to_string(), results);
-
-	// Postgres (memory optimization)
-	let (publisher, subscriber) = setup_pg_pair_mem().await?;
-	let results = run_benches("pg-mem", publisher.clone(), subscriber.clone(), iters).await?;
-	all_results.insert("pg-mem".to_string(), results);
-
 	// NATS single connection (no memory optimization)
 	let (publisher, subscriber) = setup_nats_single().await?;
 	let results = run_benches(
@@ -922,28 +820,6 @@ async fn main() -> Result<()> {
 	)
 	.await?;
 	all_results.insert("nats-single-mem".to_string(), results);
-
-	// Postgres single connection (no memory optimization)
-	let (publisher, subscriber) = setup_pg_single().await?;
-	let results = run_benches(
-		"pg-single-nomem",
-		publisher.clone(),
-		subscriber.clone(),
-		iters,
-	)
-	.await?;
-	all_results.insert("pg-single-nomem".to_string(), results);
-
-	// Postgres single connection (memory optimization)
-	let (publisher, subscriber) = setup_pg_single_mem().await?;
-	let results = run_benches(
-		"pg-single-mem",
-		publisher.clone(),
-		subscriber.clone(),
-		iters,
-	)
-	.await?;
-	all_results.insert("pg-single-mem".to_string(), results);
 
 	// Print results table
 	print_results_table(&all_results);

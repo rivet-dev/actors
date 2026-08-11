@@ -129,7 +129,7 @@ impl<T: Signal + Serialize> SignalBuilder<T> {
 		tracing::Span::current().record("signal_id", signal_id.to_string());
 
 		// Serialize input
-		let input_val = serde_json::value::to_raw_value(&self.body)
+		let input_val = rivet_util::serde::json_to_raw_value!(&self.body)
 			.map_err(WorkflowError::SerializeSignalBody)?;
 
 		match (

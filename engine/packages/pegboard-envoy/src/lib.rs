@@ -45,12 +45,8 @@ pub struct PegboardEnvoyWs {
 }
 
 impl PegboardEnvoyWs {
-	pub fn new(ctx: StandaloneCtx) -> Self {
-		metrics::prepopulate();
-
-		let service = Self { ctx: ctx.clone() };
-
-		service
+	pub fn new(ctx: &StandaloneCtx) -> Self {
+		Self { ctx: ctx.clone() }
 	}
 }
 

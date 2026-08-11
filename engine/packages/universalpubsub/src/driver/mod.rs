@@ -8,7 +8,6 @@ use crate::InboxSubject;
 
 pub mod memory;
 pub mod nats;
-pub mod postgres;
 
 pub type PubSubDriverHandle = Arc<dyn PubSubDriver>;
 

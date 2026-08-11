@@ -35,34 +35,36 @@ export function generateDatacenterRivetEngine(
 			datacenters,
 		};
 
-		// Config structure matching Rust schema in packages/common/config/src/config/mod.rs
-		const config = {
+		// Config structure matching Rust schema in engine/packages/config/src/config/mod.rs.
+		// Values that match the engine's defaults are omitted.
+		const config: Record<string, any> = {
 			auth: {
 				admin_token: "dev",
 			},
-			guard: {
-				port: GUARD_PORT,
-				// https is optional and not configured for local development
-			},
 			api_peer: {
 				host: "0.0.0.0",
-				port: API_PEER_PORT,
 			},
 			topology,
 			postgres: {
 				url: `postgresql://postgres:postgres@${context.getServiceHost("postgres", datacenter.name)}:5432/rivet_engine`,
 			},
-			cache: {
-				driver: "in_memory",
-			},
 			clickhouse: {
-				http_url: `http://${clickhouseHost}:9300`, // TODO:
-				native_url: `http://${clickhouseHost}:9301`, // TODO:
+				http_url: `http://${clickhouseHost}:9300`,
+				native_url: `http://${clickhouseHost}:9301`,
 				username: "system",
 				password: "default",
-				secure: false,
 			},
 		};
+
+		// A multi-engine datacenter coordinates through NATS: UPS uses it for cross-node pubsub, and
+		// UniversalDB inherits this config (see Root::validate_and_set_defaults) to run multi-node,
+		// routing follower commits to the elected leader over NATS. A single-engine datacenter omits
+		// this and falls back to in-process Memory pubsub + single-node UniversalDB.
+		if (datacenter.engines > 1) {
+			config.nats = {
+				addresses: [`${context.getServiceHost("nats", datacenter.name)}:4222`],
+			};
+		}
 
 		context.writeDatacenterServiceFile(
 			"rivet-engine",

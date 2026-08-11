@@ -96,8 +96,8 @@ impl MessageCtx {
 		let ts = duration_since_epoch.as_millis() as i64;
 
 		// Serialize the body
-		let body_buf =
-			serde_json::to_string(&message_body).map_err(WorkflowError::SerializeMessage)?;
+		let body_buf = rivet_util::serde::json_to_string!(&message_body)
+			.map_err(WorkflowError::SerializeMessage)?;
 		let body_buf_len = body_buf.len();
 		let body_buf = serde_json::value::RawValue::from_string(body_buf)
 			.map_err(WorkflowError::SerializeMessage)?;
@@ -111,7 +111,8 @@ impl MessageCtx {
 			ts,
 			body: &body_buf,
 		};
-		let message_buf = serde_json::to_vec(&message).map_err(WorkflowError::SerializeMessage)?;
+		let message_buf =
+			rivet_util::serde::json_to_vec!(&message).map_err(WorkflowError::SerializeMessage)?;
 
 		tracing::debug!(
 			%subject,
@@ -138,7 +139,7 @@ impl MessageCtx {
 		M: Message,
 	{
 		// Infinite backoff since we want to wait until the service reboots.
-		let mut backoff = rivet_util::backoff::Backoff::default_infinite();
+		let mut backoff = rivet_util::throttle::Backoff::default_infinite();
 		loop {
 			// Ignore for infinite backoff
 			backoff.tick().await;

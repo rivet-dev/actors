@@ -5,8 +5,6 @@ use universalpubsub::NextOutput;
 use universalpubsub::PublishOpts;
 use universalpubsub::Subject;
 
-mod sim;
-
 pub const BROADCAST_TOPIC: &str = "rivet.ups.broadcast";
 
 pub struct BroadcastSubject;
@@ -28,7 +26,7 @@ impl Subject for BroadcastSubject {
 }
 
 #[tracing::instrument(skip_all)]
-pub async fn start(config: rivet_config::Config, pools: rivet_pools::Pools) -> Result<()> {
+pub async fn start(_config: rivet_config::Config, pools: rivet_pools::Pools) -> Result<()> {
 	let ups = pools.ups()?;
 	let mut sub = ups.subscribe(BroadcastSubject).await?;
 
@@ -37,18 +35,6 @@ pub async fn start(config: rivet_config::Config, pools: rivet_pools::Pools) -> R
 	// Process incoming messages
 	let handle =
 		tokio::spawn(async move { while let Ok(NextOutput::Message(_)) = sub.next().await {} });
-
-	if let Some(sim_config) = sim::Config::from_env()? {
-		let sim_udb = pools.udb().ok();
-		let sim_ups = sim::pubsub_for_sim(
-			&config,
-			&ups,
-			sim_config.force_driver,
-			sim_config.disable_memory_optimization,
-		)
-		.await?;
-		sim::spawn(sim_ups, sim_udb, sim_config);
-	}
 
 	loop {
 		if let Err(err) = ups
