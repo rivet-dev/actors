@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -35,7 +36,26 @@ const SSE_STOPPING_FRAME: &[u8] = b"event: stopping\ndata:\n\n";
 /// Bound on `handle.shutdown_and_wait` inside teardown paths. If envoy cannot
 /// reach the engine (reconnect loop stuck), we fall back to immediate `Stop`
 /// rather than hanging indefinitely. Must stay below the outer TS grace ceiling.
-const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
+const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
+
+async fn drain_with_timeout<Graceful, Forced, ForcedFuture>(
+	drain_timeout: Duration,
+	graceful: Graceful,
+	forced: Forced,
+) -> bool
+where
+	Graceful: Future<Output = ()>,
+	Forced: FnOnce() -> ForcedFuture,
+	ForcedFuture: Future<Output = ()>,
+{
+	match timeout(drain_timeout, graceful).await {
+		Ok(()) => true,
+		Err(_) => {
+			forced().await;
+			false
+		}
+	}
+}
 
 #[derive(Clone)]
 pub struct CoreServerlessRuntime {
@@ -216,20 +236,24 @@ impl CoreServerlessRuntime {
 	/// instead of starting a fresh envoy after teardown, and waits (with a
 	/// bounded timeout) for `envoy_loop` to exit. If the drain exceeds the
 	/// timeout (e.g. engine unreachable), falls back to an immediate `Stop`.
-	pub async fn shutdown(&self) {
+	pub async fn shutdown(&self, drain_timeout: Duration) {
 		self.shutting_down.store(true, Ordering::Release);
 		let handle = { self.envoy.lock().await.take() };
 		let Some(handle) = handle else { return };
-		match timeout(SHUTDOWN_DRAIN_TIMEOUT, handle.shutdown_and_wait(false)).await {
-			Ok(()) => {}
-			Err(_) => {
-				tracing::warn!(
-					"serverless runtime envoy drain exceeded timeout; forcing immediate stop"
-				);
-				handle.shutdown(true);
-				handle.wait_stopped().await;
-			}
-		}
+		drain_with_timeout(drain_timeout, handle.shutdown_and_wait(false), || async {
+			tracing::warn!(
+				"serverless runtime envoy drain exceeded timeout; forcing immediate stop"
+			);
+			handle.shutdown(true);
+			handle.wait_stopped().await;
+		})
+		.await;
+	}
+
+	/// Shuts down with the bounded fallback used while registry construction is
+	/// still in progress and no configured grace period is available yet.
+	pub async fn shutdown_with_default_timeout(&self) {
+		self.shutdown(DEFAULT_SHUTDOWN_DRAIN_TIMEOUT).await;
 	}
 
 	pub async fn active_envoy_actor_count(&self) -> Option<usize> {
@@ -522,7 +546,12 @@ impl CoreServerlessRuntime {
 		// installing it into the cache.
 		if self.shutting_down.load(Ordering::Acquire) {
 			drop(guard);
-			match timeout(SHUTDOWN_DRAIN_TIMEOUT, handle.shutdown_and_wait(false)).await {
+			match timeout(
+				DEFAULT_SHUTDOWN_DRAIN_TIMEOUT,
+				handle.shutdown_and_wait(false),
+			)
+			.await
+			{
 				Ok(()) => {}
 				Err(_) => {
 					handle.shutdown(true);

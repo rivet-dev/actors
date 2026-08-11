@@ -429,7 +429,10 @@ export interface CoreRuntime {
 		config: RuntimeServeConfig,
 	): Promise<void>;
 	waitRegistryReady(registry: RegistryHandle): Promise<void>;
-	shutdownRegistry(registry: RegistryHandle): Promise<void>;
+	shutdownRegistry(
+		registry: RegistryHandle,
+		gracePeriodMs: number,
+	): Promise<void>;
 	registryActorStopThresholdMs?(
 		registry: RegistryHandle,
 	): Promise<number | undefined>;

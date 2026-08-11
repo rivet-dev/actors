@@ -30,6 +30,9 @@ const GATEWAY_HEALTH_TIMEOUT_MS = Number(
 	process.env.RIVETKIT_GATEWAY_HEALTH_TIMEOUT_MS ?? "5000",
 );
 const COMMIT_FAILURE_TIMEOUT_MS = 45_000;
+const RUNTIME_ROLL_ACTION_MS = Number(
+	process.env.RIVETKIT_RUNTIME_ROLL_ACTION_MS ?? "25000",
+);
 const RESTART_MODE = process.env.RIVETKIT_ENGINE_RESTART_MODE ?? "commit";
 const HEARTBEAT_MODE = process.env.RIVETKIT_HEARTBEAT_MODE ?? "sqlite";
 const POST_RESTART_PROBE_TIMING =
@@ -135,6 +138,10 @@ class OwnedEngine {
 			{
 				env: {
 					...process.env,
+					RIVET__PEGBOARD__ENVOY_LOST_THRESHOLD:
+						RESTART_MODE === "runtime-roll" ? "35000" : undefined,
+					RIVET__PEGBOARD__SERVERLESS_DRAIN_GRACE_PERIOD:
+						RESTART_MODE === "runtime-roll" ? "35000" : undefined,
 					RIVET__GUARD__HOST: HOST,
 					RIVET__GUARD__PORT: this.#guardPort.toString(),
 					RIVET__API_PEER__HOST: HOST,
@@ -207,26 +214,29 @@ class OwnedEngine {
 async function stopChildProcess(
 	child: ChildProcess,
 	signal: NodeJS.Signals = "SIGTERM",
-): Promise<void> {
+	forceAfterMs = 5_000,
+): Promise<boolean> {
 	if (!isProcessRunning(child)) {
-		return;
+		return false;
 	}
 
-	await new Promise<void>((resolve) => {
+	return new Promise<boolean>((resolve) => {
 		let forceKill: NodeJS.Timeout | undefined;
+		let forced = false;
 		const finish = () => {
 			if (forceKill) {
 				clearTimeout(forceKill);
 			}
-			resolve();
+			resolve(forced);
 		};
 		child.once("exit", finish);
 		child.kill(signal);
 		forceKill = setTimeout(() => {
 			if (isProcessRunning(child)) {
+				forced = true;
 				child.kill("SIGKILL");
 			}
-		}, 5_000);
+		}, forceAfterMs);
 	});
 }
 
@@ -304,12 +314,18 @@ class ServerlessRuntime {
 	}
 
 	async cleanup(): Promise<void> {
-		const child = this.#child;
-		if (!isProcessRunning(child)) {
-			return;
-		}
+		await this.stopProcess();
+	}
 
-		await stopChildProcess(child, "SIGTERM");
+	async stopProcess(
+		signal: NodeJS.Signals = "SIGTERM",
+		forceAfterMs = 5_000,
+	): Promise<boolean> {
+		const child = this.#child;
+		if (isProcessRunning(child)) {
+			return stopChildProcess(child, signal, forceAfterMs);
+		}
+		return false;
 	}
 }
 
@@ -349,7 +365,6 @@ async function main() {
 			encoding: "bare",
 			disableMetadataLookup: true,
 		});
-
 		const actorHandle = client.sqliteCounter.getOrCreate([actorKey]);
 		const heartbeatWarmupStartedAt = Date.now();
 		const countBeforeRestart = (await actorHandle.getCount()) as number;
@@ -382,6 +397,68 @@ async function main() {
 		console.log(
 			`actor-originated heartbeat warmup finished. before=${countBeforeRestart} ${formatHeartbeatStats(warmupStats)}`,
 		);
+		if (RESTART_MODE === "runtime-roll") {
+			signalServer = await createCommitSignalServer();
+			const rollStartedAt = Date.now();
+			const action = withTimeout(
+				actorHandle.finishDuringRuntimeRoll({
+					signalUrl: signalServer.url,
+					delayMs: RUNTIME_ROLL_ACTION_MS,
+				}) as Promise<unknown>,
+				RUNTIME_ROLL_ACTION_MS + 30_000,
+				"in-flight action did not finish during the runtime roll",
+			);
+
+			await signalServer.waitForSignal;
+			const stopping = runtime.stopProcess(
+				"SIGTERM",
+				RUNTIME_ROLL_ACTION_MS + 15_000,
+			);
+			await action;
+			const forced = await stopping;
+			if (forced) {
+				throw new Error(
+					"runtime did not exit within its configured grace period",
+				);
+			}
+
+			const drainDurationMs = Date.now() - rollStartedAt;
+			if (drainDurationMs < 20_000) {
+				throw new Error(
+					`runtime stopped before the action's >20s graceful drain completed: ${drainDurationMs}ms`,
+				);
+			}
+			if (runtime.getOutput().includes("forcing immediate stop")) {
+				throw new Error(
+					"runtime forced the envoy to stop during the graceful drain",
+				);
+			}
+
+			await runtime.startProcess({
+				endpoint: engine.endpoint,
+				namespace,
+				poolName,
+			});
+			const countAfterRoll = (await actorHandle.getCount()) as number;
+			if (countAfterRoll <= countBeforeRestart) {
+				throw new Error(
+					`durable counter did not advance across runtime roll: before=${countBeforeRestart} after=${countAfterRoll}`,
+				);
+			}
+			const replacementResult = (await actorHandle.tick()) as {
+				count: number;
+				events: number;
+			};
+			if (replacementResult.count <= countAfterRoll) {
+				throw new Error(
+					"replacement runtime did not wake and advance the actor",
+				);
+			}
+			console.log(
+				`runtime roll preserved the in-flight action and durable actor state. drainMs=${drainDurationMs} count=${replacementResult.count} events=${replacementResult.events}`,
+			);
+			return;
+		}
 		const gatewayHealthTargets =
 			GATEWAY_HEALTH_DELAYS_MS.length > 0
 				? await prepareGatewayHealthTargets({
@@ -631,7 +708,8 @@ async function upsertServerlessRunnerConfig(input: {
 								"x-rivet-token": TOKEN,
 							},
 							request_lifespan: 3600,
-							drain_grace_period: 5,
+							drain_grace_period:
+								RESTART_MODE === "runtime-roll" ? 30 : 5,
 							metadata_poll_interval: 1000,
 							max_runners: 10,
 							min_runners: 0,

@@ -717,7 +717,10 @@ export class Registry<A extends RegistryActors> {
 					(async () => {
 						try {
 							const { runtime, registry } = await modeAPromise;
-							await runtime.shutdownRegistry(registry);
+							await runtime.shutdownRegistry(
+								registry,
+								gracePeriodMs,
+							);
 						} catch (err) {
 							logger().warn(
 								{ err },
@@ -732,7 +735,10 @@ export class Registry<A extends RegistryActors> {
 					(async () => {
 						try {
 							const { runtime, registry } = await modeBPromise;
-							await runtime.shutdownRegistry(registry);
+							await runtime.shutdownRegistry(
+								registry,
+								gracePeriodMs,
+							);
 						} catch (err) {
 							logger().warn(
 								{ error: err },

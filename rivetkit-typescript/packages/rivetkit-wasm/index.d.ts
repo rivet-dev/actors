@@ -83,7 +83,7 @@ export class CoreRegistry {
 	constructor();
 	serve(config: any): Promise<void>;
 	register(name: string, factory: ActorFactory): void;
-	shutdown(): Promise<void>;
+	shutdown(gracePeriodMs: number): Promise<void>;
 }
 
 export class Kv {

@@ -281,8 +281,11 @@ export class WasmCoreRuntime implements CoreRuntime {
 		);
 	}
 
-	async shutdownRegistry(registry: RegistryHandle): Promise<void> {
-		await callWasm(() => asWasmRegistry(registry).shutdown());
+	async shutdownRegistry(
+		registry: RegistryHandle,
+		gracePeriodMs: number,
+	): Promise<void> {
+		await callWasm(() => asWasmRegistry(registry).shutdown(gracePeriodMs));
 	}
 
 	async registryHealth(): Promise<RuntimeRegistryRouteResponse> {

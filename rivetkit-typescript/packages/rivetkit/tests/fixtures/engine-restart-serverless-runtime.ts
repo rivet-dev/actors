@@ -8,6 +8,9 @@ const namespace = process.env.RIVET_NAMESPACE;
 const token = process.env.RIVET_TOKEN ?? "dev";
 const poolName = process.env.RIVETKIT_TEST_POOL_NAME;
 const heartbeatMode = process.env.RIVETKIT_HEARTBEAT_MODE ?? "sqlite";
+const shutdownGracePeriodMs = Number(
+	process.env.RIVETKIT_SHUTDOWN_GRACE_PERIOD_MS ?? "30000",
+);
 
 if (!Number.isInteger(port) || port <= 0) {
 	throw new Error("RIVETKIT_TEST_PORT must be a positive integer");
@@ -351,6 +354,34 @@ const sqliteCounter = actor({
 				throw error;
 			}
 		},
+		finishDuringRuntimeRoll: async (
+			ctx,
+			input: {
+				signalUrl: string;
+				delayMs: number;
+			},
+		) => {
+			const database = ctx.sql as SqliteDatabase;
+			await ensureTables(database);
+			await database.run("BEGIN");
+			try {
+				await database.run(
+					`
+						INSERT INTO restart_counter (id, count)
+						VALUES (1, 1)
+						ON CONFLICT(id) DO UPDATE SET count = count + 1
+					`,
+				);
+				await database.run("COMMIT");
+			} catch (error) {
+				await database.run("ROLLBACK");
+				throw error;
+			}
+
+			await fetch(input.signalUrl, { method: "POST" });
+			await sleep(Math.max(0, Math.trunc(input.delayMs)));
+			return { completed: true };
+		},
 		getCount: async (ctx) => {
 			const database = ctx.sql as SqliteDatabase;
 			await ensureTables(database);
@@ -426,6 +457,7 @@ const sqliteCounter = actor({
 		},
 	},
 	options: {
+		sleepGracePeriod: shutdownGracePeriodMs,
 		sleepTimeout: 300_000,
 	},
 });
@@ -444,6 +476,9 @@ const registry = setup({
 	},
 	serverless: {
 		basePath: "/api/rivet",
+	},
+	shutdown: {
+		gracePeriodMs: shutdownGracePeriodMs,
 	},
 	noWelcome: true,
 	test: {
@@ -468,10 +503,16 @@ const server = serve(
 	},
 );
 
+let shutdownInFlight: Promise<void> | undefined;
+
 function shutdown() {
-	server.close(() => {
-		process.exit(0);
-	});
+	shutdownInFlight ??= registry.shutdown().then(
+		() =>
+			new Promise<void>((resolve) => {
+				server.close(() => resolve());
+			}),
+	);
+	void shutdownInFlight.then(() => process.exit(0));
 }
 
 process.on("SIGTERM", shutdown);

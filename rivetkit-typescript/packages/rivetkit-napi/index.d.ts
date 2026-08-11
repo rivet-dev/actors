@@ -416,7 +416,7 @@ export declare class CoreRegistry {
    * Does not block on the `serve()` future; TS awaits that promise
    * separately to avoid re-entrancy.
    */
-  shutdown(): Promise<void>
+  shutdown(gracePeriodMs: number): Promise<void>
   actorStopThresholdMs(): Promise<number | null>
   health(): Promise<JsRegistryRouteResponse>
   metadata(): JsRegistryRouteResponse

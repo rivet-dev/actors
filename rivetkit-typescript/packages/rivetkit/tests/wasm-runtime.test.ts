@@ -438,7 +438,7 @@ describe("WasmCoreRuntime", () => {
 			serveConfig,
 		);
 		await fakeRegistry.buildStarted.promise;
-		await runtime.shutdownRegistry(registry);
+		await runtime.shutdownRegistry(registry, 30_000);
 		fakeRegistry.releaseServerlessBuild();
 
 		await expect(first).rejects.toMatchObject({

@@ -2,14 +2,18 @@ use super::*;
 
 mod moved_tests {
 	use std::collections::HashMap;
+	use std::future::pending;
 	#[cfg(not(feature = "native-runtime"))]
 	use std::path::PathBuf;
+	use std::sync::Arc;
+	use std::sync::atomic::{AtomicUsize, Ordering};
+	use std::time::Duration;
 
 	use tokio_util::sync::CancellationToken;
 
 	use super::{
-		CoreServerlessRuntime, ServerlessRequest, endpoints_match, handles_listener_request,
-		normalize_endpoint_url, parse_start_headers,
+		CoreServerlessRuntime, ServerlessRequest, drain_with_timeout, endpoints_match,
+		handles_listener_request, normalize_endpoint_url, parse_start_headers,
 	};
 	use crate::registry::{EngineSpawnMode, ServeConfig};
 
@@ -73,6 +77,38 @@ mod moved_tests {
 			"http://127.0.0.1:6420, http://127.0.0.1:8080",
 			"http://localhost:9000/"
 		));
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn configured_drain_can_exceed_twenty_seconds() {
+		let forced = Arc::new(AtomicUsize::new(0));
+		let forced_for_fallback = forced.clone();
+		let drained = drain_with_timeout(
+			Duration::from_secs(30),
+			tokio::time::sleep(Duration::from_secs(25)),
+			move || async move {
+				forced_for_fallback.fetch_add(1, Ordering::Relaxed);
+			},
+		)
+		.await;
+
+		assert!(drained);
+		assert_eq!(forced.load(Ordering::Relaxed), 0);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn configured_deadline_forces_once() {
+		let started_at = tokio::time::Instant::now();
+		let forced = Arc::new(AtomicUsize::new(0));
+		let forced_for_fallback = forced.clone();
+		let drained = drain_with_timeout(Duration::from_secs(30), pending(), move || async move {
+			forced_for_fallback.fetch_add(1, Ordering::Relaxed);
+		})
+		.await;
+
+		assert!(!drained);
+		assert_eq!(started_at.elapsed(), Duration::from_secs(30));
+		assert_eq!(forced.load(Ordering::Relaxed), 1);
 	}
 
 	#[tokio::test]

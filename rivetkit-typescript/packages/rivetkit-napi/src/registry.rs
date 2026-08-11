@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use napi::bindgen_prelude::{Buffer, Env, Promise};
 use napi::threadsafe_function::{ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction};
@@ -274,7 +275,7 @@ impl CoreRegistry {
 	/// Does not block on the `serve()` future; TS awaits that promise
 	/// separately to avoid re-entrancy.
 	#[napi]
-	pub async fn shutdown(&self) -> napi::Result<()> {
+	pub async fn shutdown(&self, grace_period_ms: u32) -> napi::Result<()> {
 		tracing::debug!(class = "CoreRegistry", "shutdown requested");
 		// Trip the cancel first, outside the lock, so a `serve_with_config`
 		// already past the state transition observes cancel promptly.
@@ -301,7 +302,9 @@ impl CoreRegistry {
 		};
 
 		if let Some(runtime) = runtime {
-			runtime.shutdown().await;
+			runtime
+				.shutdown(Duration::from_millis(u64::from(grace_period_ms)))
+				.await;
 		}
 
 		if !was_building {
@@ -656,7 +659,7 @@ impl CoreRegistry {
 					) {
 					// Drop the lock while we drain the envoy.
 					drop(guard);
-					runtime.shutdown().await;
+					runtime.shutdown_with_default_timeout().await;
 					let mut guard = self.state.lock().await;
 					*guard = RegistryState::ShutDown;
 					drop(guard);

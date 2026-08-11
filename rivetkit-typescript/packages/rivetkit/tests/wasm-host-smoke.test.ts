@@ -505,9 +505,11 @@ async function runHostSmoke(kind: HostKind): Promise<SmokeHost> {
 	await scenario.registerTask.started;
 
 	let shutdownSettled = false;
-	const shutdownPromise = runtime.shutdownRegistry(registry).then(() => {
-		shutdownSettled = true;
-	});
+	const shutdownPromise = runtime
+		.shutdownRegistry(registry, 30_000)
+		.then(() => {
+			shutdownSettled = true;
+		});
 	await Promise.resolve();
 	expect(shutdownSettled).toBe(false);
 	expect(scenario.registerTaskCompleted).toBe(false);

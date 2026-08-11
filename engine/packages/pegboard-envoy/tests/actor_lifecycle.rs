@@ -19,10 +19,13 @@ mod conn {
 	use std::sync::Arc;
 
 	use depot::conveyer::Db;
+	use depot_client::database::NativeDatabaseHandle;
 	use scc::HashMap;
+	use tokio::sync::OnceCell;
 
 	pub struct Conn {
 		pub actor_dbs: HashMap<String, Arc<Db>>,
+		pub remote_sqlite_executors: HashMap<(String, u64), Arc<OnceCell<NativeDatabaseHandle>>>,
 	}
 }
 
@@ -98,13 +101,18 @@ fn new_actor_db(db: Arc<universaldb::Database>, namespace_label: u16, actor_id: 
 	))
 }
 
+fn empty_conn() -> conn::Conn {
+	conn::Conn {
+		actor_dbs: HashMap::new(),
+		remote_sqlite_executors: HashMap::new(),
+	}
+}
+
 #[tokio::test]
 async fn stop_actor_evicts_cached_actor_db() -> Result<()> {
 	let db = Arc::new(test_db().await?);
 	let actor_db = new_actor_db(db, TEST_NAMESPACE_LABEL, TEST_ACTOR);
-	let conn = conn::Conn {
-		actor_dbs: HashMap::new(),
-	};
+	let conn = empty_conn();
 
 	assert!(
 		conn.actor_dbs
@@ -123,9 +131,7 @@ async fn stop_actor_evicts_cached_actor_db() -> Result<()> {
 async fn stop_actor_does_not_touch_udb() -> Result<()> {
 	let db = Arc::new(test_db().await?);
 	let actor_db = new_actor_db(Arc::clone(&db), TEST_NAMESPACE_LABEL, TEST_ACTOR);
-	let conn = conn::Conn {
-		actor_dbs: HashMap::new(),
-	};
+	let conn = empty_conn();
 	assert!(
 		conn.actor_dbs
 			.insert_async(TEST_ACTOR.to_string(), actor_db)
@@ -146,23 +152,28 @@ async fn stop_actor_does_not_touch_udb() -> Result<()> {
 }
 
 #[tokio::test]
-async fn stop_actor_allows_missing_cache_entry() -> Result<()> {
-	let conn = conn::Conn {
-		actor_dbs: HashMap::new(),
-	};
+async fn replayed_stop_for_unknown_actor_allows_replacement_start() -> Result<()> {
+	let conn = empty_conn();
 
 	actor_lifecycle::stop_actor(&conn, &checkpoint(TEST_ACTOR)).await?;
 
 	assert!(!conn.actor_dbs.contains_async(TEST_ACTOR).await);
+	let db = Arc::new(test_db().await?);
+	let replacement_actor_db = new_actor_db(db, TEST_NAMESPACE_LABEL, TEST_ACTOR);
+	assert!(
+		conn.actor_dbs
+			.insert_async(TEST_ACTOR.to_string(), replacement_actor_db)
+			.await
+			.is_ok()
+	);
+	assert!(conn.actor_dbs.contains_async(TEST_ACTOR).await);
 	Ok(())
 }
 
 #[tokio::test]
 async fn shutdown_conn_actors_evicts_all_cached_actor_dbs() -> Result<()> {
 	let db = Arc::new(test_db().await?);
-	let conn = conn::Conn {
-		actor_dbs: HashMap::new(),
-	};
+	let conn = empty_conn();
 
 	for (idx, actor_id) in ["shutdown-actor-a", "shutdown-actor-b"]
 		.into_iter()

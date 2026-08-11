@@ -216,7 +216,7 @@ describe("registry.listen() end-to-end", () => {
 			expect(await echo.text()).toBe("hello");
 			expect(paths).toEqual(["/health", "/echo"]);
 		} finally {
-			await runtime.shutdownRegistry(handle);
+			await runtime.shutdownRegistry(handle, 30_000);
 			await applicationListener;
 		}
 	}, 30_000);

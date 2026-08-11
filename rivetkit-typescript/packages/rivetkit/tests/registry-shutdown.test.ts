@@ -31,6 +31,8 @@ interface FakeState {
 	builderCalls: number;
 	/** Registry handles passed to `shutdownRegistry`, in call order. */
 	shutdownRegistries: RegistryHandle[];
+	/** Grace periods passed to `shutdownRegistry`, in call order. */
+	shutdownGracePeriods: number[];
 	/** Value returned by `registryActorStopThresholdMs`. */
 	stopThresholdMs: number | undefined;
 	/** When true, `shutdownRegistry` never resolves (forces the grace race). */
@@ -53,6 +55,7 @@ function createFake(): Fake {
 	const state: FakeState = {
 		builderCalls: 0,
 		shutdownRegistries: [],
+		shutdownGracePeriods: [],
 		stopThresholdMs: undefined,
 		hangShutdown: false,
 		gate: null,
@@ -61,8 +64,12 @@ function createFake(): Fake {
 	const runtime = {
 		kind: "napi",
 		serveRegistry: async () => {},
-		shutdownRegistry: async (registry: RegistryHandle) => {
+		shutdownRegistry: async (
+			registry: RegistryHandle,
+			gracePeriodMs: number,
+		) => {
 			state.shutdownRegistries.push(registry);
+			state.shutdownGracePeriods.push(gracePeriodMs);
 			if (state.hangShutdown) {
 				await new Promise<void>(() => {});
 			}
@@ -231,6 +238,7 @@ describe("Registry.shutdown", () => {
 
 		await vi.advanceTimersByTimeAsync(0);
 		expect(state.shutdownRegistries).toHaveLength(1);
+		expect(state.shutdownGracePeriods).toEqual([60_000]);
 		expect(settled).toBe(false);
 
 		gate.release();

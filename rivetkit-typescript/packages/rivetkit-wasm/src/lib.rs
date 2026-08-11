@@ -344,7 +344,7 @@ impl WasmCoreRegistry {
 	}
 
 	#[wasm_bindgen]
-	pub async fn shutdown(&self) -> Result<(), JsValue> {
+	pub async fn shutdown(&self, grace_period_ms: u32) -> Result<(), JsValue> {
 		self.shutdown_token.cancel();
 		let serverless = {
 			let mut state = self.state.borrow_mut();
@@ -363,7 +363,9 @@ impl WasmCoreRegistry {
 		};
 		self.notify_serverless_build_complete();
 		if let Some(serverless) = serverless {
-			serverless.shutdown().await;
+			serverless
+				.shutdown(Duration::from_millis(u64::from(grace_period_ms)))
+				.await;
 			*self.state.borrow_mut() = RegistryState::ShutDown;
 		}
 		Ok(())
@@ -425,7 +427,7 @@ impl WasmCoreRegistry {
 			};
 			let serverless = WasmServerlessRuntime { runtime };
 			if self.shutdown_token.is_cancelled() {
-				serverless.runtime.shutdown().await;
+				serverless.runtime.shutdown_with_default_timeout().await;
 				*self.state.borrow_mut() = RegistryState::ShutDown;
 				self.notify_serverless_build_complete();
 				return Err(registry_shut_down_error());
@@ -438,7 +440,7 @@ impl WasmCoreRegistry {
 					}
 					RegistryState::ShuttingDown | RegistryState::ShutDown => {
 						drop(state);
-						serverless.runtime.shutdown().await;
+						serverless.runtime.shutdown_with_default_timeout().await;
 						*self.state.borrow_mut() = RegistryState::ShutDown;
 						self.notify_serverless_build_complete();
 						return Err(registry_shut_down_error());
@@ -447,7 +449,7 @@ impl WasmCoreRegistry {
 					| RegistryState::Serving
 					| RegistryState::Serverless(_) => {
 						drop(state);
-						serverless.runtime.shutdown().await;
+						serverless.runtime.shutdown_with_default_timeout().await;
 						self.notify_serverless_build_complete();
 						return Err(registry_wrong_mode_error());
 					}

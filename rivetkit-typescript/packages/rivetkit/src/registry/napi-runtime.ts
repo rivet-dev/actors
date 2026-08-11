@@ -257,8 +257,11 @@ export class NapiCoreRuntime implements CoreRuntime {
 		await asNativeRegistry(registry).waitReady();
 	}
 
-	async shutdownRegistry(registry: RegistryHandle): Promise<void> {
-		await asNativeRegistry(registry).shutdown();
+	async shutdownRegistry(
+		registry: RegistryHandle,
+		gracePeriodMs: number,
+	): Promise<void> {
+		await asNativeRegistry(registry).shutdown(gracePeriodMs);
 	}
 
 	async registryActorStopThresholdMs(
