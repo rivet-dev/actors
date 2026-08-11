@@ -1,0 +1,1027 @@
+---
+title: "Migrate Cloudflare Durable Objects to Rivet"
+icon: "cloudflare"
+description: "Before-and-after migration guide for moving Cloudflare Durable Objects capabilities to Rivet, with code for every supported migration path and explicit unsupported gaps."
+---
+
+This guide maps every Cloudflare Durable Object feature to its Rivet Actor equivalent. The biggest semantic difference: Durable Objects serialize all request handling by default, while Rivet actions run concurrently. If your DO code relied on serialized mutations, you must route writes through [queues](https://rivet.dev/docs/actors/queues) or [workflows](https://rivet.dev/docs/actors/workflows).
+
+## Status Summary
+
+**Status legend:**
+
+- **native** = direct Rivet equivalent exists
+- **pattern** = achievable with a documented Rivet pattern
+- **external** = requires an external service or library
+- **vendor** = Cloudflare-proprietary service replaced by a recommended third-party SDK or provider
+- **unsupported** = no equivalent in the Rivet Actor runtime
+- **out-of-scope** = platform-specific; not applicable to Rivet
+
+| Feature | Status | Rivet Path |
+|---------|--------|------------|
+| Defining a Durable Object class | native | [`actor()`](https://rivet.dev/docs/actors) |
+| Namespace (`DurableObjectNamespace`) | pattern | [Keys](https://rivet.dev/docs/actors/keys), [Metadata](https://rivet.dev/docs/actors/metadata) |
+| ID (`DurableObjectId`) | pattern | [Metadata](https://rivet.dev/docs/actors/metadata), [Keys](https://rivet.dev/docs/actors/keys) |
+| Stub (`DurableObjectStub`) | native | [JavaScript client](https://rivet.dev/docs/clients/javascript) |
+| RPC (public methods) | native | [Actions](https://rivet.dev/docs/actors/actions) |
+| Fetch handler (HTTP) | native | [Request handler](https://rivet.dev/docs/actors/request-handler) |
+| State (`DurableObjectState` / `ctx`) | pattern | [Lifecycle](https://rivet.dev/docs/actors/lifecycle), [Metadata](https://rivet.dev/docs/actors/metadata) |
+| SQLite storage | native | [SQLite](https://rivet.dev/docs/actors/sqlite) |
+| Synchronous KV API | pattern | [KV storage](https://rivet.dev/docs/actors/kv) (async API) |
+| Asynchronous KV API | native | [KV storage](https://rivet.dev/docs/actors/kv) |
+| Transactional storage | pattern | [SQLite](https://rivet.dev/docs/actors/sqlite), [Queues](https://rivet.dev/docs/actors/queues) |
+| Point-in-time recovery (PITR) | unsupported | -- |
+| Alarms API | native | [Schedule](https://rivet.dev/docs/actors/schedule) |
+| WebSocket support (standard) | native | [Connections](https://rivet.dev/docs/actors/connections) |
+| WebSocket hibernation API | native | [WebSocket handler](https://rivet.dev/docs/actors/websocket-handler) |
+| In-memory state | native | [State](https://rivet.dev/docs/actors/state), [Ephemeral variables](https://rivet.dev/docs/actors/ephemeral-variables) |
+| Lifecycle | native | [Lifecycle](https://rivet.dev/docs/actors/lifecycle) |
+| Input/output gates and concurrency | pattern | [Actions](https://rivet.dev/docs/actors/actions), [Queues](https://rivet.dev/docs/actors/queues) |
+| Configuration (`wrangler.toml`) | pattern | [Connect docs](https://rivet.dev/docs/connect) |
+| Migrations (create/rename/delete/transfer) | pattern | [Versions](https://rivet.dev/docs/actors/versions), [Destroy](https://rivet.dev/docs/actors/destroy) |
+| Data location (jurisdictions, hints) | pattern | [Multi-region](https://rivet.dev/docs/self-hosting/multi-region) |
+| Environments | native | Separate namespaces/deployments |
+| Error handling | native | [Errors](https://rivet.dev/docs/actors/errors) |
+| TTL pattern | native | [Schedule](https://rivet.dev/docs/actors/schedule), [Destroy](https://rivet.dev/docs/actors/destroy) |
+| Counter (read-modify-write) | pattern | [Queues](https://rivet.dev/docs/actors/queues), [Workflows](https://rivet.dev/docs/actors/workflows) |
+| ReadableStream support | unsupported | -- |
+| Container API | unsupported | -- |
+| WebGPU API | unsupported | -- |
+| Testing | native | [Testing](https://rivet.dev/docs/actors/testing) |
+| Observability | native | [Debugging](https://rivet.dev/docs/actors/debugging) |
+| Data security | native | [Authentication](https://rivet.dev/docs/actors/authentication) |
+| Pricing | out-of-scope | -- |
+| Limits | native | [Limits](https://rivet.dev/docs/actors/limits) |
+| Gradual deployments | pattern | [Versions](https://rivet.dev/docs/actors/versions) |
+| Troubleshooting | native | [Troubleshooting](https://rivet.dev/docs/actors/troubleshooting) |
+| Known issues | native | [Troubleshooting](https://rivet.dev/docs/actors/troubleshooting) |
+| Sharding and design patterns | native | [Design patterns](https://rivet.dev/docs/actors/design-patterns) |
+| `RpcTarget` metadata | native | [Metadata](https://rivet.dev/docs/actors/metadata) |
+| REST API | native | [Debugging](https://rivet.dev/docs/actors/debugging), [Request handler](https://rivet.dev/docs/actors/request-handler) |
+| Legacy KV storage backend | out-of-scope | -- |
+| Rust API (`workers-rs`) | unsupported | -- |
+| Storage options summary | native | [Persistence](https://rivet.dev/docs/actors/persistence), [SQLite](https://rivet.dev/docs/actors/sqlite), [KV](https://rivet.dev/docs/actors/kv) |
+
+## Defining an Actor
+
+A Durable Object class maps to a Rivet `actor()` definition. The constructor, storage, and public methods all have direct equivalents.
+
+### Before (Cloudflare)
+
+[Durable Objects API](https://developers.cloudflare.com/durable-objects/api/)
+
+```ts @nocheck
+import { DurableObject } from "cloudflare:workers";
+
+export class MyDurableObject extends DurableObject {
+  constructor(ctx: DurableObjectState, env: unknown) {
+    super(ctx, env);
+  }
+
+  async sayHello(): Promise<string> {
+    return "Hello, World!";
+  }
+}
+```
+
+### After (Rivet)
+
+[Actors Overview](https://rivet.dev/docs/actors)
+
+```ts
+import { actor } from "rivetkit";
+
+const myActor = actor({
+  actions: {
+    sayHello: (c) => {
+      return "Hello, World!";
+    },
+  },
+});
+```
+
+## Identity and Addressing
+
+Durable Objects use `idFromName`, `newUniqueId`, and `idFromString` for addressing. Rivet uses keys for deterministic addressing and exposes `actorId` for the system-generated ID.
+
+### Before (Cloudflare)
+
+[Durable Objects API](https://developers.cloudflare.com/durable-objects/api/)
+
+```ts @nocheck
+interface DurableObjectNamespace {
+  idFromName(name: string): DurableObjectId;
+  newUniqueId(): DurableObjectId;
+  idFromString(hex: string): DurableObjectId;
+  get(id: DurableObjectId): DurableObjectStub;
+}
+declare const env: { MY_DO: DurableObjectNamespace };
+declare const hexString: string;
+
+// Deterministic addressing
+const id = env.MY_DO.idFromName("user-123");
+const stub = env.MY_DO.get(id);
+
+// Random unique ID
+const uniqueId = env.MY_DO.newUniqueId();
+const stub2 = env.MY_DO.get(uniqueId);
+
+// Reconstruct from string
+const id3 = env.MY_DO.idFromString(hexString);
+```
+
+### After (Rivet)
+
+[Keys](https://rivet.dev/docs/actors/keys)
+
+```ts
+import { createClient } from "rivetkit/client";
+
+const client = createClient("http://localhost:6420");
+
+// Deterministic addressing via keys
+const handle = await client.myActor.getOrCreate(["user-123"]);
+
+// System-generated ID is available on the handle
+console.log(handle.id);
+```
+
+### Behavioral Delta
+
+- Rivet does not have `newUniqueId()`. Use keys for stable addressing or let the system assign an ID via `create()`.
+- Jurisdiction subnamespaces (`env.MY_DO.jurisdiction("eu")`) have no direct equivalent.
+
+## Handles and Stubs
+
+A `DurableObjectStub` maps to a Rivet actor handle obtained from `createClient()`.
+
+### Before (Cloudflare)
+
+[Durable Objects API](https://developers.cloudflare.com/durable-objects/api/)
+
+```ts @nocheck
+interface DurableObjectNamespace {
+  getByName(name: string): DurableObjectStub;
+}
+declare const env: { MY_DO: DurableObjectNamespace };
+
+const stub = env.MY_DO.getByName("foo");
+const result = await stub.sayHello();
+```
+
+### After (Rivet)
+
+[JavaScript Client](https://rivet.dev/docs/clients/javascript)
+
+```ts @nocheck
+import { createClient } from "rivetkit/client";
+
+declare const client: ReturnType<typeof createClient>;
+
+const handle = await client.myActor.getOrCreate(["foo"]);
+const result = await handle.sayHello();
+```
+
+## Actions (RPC)
+
+Durable Object public methods exposed as RPC map to Rivet actions.
+
+### Before (Cloudflare)
+
+[Durable Objects API](https://developers.cloudflare.com/durable-objects/api/)
+
+```ts @nocheck
+import { DurableObject } from "cloudflare:workers";
+
+export class Counter extends DurableObject {
+  async increment(amount: number = 1): Promise<number> {
+    let value = ((await this.ctx.storage.get("value")) as number) || 0;
+    value += amount;
+    await this.ctx.storage.put("value", value);
+    return value;
+  }
+}
+
+// Caller
+declare const env: { COUNTER: { getByName(name: string): Counter } };
+const stub = env.COUNTER.getByName("main");
+const newVal = await stub.increment(5);
+```
+
+### After (Rivet)
+
+[Actions](https://rivet.dev/docs/actors/actions)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+import { createClient } from "rivetkit/client";
+
+const counter = actor({
+  state: { value: 0 },
+  actions: {
+    increment: (c, amount: number = 1) => {
+      c.state.value += amount;
+      return c.state.value;
+    },
+  },
+});
+
+// Caller
+declare const client: ReturnType<typeof createClient>;
+const handle = await client.counter.getOrCreate(["main"]);
+const newVal = await handle.increment(5);
+```
+
+### Behavioral Delta
+
+- Durable Objects serialize requests, so `increment` is safe by default. Rivet actions run concurrently. For safe read-modify-write, use `state` (which is single-threaded per mutation) or route through a [queue](https://rivet.dev/docs/actors/queues).
+
+## HTTP Request Handler
+
+The DO `fetch()` handler maps to `onRequest` in Rivet.
+
+### Before (Cloudflare)
+
+[Durable Objects API](https://developers.cloudflare.com/durable-objects/api/)
+
+```ts @nocheck
+import { DurableObject } from "cloudflare:workers";
+
+export class MyDO extends DurableObject {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/hello") {
+      return new Response("Hello!");
+    }
+    return new Response("Not found", { status: 404 });
+  }
+}
+```
+
+### After (Rivet)
+
+[Request Handler](https://rivet.dev/docs/actors/request-handler)
+
+```ts
+import { actor } from "rivetkit";
+
+const myActor = actor({
+  onRequest: (c, request) => {
+    const url = new URL(request.url);
+    if (url.pathname === "/hello") {
+      return new Response("Hello!");
+    }
+    return new Response("Not found", { status: 404 });
+  },
+});
+```
+
+### Behavioral Delta
+
+- Streaming responses (`ReadableStream`, SSE) are not supported in Rivet today.
+
+## KV Storage
+
+Durable Object sync and async KV maps to Rivet's async KV API.
+
+### Before (Cloudflare)
+
+[Durable Objects Storage API](https://developers.cloudflare.com/durable-objects/api/storage-api/)
+
+```ts @nocheck
+// Sync KV (SQLite-backed DOs only)
+declare const ctx: { storage: { get(key: string): unknown; put(key: string, value: unknown): void; delete(key: string): void } };
+const val = ctx.storage.get("myKey");
+ctx.storage.put("myKey", "myValue");
+ctx.storage.delete("myKey");
+
+// Async KV
+const val2 = await ctx.storage.get("myKey");
+await ctx.storage.put("myKey", "myValue");
+await ctx.storage.delete("myKey");
+```
+
+### After (Rivet)
+
+[State](https://rivet.dev/docs/actors/state)
+
+```ts
+import { actor } from "rivetkit";
+
+const myActor = actor({
+  actions: {
+    example: async (c) => {
+      // All KV operations are async
+      const val = await c.kv.get("myKey");
+      await c.kv.put("myKey", "myValue");
+      await c.kv.delete("myKey");
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- Rivet KV is always async. There is no synchronous KV API.
+- Batch get/put with multiple keys at once is not a direct 1:1 match with the DO multi-key surface.
+
+## SQLite Storage
+
+Both platforms provide per-instance embedded SQLite. This is one of the strongest migration fits.
+
+### Before (Cloudflare)
+
+[Durable Objects SQL API](https://developers.cloudflare.com/durable-objects/api/storage-api/#sql-api)
+
+```ts @nocheck
+import { DurableObject } from "cloudflare:workers";
+
+export class MyDO extends DurableObject {
+  sql: { exec(query: string, ...args: unknown[]): { toArray(): unknown[] } };
+
+  constructor(ctx: DurableObjectState, env: unknown) {
+    super(ctx, env);
+    this.sql = ctx.storage.sql;
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS items (
+        id INTEGER PRIMARY KEY,
+        name TEXT
+      )
+    `);
+  }
+
+  async addItem(name: string): Promise<void> {
+    this.sql.exec("INSERT INTO items (name) VALUES (?)", name);
+  }
+
+  async getItems(): Promise<unknown[]> {
+    return this.sql.exec("SELECT * FROM items").toArray();
+  }
+}
+```
+
+### After (Rivet)
+
+[SQLite](https://rivet.dev/docs/actors/sqlite)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+
+const myActor = actor({
+  onCreate: (c) => {
+    c.db.exec(`
+      CREATE TABLE IF NOT EXISTS items (
+        id INTEGER PRIMARY KEY,
+        name TEXT
+      )
+    `);
+  },
+  actions: {
+    addItem: (c, name: string) => {
+      c.db.exec("INSERT INTO items (name) VALUES (?)", name);
+    },
+    getItems: (c) => {
+      return c.db.exec("SELECT * FROM items").toArray();
+    },
+  },
+});
+```
+
+## Scheduling (Alarms)
+
+DO alarms (one alarm per object) map to Rivet's schedule API, which supports multiple named schedules.
+
+### Before (Cloudflare)
+
+[Durable Objects Alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)
+
+```ts @nocheck
+import { DurableObject } from "cloudflare:workers";
+
+export class MyDO extends DurableObject {
+  async scheduleCleanup(): Promise<void> {
+    await this.ctx.storage.setAlarm(Date.now() + 60_000);
+  }
+
+  async alarm(): Promise<void> {
+    // Runs when the alarm fires
+    console.log("Alarm fired, cleaning up");
+    await this.ctx.storage.deleteAll();
+  }
+}
+```
+
+### After (Rivet)
+
+[Schedule](https://rivet.dev/docs/actors/schedule)
+
+```ts
+import { actor } from "rivetkit";
+
+const myActor = actor({
+  actions: {
+    scheduleCleanup: (c) => {
+      c.schedule.after(60_000, "cleanup");
+    },
+    cleanup: (c) => {
+      console.log("Scheduled action fired, cleaning up");
+      c.destroy();
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- Rivet supports multiple named scheduled events, whereas DOs only allow one alarm at a time.
+- DO alarms retry automatically with exponential backoff (up to 6 retries). Verify retry semantics in Rivet for your use case.
+
+## WebSocket Connections
+
+Both platforms support WebSocket connections to stateful instances. Rivet provides both a high-level connection API and a low-level WebSocket handler.
+
+### Before (Cloudflare)
+
+[Durable Objects WebSocket](https://developers.cloudflare.com/durable-objects/api/websockets/)
+
+```ts @nocheck
+import { DurableObject } from "cloudflare:workers";
+
+export class ChatRoom extends DurableObject {
+  async fetch(request: Request): Promise<Response> {
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    server.accept();
+
+    server.addEventListener("message", (event: MessageEvent) => {
+      // Broadcast to all connected sockets
+      for (const ws of this.ctx.getWebSockets()) {
+        ws.send(event.data);
+      }
+    });
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+}
+```
+
+### After (Rivet)
+
+[Connections](https://rivet.dev/docs/actors/connections)
+
+```ts
+import { actor } from "rivetkit";
+
+const chatRoom = actor({
+  state: { messages: [] as string[] },
+
+  onWebSocket: (c, ws) => {
+    ws.addEventListener("message", (event) => {
+      // Broadcast to all connections via raw WebSocket
+      // For typed messaging, use actions + events instead
+      for (const [, conn] of c.conns) {
+        conn.send("message", event.data as string);
+      }
+    });
+  },
+});
+```
+
+## WebSocket Hibernation
+
+Cloudflare's hibernation API lets DOs sleep while keeping WebSocket connections alive. Rivet handles hibernation automatically through its connection API.
+
+### Before (Cloudflare)
+
+[Durable Objects WebSocket](https://developers.cloudflare.com/durable-objects/api/websockets/)
+
+```ts @nocheck
+import { DurableObject } from "cloudflare:workers";
+
+export class HibernatingChat extends DurableObject {
+  async fetch(request: Request): Promise<Response> {
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    this.ctx.acceptWebSocket(server);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async webSocketMessage(ws: WebSocket, message: string): Promise<void> {
+    ws.send(`Echo: ${message}`);
+  }
+
+  async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
+    ws.close(code, reason);
+  }
+}
+```
+
+### After (Rivet)
+
+[WebSocket Handler](https://rivet.dev/docs/actors/websocket-handler)
+
+```ts
+import { actor } from "rivetkit";
+
+// Rivet manages hibernation automatically
+const hibernatingChat = actor({
+  state: {},
+
+  onWebSocket: (c, ws) => {
+    ws.addEventListener("message", (event) => {
+      ws.send(`Echo: ${event.data as string}`);
+    });
+  },
+});
+```
+
+### Behavioral Delta
+
+- Rivet handles hibernation automatically for the high-level connection API. You do not need to call `acceptWebSocket` or manage the hibernation lifecycle manually.
+- Per-connection attachment serialization (`ws.serializeAttachment`) maps to connection state in Rivet, which is managed through the connection params.
+- Low-level WebSocket handlers (`onWebSocketOpen`/`onWebSocketMessage`) are also available for more control over the connection lifecycle.
+
+## In-Memory State and Ephemeral Variables
+
+DO instance variables map to Rivet `state` (persisted) and `vars` (ephemeral, lost on sleep).
+
+### Before (Cloudflare)
+
+[Durable Objects State](https://developers.cloudflare.com/durable-objects/api/state/)
+
+```ts @nocheck
+import { DurableObject } from "cloudflare:workers";
+
+export class MyDO extends DurableObject {
+  cachedValue: number = 0;
+
+  constructor(ctx: DurableObjectState, env: unknown) {
+    super(ctx, env);
+    this.ctx.blockConcurrencyWhile(async () => {
+      this.cachedValue = ((await this.ctx.storage.get("value")) as number) || 0;
+    });
+  }
+
+  async getValue(): Promise<number> {
+    return this.cachedValue;
+  }
+}
+```
+
+### After (Rivet)
+
+[State](https://rivet.dev/docs/actors/state)
+
+```ts
+import { actor } from "rivetkit";
+
+const myActor = actor({
+  // Persisted state (survives sleep)
+  state: { cachedValue: 0 },
+
+  // Ephemeral variables (lost on sleep, rebuilt on wake)
+  vars: {},
+
+  actions: {
+    getValue: (c) => {
+      return c.state.cachedValue;
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- `blockConcurrencyWhile` has no direct equivalent. Rivet's `onCreate` runs before any actions are processed, serving a similar initialization role.
+- Rivet `state` is automatically persisted and restored. You do not need to manually load from storage.
+
+## Lifecycle
+
+Durable Object lifecycle states (active, idle, hibernated, inactive) map to Rivet actor lifecycle hooks.
+
+### Before (Cloudflare)
+
+[Durable Objects State](https://developers.cloudflare.com/durable-objects/api/state/)
+
+```ts @nocheck
+import { DurableObject } from "cloudflare:workers";
+
+export class MyDO extends DurableObject {
+  constructor(ctx: DurableObjectState, env: unknown) {
+    super(ctx, env);
+    // Initialization happens here
+    this.ctx.blockConcurrencyWhile(async () => {
+      await this.loadState();
+    });
+  }
+
+  async loadState(): Promise<void> {
+    // Load state from storage
+  }
+
+  // No explicit destroy hook. Use deleteAll() + alarm pattern.
+  async cleanup(): Promise<void> {
+    await this.ctx.storage.deleteAll();
+  }
+}
+```
+
+### After (Rivet)
+
+[Lifecycle](https://rivet.dev/docs/actors/lifecycle)
+
+```ts
+import { actor } from "rivetkit";
+
+const myActor = actor({
+  state: {},
+
+  onCreate: (c) => {
+    // First-time initialization
+  },
+  onWake: (c) => {
+    // Runs every time the actor starts (including after sleep)
+  },
+  onStateChange: (c) => {
+    // Called when persisted state changes
+  },
+  actions: {
+    cleanup: (c) => {
+      c.destroy();
+    },
+  },
+});
+```
+
+## Destroy and TTL Patterns
+
+DO TTL uses `setAlarm` + `deleteAll()`. Rivet uses `c.schedule` + `c.destroy()`.
+
+### Before (Cloudflare)
+
+[Durable Objects Alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)
+
+```ts @nocheck
+import { DurableObject } from "cloudflare:workers";
+
+export class EphemeralDO extends DurableObject {
+  timeToLiveMs = 60_000;
+
+  async fetch(request: Request): Promise<Response> {
+    await this.ctx.storage.setAlarm(Date.now() + this.timeToLiveMs);
+    return new Response("OK");
+  }
+
+  async alarm(): Promise<void> {
+    await this.ctx.storage.deleteAll();
+  }
+}
+```
+
+### After (Rivet)
+
+[Schedule](https://rivet.dev/docs/actors/schedule)
+
+```ts
+import { actor } from "rivetkit";
+
+const ephemeralActor = actor({
+  actions: {
+    touch: (c) => {
+      // Reset TTL on each request
+      c.schedule.after(60_000, "expire");
+      return "OK";
+    },
+    expire: (c) => {
+      c.destroy();
+    },
+  },
+});
+```
+
+## Metadata
+
+Durable Objects use `RpcTarget` or `ctx.id` for metadata access. Rivet exposes metadata directly on the context.
+
+### Before (Cloudflare)
+
+[Durable Objects State](https://developers.cloudflare.com/durable-objects/api/state/)
+
+```ts @nocheck
+import { DurableObject } from "cloudflare:workers";
+
+export class MyDO extends DurableObject {
+  async getMetadata(): Promise<{ id: string; name: string | undefined }> {
+    return {
+      id: this.ctx.id.toString(),
+      name: this.ctx.id.name,
+    };
+  }
+}
+```
+
+### After (Rivet)
+
+[Actors Overview](https://rivet.dev/docs/actors)
+
+```ts
+import { actor } from "rivetkit";
+
+const myActor = actor({
+  actions: {
+    getMetadata: (c) => {
+      return {
+        id: c.actorId,
+        name: c.name,
+        key: c.key,
+        region: c.region,
+      };
+    },
+  },
+});
+```
+
+## Concurrency and Serialization
+
+This is the single most important behavioral difference. Durable Objects serialize all event handling. Rivet actions run concurrently by default.
+
+### Before (Cloudflare)
+
+[Durable Objects Overview](https://developers.cloudflare.com/durable-objects/)
+
+```ts @nocheck
+import { DurableObject } from "cloudflare:workers";
+
+// Safe in DOs because requests are serialized
+export class Counter extends DurableObject {
+  async increment(): Promise<number> {
+    let value = ((await this.ctx.storage.get("value")) as number) || 0;
+    value += 1;
+    await this.ctx.storage.put("value", value);
+    return value;
+  }
+}
+```
+
+### After (Rivet)
+
+[Queues](https://rivet.dev/docs/actors/queues)
+
+```ts
+import { actor, queue } from "rivetkit";
+
+// Use state for simple counters (state mutations are safe)
+const counter = actor({
+  state: { value: 0 },
+  actions: {
+    increment: (c) => {
+      c.state.value += 1;
+      return c.state.value;
+    },
+  },
+});
+
+// Or use a queue for complex serialized operations
+const counterWithQueue = actor({
+  state: { value: 0 },
+  queues: {
+    incrementQueue: queue<Record<string, never>>(),
+  },
+  actions: {
+    increment: async (c) => {
+      await c.queue.send("incrementQueue", {});
+    },
+  },
+  run: async (c) => {
+    for await (const msg of c.queue.iter()) {
+      c.state.value += 1;
+      c.broadcast("updated", { value: c.state.value });
+    }
+  },
+});
+```
+
+### Behavioral Delta
+
+- Any DO code that relied on implicit serialization for correctness must be reviewed. Simple state mutations are safe. Complex multi-step operations should use [queues](https://rivet.dev/docs/actors/queues) or [workflows](https://rivet.dev/docs/actors/workflows).
+- `blockConcurrencyWhile` has no equivalent. Use `onCreate` for initialization.
+
+## Error Handling
+
+DO exceptions with `.retryable` and `.remote` properties map to Rivet's `UserError`.
+
+### Before (Cloudflare)
+
+[Durable Objects API](https://developers.cloudflare.com/durable-objects/api/)
+
+```ts @nocheck
+interface DurableObjectNamespace {
+  getByName(name: string): DurableObjectStub;
+}
+declare const env: { MY_DO: DurableObjectNamespace };
+declare const userId: string;
+
+// Caller-side error handling
+try {
+  const stub = env.MY_DO.getByName(userId);
+  const result = await stub.doWork();
+} catch (e: any) {
+  if (e.retryable) {
+    // Retry with backoff
+  }
+}
+```
+
+### After (Rivet)
+
+[Actions](https://rivet.dev/docs/actors/actions)
+
+```ts @nocheck
+import { actor, UserError } from "rivetkit";
+
+const myActor = actor({
+  state: { ready: false },
+  actions: {
+    doWork: (c) => {
+      if (!c.state.ready) {
+        throw new UserError("Not ready", { code: "NOT_READY" });
+      }
+      return "done";
+    },
+  },
+});
+
+// Caller-side
+try {
+  const result = await handle.doWork();
+} catch (e) {
+  console.error((e as Error).message);
+}
+```
+
+## Testing
+
+Both platforms support isolated test environments. Cloudflare uses `@cloudflare/vitest-pool-workers`; Rivet has built-in test support.
+
+### Before (Cloudflare)
+
+[Durable Objects Overview](https://developers.cloudflare.com/durable-objects/)
+
+```ts @nocheck
+import { env } from "cloudflare:test";
+import { describe, it, expect } from "vitest";
+
+describe("Counter", () => {
+  it("should increment", async () => {
+    const id = env.COUNTER.idFromName("test");
+    const stub = env.COUNTER.get(id);
+    const count = await stub.increment();
+    expect(count).toBe(1);
+  });
+});
+```
+
+### After (Rivet)
+
+[Actors Overview](https://rivet.dev/docs/actors)
+
+```ts @nocheck
+import { describe, it, expect } from "vitest";
+import { setupTest } from "rivetkit/test";
+
+describe("Counter", () => {
+  it("should increment", async (c) => {
+    const { client } = await setupTest(c, counter);
+    const handle = await client.counter.create();
+    const count = await handle.increment();
+    expect(count).toBe(1);
+  });
+});
+```
+
+## Configuration
+
+Durable Object bindings in `wrangler.toml`/`wrangler.jsonc` map to Rivet registry configuration.
+
+### Before (Cloudflare)
+
+[Durable Objects Overview](https://developers.cloudflare.com/durable-objects/)
+
+```ts @nocheck
+// wrangler.jsonc
+// {
+//   "durable_objects": {
+//     "bindings": [{
+//       "name": "MY_DO",
+//       "class_name": "MyDurableObject"
+//     }]
+//   },
+//   "migrations": [{
+//     "tag": "v1",
+//     "new_sqlite_classes": ["MyDurableObject"]
+//   }]
+// }
+```
+
+### After (Rivet)
+
+[Actors Overview](https://rivet.dev/docs/actors)
+
+```ts @nocheck
+import { setup } from "rivetkit";
+import { myActor } from "./actors";
+
+const app = setup({
+  use: { myActor },
+});
+
+export default app;
+```
+
+## Sharding and Design Patterns
+
+Durable Object sharding patterns (per-room, per-user, fan-out) map directly to Rivet actor key-based addressing and the design patterns documented in the Rivet docs.
+
+### Before (Cloudflare)
+
+[Durable Objects Overview](https://developers.cloudflare.com/durable-objects/)
+
+```ts @nocheck
+interface DurableObjectNamespace {
+  getByName(name: string): DurableObjectStub;
+}
+declare const env: { CHAT_ROOM: DurableObjectNamespace; USER_STATE: DurableObjectNamespace; MY_DO: DurableObjectNamespace };
+declare const roomId: string;
+declare const userId: string;
+declare const key: string;
+declare const NUM_SHARDS: number;
+declare function hash(key: string): number;
+
+// Per-room pattern
+const roomStub = env.CHAT_ROOM.getByName(`room-${roomId}`);
+
+// Per-user pattern
+const userStub = env.USER_STATE.getByName(`user-${userId}`);
+
+// Sharding by partition
+const shardKey = `shard-${hash(key) % NUM_SHARDS}`;
+const shardStub = env.MY_DO.getByName(shardKey);
+```
+
+### After (Rivet)
+
+[Keys](https://rivet.dev/docs/actors/keys)
+
+```ts @nocheck
+import { createClient } from "rivetkit/client";
+
+declare const client: ReturnType<typeof createClient>;
+declare const roomId: string;
+declare const userId: string;
+declare const key: string;
+declare const NUM_SHARDS: number;
+declare function hash(key: string): number;
+
+// Per-room pattern
+const room = await client.chatRoom.getOrCreate(["room", roomId]);
+
+// Per-user pattern
+const user = await client.userState.getOrCreate(["user", userId]);
+
+// Sharding by partition
+const shard = await client.myShard.getOrCreate([
+  "shard",
+  String(hash(key) % NUM_SHARDS),
+]);
+```
+
+## Deploying
+
+Rivet actors can be deployed to any supported platform. See the [Connect docs](/docs/connect) to choose your deployment target.
+
+## Unsupported or External Features
+
+- **Point-in-time recovery (PITR)** -- unsupported. No equivalent for restoring actor-local storage to a historical point.
+- **ReadableStream support** -- unsupported. Streaming HTTP responses and SSE are not supported in Rivet today.
+- **Container API** -- unsupported. No container runtime equivalent in Rivet Actors.
+- **WebGPU API** -- unsupported. No GPU compute equivalent in the Rivet Actor runtime.
+- **Rust API (`workers-rs`)** -- unsupported. Rivet Actors use JavaScript/TypeScript via RivetKit.
+- **Pricing** -- out-of-scope. Commercial billing model comparison, not a runtime migration concern.
+- **Legacy KV storage backend** -- out-of-scope. Deprecated Cloudflare backend with no relevance to forward migration.
+
+## Validation Checklist
+
+| Test Item | Expected Result | Proof |
+|-----------|----------------|-------|
+| Actor lifecycle (create, wake, sleep, destroy) | Hooks fire predictably | [actor-lifecycle.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-lifecycle.ts), [actor-sleep.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-sleep.ts) |
+| SQLite CRUD and persistence | Reads and writes survive sleep | [actor-db.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-db.ts) |
+| KV storage | Async get/put/delete work correctly | [actor-kv.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-kv.ts) |
+| Serialized mutation paths | Write-heavy code moved to queues/workflows produces correct results | [actor-queue.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-queue.ts) |
+| WebSocket connections | Connect, send, receive, broadcast all work | [raw-websocket.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/raw-websocket.ts) |
+| WebSocket hibernation | Connections survive actor sleep | [actor-conn-hibernation.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-conn-hibernation.ts) |
+| HTTP request handler | `onRequest` handles routes correctly | [raw-http.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/raw-http.ts) |
+| Scheduling | Scheduled events fire at expected times | [actor-schedule.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-schedule.ts) |
+| Destroy and TTL | Actor cleans up after scheduled expiration | [actor-destroy.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-destroy.ts) |
+| Metadata access | `c.actorId`, `c.name`, `c.key`, `c.region` return correct values | [actor-metadata.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-metadata.ts) |
+| Error handling | `UserError` propagates to caller with code and message | [actor-error-handling.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-error-handling.ts) |
+| Streaming responses removed | No migrated path relies on SSE/streaming HTTP | Manual review required |

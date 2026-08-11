@@ -1,0 +1,1108 @@
+---
+title: "Migrate PartyKit to Rivet"
+icon: "balloon"
+description: "Before-and-after migration guide for moving PartyKit capabilities to Rivet, with code for every supported migration path."
+---
+
+PartyKit rooms map directly to Rivet Actors keyed by a unique ID. The biggest semantic difference is storage: PartyKit exposes a single async key-value `room.storage` surface, while Rivet splits persistence into `state` (JSON), KV, and SQLite. Plan your storage mapping early since it affects every handler.
+
+## Status Summary
+
+**Status legend:**
+
+- **native** = direct Rivet equivalent exists
+- **pattern** = achievable with a documented Rivet pattern
+- **external** = requires an external service or library
+- **vendor** = Cloudflare-proprietary service replaced by a recommended third-party SDK or provider
+- **out-of-scope** = platform-specific; not applicable to Rivet
+
+| Feature | Status | Rivet path |
+| --- | --- | --- |
+| Party Server Definition | native | Actor class with `createActorDefinition` and actor keys |
+| WebSocket Connections | native | `onConnect` / raw WebSocket handler lifecycle |
+| WebSocket Messaging and Broadcasting | native | `c.broadcast()` and `conn.send()` |
+| Connection State | native | `connState` on each connection |
+| Connection Tags (Metadata and Filtering) | pattern | Store tags in `connState`, filter `c.conns` manually |
+| Room and Party Management | native | Actor keys and metadata |
+| State and Storage | native | Choose between `state`, KV, or SQLite per data set |
+| In-Memory State | native | Instance variables via `vars` |
+| HTTP Request Handlers | native | Raw HTTP request handler |
+| Edge Middleware (Static Handlers) | pattern | Auth guard or external middleware |
+| Multi-Party Communication | native | Actor-to-actor calls |
+| Cron Jobs / Scheduled Tasks | pattern | Long-lived coordinator actor with `c.schedule.after()` |
+| Alarms (Room-Level Scheduled Tasks) | native | `c.schedule.after()` and `c.schedule.at()` |
+| Hibernation API | native | Actors automatically hibernate with `state` persistence |
+| Server Lifecycle (`onStart`) | native | `onCreate` and `onWake` |
+| Configuration (`partykit.json`) | pattern | Rivet registry plus host-platform config |
+| Client Library (PartySocket) | native | `@rivetkit/client` with type-safe actor handles |
+| React Hook (`usePartySocket`) | native | `useActor` from `@rivetkit/react` |
+| Y.js / CRDT Support (`y-partykit`) | pattern | Build a custom Yjs transport over raw WebSocket handler |
+| AI Integration (`partykit-ai`) | vendor | Use the [Vercel AI SDK](https://sdk.vercel.ai/) (`ai` package) with any supported provider |
+| Authentication | native | `onBeforeConnect` guard and connection params |
+| Binary Message Handling | native | Raw WebSocket handler accepts `ArrayBuffer` |
+| Rate Limiting | pattern | Build per-connection rate limiter in actor logic |
+| Input Validation | native | Zod or any schema library in actions or handlers |
+| Static Asset Serving | out-of-scope | Use your web host (Vercel, Cloudflare Pages, etc.) |
+| Environment Variables | native | Host-platform env vars (e.g. `wrangler.json` vars) |
+| Preview Environments | external | Host-platform preview deploy tooling |
+| Deployment and Hosting | native | Deploy to any supported platform; see [Connect docs](/docs/connect) |
+| CI/CD with GitHub Actions | pattern | Standard CI/CD with your deploy target |
+| CLI Commands | out-of-scope | No PartyKit-style CLI; use RivetKit programmatic API |
+| Debugging | native | Rivet Inspector, console logging, and test suite |
+| Global Distribution | native | Actor region placement via hosting configuration |
+| `Party.Request` | native | Standard `Request` object in HTTP handlers |
+| `Party.FetchSocket` | pattern | Use raw WebSocket handler for server-initiated connections |
+| Compatibility and Runtime | out-of-scope | Host-platform configuration, not an actor feature |
+
+## Party Server Definition
+
+A PartyKit `Party.Server` class maps to a Rivet actor definition. Room IDs become actor keys.
+
+### Before (PartyKit)
+
+[Server API](https://docs.partykit.io/reference/partyserver-api/)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+export default class ChatRoom implements Party.Server {
+  constructor(readonly room: Party.Room) {}
+
+  onConnect(conn: Party.Connection): void {
+    conn.send(`Welcome to room ${this.room.id}`);
+  }
+
+  onMessage(message: string, sender: Party.Connection): void {
+    this.room.broadcast(message, [sender.id]);
+  }
+}
+```
+
+### After (Rivet)
+
+[Actors Overview](https://rivet.dev/docs/actors)
+
+```ts
+import { actor } from "rivetkit";
+
+const chatRoom = actor({
+  state: { messages: [] as string[] },
+
+  onConnect: (c, conn) => {
+    conn.send(`Welcome to room ${c.actorId}`);
+  },
+
+  actions: {
+    sendMessage: (c, { message }: { message: string }) => {
+      c.broadcast(message);
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- PartyKit rooms are created implicitly on first access. Rivet actors are created via `client.chatRoom.getOrCreate(key)`.
+- PartyKit uses `Party.Room` constructor injection. Rivet passes a context object `c` to every handler.
+
+## WebSocket Connections
+
+PartyKit's `onConnect`, `onMessage`, `onClose`, and `onError` map to Rivet's raw WebSocket handler lifecycle.
+
+### Before (PartyKit)
+
+[onConnect](https://docs.partykit.io/reference/partyserver-api/#onconnect)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+export default class Server implements Party.Server {
+  onConnect(conn: Party.Connection, ctx: Party.ConnectionContext): void {
+    console.log("connected:", conn.id);
+  }
+  onMessage(message: string, sender: Party.Connection): void {
+    console.log("message from", sender.id, message);
+  }
+  onClose(conn: Party.Connection): void {
+    console.log("disconnected:", conn.id);
+  }
+  onError(conn: Party.Connection, error: Error): void {
+    console.error("error:", conn.id, error);
+  }
+}
+```
+
+### After (Rivet)
+
+[Connections](https://rivet.dev/docs/actors/connections)
+
+```ts
+import { actor } from "rivetkit";
+
+const server = actor({
+  state: {},
+
+  onConnect: (c, conn) => {
+    console.log("connected:", conn.id);
+  },
+
+  onDisconnect: (c, conn) => {
+    console.log("disconnected:", conn.id);
+  },
+
+  // For raw WebSocket access, use the raw handler:
+  // createRawWebSocketHandler: (c) => ({
+  //   onMessage: (conn, message) => { ... },
+  //   onError: (conn, error) => { ... },
+  // }),
+});
+```
+
+### Behavioral Delta
+
+- PartyKit's `onMessage` receives the sender connection as a second argument. In Rivet's raw WebSocket handler, the connection is the first argument.
+- Rivet uses `onDisconnect` instead of `onClose`.
+
+## WebSocket Messaging and Broadcasting
+
+Both platforms support broadcast-to-all and send-to-one. Rivet uses `c.broadcast()` at the actor level.
+
+### Before (PartyKit)
+
+[onMessage](https://docs.partykit.io/reference/partyserver-api/#onmessage)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+class Server implements Party.Server {
+  room!: Party.Room;
+
+  onMessage(message: string, sender: Party.Connection): void {
+    // Broadcast to everyone except sender
+    this.room.broadcast(message, [sender.id]);
+
+    // Send to one connection
+    const target = this.room.getConnection("some-id");
+    if (target) target.send("private message");
+
+    // Count connections
+    const count = [...this.room.getConnections()].length;
+  }
+}
+```
+
+### After (Rivet)
+
+[Events](https://rivet.dev/docs/actors/events)
+
+```ts
+import { actor } from "rivetkit";
+
+const room = actor({
+  state: {},
+  actions: {
+    sendMessage: (c, { message }: { message: string }) => {
+      // Broadcast to all connections
+      c.broadcast("message", message);
+
+      // Send to one connection
+      for (const [, conn] of c.conns) {
+        if (conn.id === "some-id") {
+          conn.send("message", "private message");
+        }
+      }
+
+      // Count connections
+      const count = c.conns.size;
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- PartyKit `broadcast` accepts an exclusion list of connection IDs. Rivet `c.broadcast()` sends to all; exclude manually by iterating `c.conns`.
+
+## Connection State
+
+PartyKit's `connection.setState()` maps to Rivet's `connState`.
+
+### Before (PartyKit)
+
+[onConnect](https://docs.partykit.io/reference/partyserver-api/#onconnect)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+class Server implements Party.Server {
+  room!: Party.Room;
+
+  onConnect(conn: Party.Connection, ctx: Party.ConnectionContext): void {
+    const username = new URL(ctx.request.url).searchParams.get("username");
+    conn.setState({ username });
+  }
+
+  onMessage(message: string, sender: Party.Connection): void {
+    const username = (sender.state as { username?: string })?.username;
+    this.room.broadcast(`${username}: ${message}`);
+  }
+}
+```
+
+### After (Rivet)
+
+[Connections](https://rivet.dev/docs/actors/connections)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+
+const server = actor({
+  state: {},
+
+  createConnState: (c, params: { username?: string }) => ({
+    username: params.username ?? "anonymous",
+  }),
+
+  actions: {
+    // Connection state is available through the connection object
+    sendMessage: (c, { message, connId }: { message: string; connId: string }) => {
+      const conn = c.conns.get(connId);
+      const username = conn?.state.username ?? "anonymous";
+      c.broadcast(`${username}: ${message}`);
+    },
+  },
+});
+```
+
+## Connection Tags (Metadata and Filtering)
+
+PartyKit has built-in `getConnectionTags` and `getConnections(tag)`. In Rivet, store tags in `connState` and filter manually.
+
+### Before (PartyKit)
+
+[onConnect](https://docs.partykit.io/reference/partyserver-api/#onconnect)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+export default class Server implements Party.Server {
+  room!: Party.Room;
+
+  getConnectionTags(conn: Party.Connection, ctx: Party.ConnectionContext): string[] {
+    const country = (ctx.request as any).cf?.country ?? "unknown";
+    return [country];
+  }
+
+  onMessage(message: string): void {
+    for (const conn of this.room.getConnections("GB")) {
+      conn.send("Hello from the UK filter");
+    }
+  }
+}
+```
+
+### After (Rivet)
+
+[Connections](https://rivet.dev/docs/actors/connections)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+
+const server = actor({
+  state: {},
+
+  createConnState: (c, params: { tags?: string }) => ({
+    tags: params.tags ? params.tags.split(",") : [] as string[],
+  }),
+
+  actions: {
+    sendToTag: (c, { tag, message }: { tag: string; message: string }) => {
+      for (const [, conn] of c.conns) {
+        if (conn.state.tags.includes(tag)) {
+          conn.send("message", message);
+        }
+      }
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- PartyKit indexes tags at the platform level for O(1) lookup. Rivet requires a linear scan of `c.conns`. For rooms with thousands of connections, benchmark this path.
+
+## Room Identity
+
+PartyKit `room.id` maps to Rivet actor keys. Both use string identifiers for room routing.
+
+### Before (PartyKit)
+
+[room](https://docs.partykit.io/reference/partyserver-api/#room)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+export default class Server implements Party.Server {
+  constructor(readonly room: Party.Room) {}
+
+  onRequest(req: Party.Request): Response {
+    return new Response(`Room ID: ${this.room.id}`);
+  }
+}
+```
+
+### After (Rivet)
+
+[Keys](https://rivet.dev/docs/actors/keys)
+
+```ts
+import { actor } from "rivetkit";
+
+const server = actor({
+  state: {},
+
+  actions: {
+    getRoomId: (c) => {
+      return { roomId: c.actorId };
+    },
+  },
+});
+```
+
+## State and Storage
+
+PartyKit has a single `room.storage` KV API. Rivet splits persistence into `state` (serialized JSON), KV, and SQLite. Choose per data set.
+
+### Before (PartyKit)
+
+[room](https://docs.partykit.io/reference/partyserver-api/#room)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+class Server implements Party.Server {
+  room!: Party.Room;
+  data: { items: string[] } = { items: [] };
+
+  async onStart(): Promise<void> {
+    this.data = (await this.room.storage.get("data") as { items: string[] }) ?? { items: [] };
+  }
+
+  async onMessage(message: string): Promise<void> {
+    const event = JSON.parse(message) as { item: string };
+    this.data.items.push(event.item);
+    await this.room.storage.put("data", this.data);
+    this.room.broadcast(JSON.stringify(this.data));
+  }
+}
+```
+
+### After (Rivet)
+
+[State](https://rivet.dev/docs/actors/state)
+
+```ts
+import { actor } from "rivetkit";
+
+// Option 1: Use `state` for simple persisted JSON
+const server = actor({
+  state: { items: [] as string[] },
+
+  actions: {
+    addItem: (c, { item }: { item: string }) => {
+      c.state.items.push(item);
+      c.broadcast(JSON.stringify(c.state));
+    },
+  },
+});
+
+// Option 2: Use KV for key-sharded data
+// await c.kv.put(["items", itemId], itemData);
+// const item = await c.kv.get(["items", itemId]);
+
+// Option 3: Use SQLite for queryable, indexed data
+// c.sql.exec("INSERT INTO items (id, data) VALUES (?, ?)", [id, data]);
+```
+
+### Behavioral Delta
+
+- PartyKit storage supports structured-clone-compatible values up to 128 KiB per key. Rivet `state` is JSON-serialized with no per-key size concept.
+- PartyKit `storage.list()` returns all keys. Rivet KV supports prefix listing with `c.kv.list()`.
+- For large or queryable datasets, prefer Rivet SQLite over KV.
+
+## In-Memory State
+
+Both platforms support instance variables that persist across messages within a single lifecycle.
+
+### Before (PartyKit)
+
+[Server API](https://docs.partykit.io/reference/partyserver-api/)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+export default class Server implements Party.Server {
+  room!: Party.Room;
+  messages: string[] = [];
+
+  onMessage(message: string): void {
+    this.messages.push(message);
+    this.room.broadcast(JSON.stringify({ messages: [message] }));
+  }
+
+  onConnect(conn: Party.Connection): void {
+    conn.send(JSON.stringify({ messages: this.messages }));
+  }
+}
+```
+
+### After (Rivet)
+
+[Ephemeral Variables](https://rivet.dev/docs/actors/ephemeral-variables)
+
+```ts
+import { actor } from "rivetkit";
+
+const server = actor({
+  state: {},
+
+  vars: { messages: [] as string[] },
+
+  onConnect: (c, conn) => {
+    conn.send(JSON.stringify({ messages: c.vars.messages }));
+  },
+
+  actions: {
+    sendMessage: (c, { message }: { message: string }) => {
+      c.vars.messages.push(message);
+      c.broadcast(JSON.stringify({ messages: [message] }));
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- PartyKit in-memory state is lost on hibernation/restart unless explicitly saved to `room.storage`. Rivet `vars` are also ephemeral; use `state` for persistence.
+
+## HTTP Request Handler
+
+PartyKit's `onRequest` maps to Rivet's raw HTTP request handler.
+
+### Before (PartyKit)
+
+[onRequest](https://docs.partykit.io/reference/partyserver-api/#onrequest)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+class Server implements Party.Server {
+  room!: Party.Room;
+  messages: string[] = [];
+
+  async onRequest(req: Party.Request): Promise<Response> {
+    if (req.method === "POST") {
+      const body = await req.json() as { message: string };
+      this.messages.push(body.message);
+      this.room.broadcast(body.message);
+      return new Response("OK");
+    }
+    return new Response(JSON.stringify(this.messages));
+  }
+}
+```
+
+### After (Rivet)
+
+[Request Handler](https://rivet.dev/docs/actors/request-handler)
+
+```ts
+import { actor } from "rivetkit";
+
+const server = actor({
+  state: { messages: [] as string[] },
+
+  onRequest: async (c, request) => {
+    if (request.method === "POST") {
+      const body = await request.json() as { message: string };
+      c.state.messages.push(body.message);
+      return new Response("OK");
+    }
+    return new Response(JSON.stringify(c.state.messages));
+  },
+});
+```
+
+## Multi-Party Communication
+
+PartyKit uses `room.context.parties` for inter-party HTTP and WebSocket calls. Rivet uses actor-to-actor calls.
+
+### Before (PartyKit)
+
+[Multi-Party](https://docs.partykit.io/reference/partyserver-api/#extracting-data-from-other-parties)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+// In partykit.json:
+// { "parties": { "user": "src/user.ts" } }
+
+class Server implements Party.Server {
+  room!: Party.Room;
+
+  async onMessage(message: string): Promise<void> {
+    const userParty = this.room.context.parties.user;
+    const userRoom = userParty.get("user-123");
+    const res = await userRoom.fetch({ method: "GET" });
+    const data = await res.json();
+  }
+}
+```
+
+### After (Rivet)
+
+[Actions](https://rivet.dev/docs/actors/actions)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+
+const chatRoom = actor({
+  state: {},
+
+  actions: {
+    getUserData: async (c, { userId }: { userId: string }) => {
+      // Call another actor's action directly
+      const client = c.client();
+      const userActor = await client.userProfile.getOrCreate(userId);
+      const data = await userActor.getProfile();
+      return data;
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- PartyKit inter-party calls are HTTP-based with `fetch()` and `socket()`. Rivet actor-to-actor calls use direct action invocation, which is more ergonomic.
+
+## Alarms (Scheduled Tasks)
+
+PartyKit's per-room `storage.setAlarm()` maps to Rivet's `c.schedule.after()` and `c.schedule.at()`.
+
+### Before (PartyKit)
+
+[onAlarm](https://docs.partykit.io/reference/partyserver-api/#onalarm)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+class Server implements Party.Server {
+  room!: Party.Room;
+
+  async onStart(): Promise<void> {
+    await this.room.storage.setAlarm(Date.now() + 60000);
+  }
+
+  onAlarm(): void {
+    this.refreshData();
+    // Reschedule
+    this.room.storage.setAlarm(Date.now() + 60000);
+  }
+
+  refreshData(): void {
+    // Refresh data logic
+  }
+}
+```
+
+### After (Rivet)
+
+[Schedule](https://rivet.dev/docs/actors/schedule)
+
+```ts
+import { actor } from "rivetkit";
+
+const server = actor({
+  state: {},
+
+  actions: {
+    scheduleRefresh: (c) => {
+      c.schedule.after(60000, "refreshData", {});
+    },
+    refreshData: (c) => {
+      // Do work...
+      // Reschedule
+      c.schedule.after(60000, "refreshData", {});
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- PartyKit allows only one alarm per room. Rivet supports multiple concurrent scheduled tasks.
+- PartyKit alarms lack `room.id` in the callback. Rivet scheduled actions have full context access.
+
+## Cron Jobs
+
+PartyKit project-level cron jobs run on the edge via `onCron`. Rivet has no built-in cron expression scheduler; use a long-lived coordinator actor with interval-based scheduling.
+
+### Before (PartyKit)
+
+[Server API](https://docs.partykit.io/reference/partyserver-api/)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+// partykit.json: { "crons": { "cleanup": "*/5 * * * *" } }
+
+export default class Server implements Party.Server {
+  static async onCron(cron: { name: string; scheduledTime: number }, lobby: Party.Lobby, ctx: unknown): Promise<void> {
+    console.log(`Running ${cron.name} at ${cron.scheduledTime}`);
+    // Use lobby.parties to interact with rooms
+  }
+}
+```
+
+### After (Rivet)
+
+[Schedule](https://rivet.dev/docs/actors/schedule)
+
+```ts
+import { actor } from "rivetkit";
+
+const cronCoordinator = actor({
+  state: { lastRun: 0 },
+
+  actions: {
+    start: (c) => {
+      c.schedule.after(5 * 60 * 1000, "cleanup", {});
+    },
+    cleanup: (c) => {
+      console.log("Running cleanup");
+      c.state.lastRun = Date.now();
+      // Reschedule
+      c.schedule.after(5 * 60 * 1000, "cleanup", {});
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- PartyKit cron runs on the edge worker, not inside a room. Rivet's pattern uses a dedicated actor that must be explicitly created and started.
+- PartyKit supports standard cron expressions. Rivet uses millisecond-based intervals.
+
+## Hibernation
+
+PartyKit requires explicit `hibernate: true` opt-in. Rivet actors automatically hibernate when idle.
+
+### Before (PartyKit)
+
+[Hibernation](https://docs.partykit.io/reference/partyserver-api/#hibernate)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+export default class Server implements Party.Server {
+  options: Party.ServerOptions = { hibernate: true };
+  data: unknown;
+  room: Party.Room;
+
+  constructor(room: Party.Room) {
+    this.room = room;
+  }
+
+  async onStart(): Promise<void> {
+    // Runs on every wake from hibernation
+    this.data = await this.room.storage.get("data");
+  }
+
+  onMessage(message: string | ArrayBuffer, sender: Party.Connection): void {
+    // Handlers must be class methods (not inline listeners)
+    this.room.broadcast(message as string, [sender.id]);
+  }
+}
+```
+
+### After (Rivet)
+
+[Lifecycle](https://rivet.dev/docs/actors/lifecycle)
+
+```ts
+import { actor } from "rivetkit";
+
+const server = actor({
+  // Actors hibernate automatically. Use `state` for data
+  // that must survive hibernation.
+  state: { data: {} },
+
+  // `vars` are ephemeral and lost on hibernate.
+  vars: { cache: null },
+
+  actions: {
+    sendMessage: (c, { message }: { message: string }) => {
+      c.broadcast(message);
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- PartyKit hibernation is opt-in. Rivet hibernation is automatic.
+- PartyKit `connection.setState()` data (up to 2 KB) does not survive hibernation. Rivet `connState` persists across hibernation.
+- PartyKit without hibernation supports approximately 100 connections; with hibernation up to 32,000. Rivet connection limits depend on your hosting configuration.
+
+## Server Lifecycle
+
+PartyKit's `onStart` maps to Rivet's `onCreate` (first creation) and `onWake` (every wake including after hibernation).
+
+### Before (PartyKit)
+
+[onStart](https://docs.partykit.io/reference/partyserver-api/#onstart)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+export default class Server implements Party.Server {
+  config: unknown;
+  room: Party.Room;
+
+  constructor(room: Party.Room) {
+    this.room = room;
+  }
+
+  async onStart(): Promise<void> {
+    this.config = await this.room.storage.get("config");
+    console.log("Server initialized");
+  }
+}
+```
+
+### After (Rivet)
+
+[Lifecycle](https://rivet.dev/docs/actors/lifecycle)
+
+```ts
+import { actor } from "rivetkit";
+
+const server = actor({
+  state: { config: {} },
+
+  onCreate: (c) => {
+    console.log("Actor created for the first time");
+  },
+
+  onWake: (c) => {
+    console.log("Actor woke up (runs on every wake, including first create)");
+  },
+});
+```
+
+## Authentication
+
+PartyKit uses edge middleware (`onBeforeConnect` / `onBeforeRequest`) for auth. Rivet uses `onBeforeConnect` or `createConnState`.
+
+### Before (PartyKit)
+
+[onBeforeConnect](https://docs.partykit.io/reference/partyserver-api/#onbeforeconnect)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+declare function verifyToken(token: string): Promise<{ sub: string }>;
+
+export default class Server implements Party.Server {
+  room: Party.Room;
+
+  constructor(room: Party.Room) {
+    this.room = room;
+  }
+
+  static async onBeforeConnect(req: Party.Request, lobby: Party.Lobby): Promise<Request | Response> {
+    try {
+      const token = new URL(req.url).searchParams.get("token") ?? "";
+      const session = await verifyToken(token);
+      req.headers.set("X-User-ID", session.sub);
+      return req;
+    } catch (e) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+  }
+
+  onConnect(conn: Party.Connection, ctx: Party.ConnectionContext): void {
+    const userId = ctx.request.headers.get("X-User-ID");
+  }
+}
+```
+
+### After (Rivet)
+
+[Connections](https://rivet.dev/docs/actors/connections)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+
+const server = actor({
+  state: {},
+
+  createConnState: async (c, params: { token?: string }) => {
+    const token = params.token;
+    if (!token) throw new Error("Unauthorized");
+    const session = await verifyToken(token);
+    return { userId: session.sub };
+  },
+
+  onConnect: (c, conn) => {
+    const userId = conn.state.userId;
+  },
+});
+```
+
+### Behavioral Delta
+
+- PartyKit auth runs at the edge before the request reaches the room. Rivet authentication runs inside `onBeforeConnect` or `createConnState`.
+
+## Binary Message Handling
+
+Both platforms support binary WebSocket messages. Use a raw WebSocket handler in Rivet for binary data.
+
+### Before (PartyKit)
+
+[onMessage](https://docs.partykit.io/reference/partyserver-api/#onmessage)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+import { pack, unpack } from "msgpackr";
+
+export default class Server implements Party.Server {
+  room: Party.Room;
+
+  constructor(room: Party.Room) {
+    this.room = room;
+  }
+
+  onConnect(conn: Party.Connection): void {
+    conn.send(pack({ type: "join", id: conn.id }));
+  }
+
+  onMessage(message: string | ArrayBuffer): void {
+    if (typeof message !== "string") {
+      const data = unpack(Buffer.from(message as ArrayBuffer));
+      this.room.broadcast(pack(data));
+    }
+  }
+}
+```
+
+### After (Rivet)
+
+[WebSocket Handler](https://rivet.dev/docs/actors/websocket-handler)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+import { pack, unpack } from "msgpackr";
+
+const server = actor({
+  state: {},
+
+  onWebSocket: (c, ws) => {
+    ws.addEventListener("open", () => {
+      ws.send(pack({ type: "join" }));
+    });
+    ws.addEventListener("message", (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        const data = unpack(Buffer.from(event.data));
+        // Handle binary data
+      }
+    });
+  },
+});
+```
+
+## Input Validation
+
+Both platforms support schema validation with Zod or similar libraries. The approach is identical.
+
+### Before (PartyKit)
+
+[onMessage](https://docs.partykit.io/reference/partyserver-api/#onmessage)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+import { z } from "zod";
+
+const Message = z.union([
+  z.object({ type: z.literal("add"), item: z.string() }),
+  z.object({ type: z.literal("remove"), id: z.number() }),
+]);
+
+export default class Server implements Party.Server {
+  room: Party.Room;
+
+  constructor(room: Party.Room) {
+    this.room = room;
+  }
+
+  onMessage(message: string | ArrayBuffer): void {
+    const result = Message.safeParse(JSON.parse(message as string));
+    if (result.success) {
+      // Handle valid message
+    }
+  }
+}
+```
+
+### After (Rivet)
+
+[Actions](https://rivet.dev/docs/actors/actions)
+
+```ts
+import { actor, UserError } from "rivetkit";
+import { z } from "zod";
+
+const AddItemSchema = z.object({ item: z.string() });
+const RemoveItemSchema = z.object({ id: z.number() });
+
+const server = actor({
+  state: { items: [] as string[] },
+
+  actions: {
+    addItem: (c, params: unknown) => {
+      const result = AddItemSchema.safeParse(params);
+      if (!result.success) throw new UserError("Invalid input");
+      c.state.items.push(result.data.item);
+    },
+    removeItem: (c, params: unknown) => {
+      const result = RemoveItemSchema.safeParse(params);
+      if (!result.success) throw new UserError("Invalid input");
+      c.state.items = c.state.items.filter((_, i) => i !== result.data.id);
+    },
+  },
+});
+```
+
+## Rate Limiting
+
+Both platforms require application-level rate limiting. The pattern is similar.
+
+### Before (PartyKit)
+
+[onMessage](https://docs.partykit.io/reference/partyserver-api/#onmessage)
+
+```ts @nocheck
+import type * as Party from "partykit/server";
+
+export default class Server implements Party.Server {
+  room: Party.Room;
+
+  constructor(room: Party.Room) {
+    this.room = room;
+  }
+
+  onMessage(message: string | ArrayBuffer, sender: Party.Connection): void {
+    const now = Date.now();
+    const prev = (sender.state as { lastMessageTime?: number })?.lastMessageTime;
+    if (prev && now < prev + 100) {
+      sender.close();
+      return;
+    }
+    sender.setState({ ...sender.state, lastMessageTime: now });
+    this.room.broadcast(message as string, [sender.id]);
+  }
+}
+```
+
+### After (Rivet)
+
+[Connections](https://rivet.dev/docs/actors/connections)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+
+const server = actor({
+  state: {},
+
+  connState: { lastMessageTime: 0 },
+
+  onWebSocket: (c, ws) => {
+    ws.addEventListener("message", (event) => {
+      const now = Date.now();
+      // Find this connection and check rate limit
+      for (const [, conn] of c.conns) {
+        if (conn.state.lastMessageTime && now < conn.state.lastMessageTime + 100) {
+          conn.disconnect();
+          return;
+        }
+        conn.state.lastMessageTime = now;
+      }
+      c.broadcast(String(event.data));
+    });
+  },
+});
+```
+
+## Configuration
+
+PartyKit uses `partykit.json` for project config. Rivet splits config between the actor registry and host-platform config.
+
+### Before (PartyKit)
+
+[Configuration](https://docs.partykit.io/reference/partykit-configuration/)
+
+```ts @nocheck
+// partykit.json
+// {
+//   "name": "my-project",
+//   "main": "src/server.ts",
+//   "parties": {
+//     "chat": "src/chat.ts",
+//     "user": "src/user.ts"
+//   }
+// }
+```
+
+### After (Rivet)
+
+[Actors Overview](https://rivet.dev/docs/actors)
+
+```ts @nocheck
+import { setup } from "rivetkit";
+import { chatRoom } from "./chat";
+import { userProfile } from "./user";
+
+const app = setup({
+  use: { chatRoom, userProfile },
+});
+
+export default app;
+```
+
+## Deploying
+
+Rivet actors can be deployed to any supported platform. See the [Connect docs](/docs/connect) to choose your deployment target.
+
+## Unsupported or External Features
+
+- **Y.js / CRDT Support (`y-partykit`)** -- pattern -- No first-class equivalent. You can build a custom Yjs sync transport on top of the raw WebSocket handler, but the `y-partykit` convenience layer does not exist.
+- **AI Integration (`partykit-ai`)** -- vendor -- Cloudflare AI bindings are PartyKit-specific. Use the [Vercel AI SDK](https://sdk.vercel.ai/) (`ai` package) with any supported provider.
+- **Vectorize** -- external -- Cloudflare Vectorize is not available. Use an external vector database service.
+- **Static Asset Serving** -- out-of-scope -- Use your web framework's static hosting (Vercel, Cloudflare Pages, Netlify, etc.).
+- **Preview Environments** -- external -- Depends on host-platform preview deploy tooling (e.g. Cloudflare Workers preview, Vercel preview).
+- **CLI Commands** -- out-of-scope -- No `partykit`-style CLI. Use the RivetKit programmatic API and your host platform's CLI.
+- **Compatibility Flags** -- out-of-scope -- Cloudflare-specific `compatibilityDate` and `compatibilityFlags` are host-platform concerns.
+
+## Validation Checklist
+
+| Test item | Expected result | Proof |
+| --- | --- | --- |
+| Room identity maps to actor keys | One room ID resolves to one actor instance | [actor-handle.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-handle.ts) |
+| Connection state and broadcast work | Per-connection metadata and broadcast behave correctly | [actor-conn-state.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-conn-state.ts) |
+| Raw WebSocket protocol paths work | Binary and text WS handling succeed | [raw-websocket.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/raw-websocket.ts) |
+| HTTP request handler works | Request/response cycle with full actor context | [raw-http.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/raw-http.ts) |
+| Scheduling works | `c.schedule.after` fires actions on time | [actor-schedule.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-schedule.ts) |
+| Auth guard rejects invalid tokens | `onBeforeConnect` throws and connection is denied | [access-control.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/access-control.ts) |
+| Storage choice is explicit | Each data set has a chosen home (`state`, KV, or SQLite) | Review [Persistence docs](https://rivet.dev/docs/actors/persistence) during migration |
+| Tag-based filtering is benchmarked | Manual `connState` filtering meets latency needs at scale | Prototype with [Connections docs](https://rivet.dev/docs/actors/connections) |
+| Client reconnect behavior is validated | Reconnection semantics are acceptable in the new client | Compare [JavaScript Client](https://rivet.dev/docs/clients/javascript) against PartySocket behavior |

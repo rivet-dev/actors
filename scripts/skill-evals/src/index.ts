@@ -3,9 +3,8 @@ import { readdir, readFile, mkdir, writeFile, access, rm } from "node:fs/promise
 import { createWriteStream } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { tmpdir } from "node:os";
 import { z } from "zod";
-import { SandboxAgent, type ItemDeltaData } from "sandbox-agent";
+import { SandboxAgent } from "sandbox-agent";
 
 // --- Terminal styling ---
 
@@ -42,6 +41,7 @@ const {
 	RESULTS_DIR,
 	JUDGE_SYSTEM_PATH,
 	SKILLS_DIR,
+	EVAL_PROJECTS_DIR,
 	FRICTION_LOG_FILENAME,
 } = (() => {
 	const ROOT = dirname(new URL(import.meta.url).pathname);
@@ -51,6 +51,7 @@ const {
 	const RESULTS_DIR = join(PACKAGE_ROOT, "results");
 	const JUDGE_SYSTEM_PATH = join(ROOT, "judge-system.md");
 	const SKILLS_DIR = join(REPO_ROOT, "website/dist/metadata/skills");
+	const EVAL_PROJECTS_DIR = join(REPO_ROOT, ".context", "skill-eval-projects");
 	const FRICTION_LOG_FILENAME = "FRICTION.md";
 
 	return {
@@ -61,6 +62,7 @@ const {
 		RESULTS_DIR,
 		JUDGE_SYSTEM_PATH,
 		SKILLS_DIR,
+		EVAL_PROJECTS_DIR,
 		FRICTION_LOG_FILENAME,
 	};
 })();
@@ -158,10 +160,106 @@ Options:
 	};
 })();
 
+const SANDBOX_DEBUG = process.env.SKILL_EVAL_SANDBOX_DEBUG === "1";
+
+function buildClaudeToolEnv(): Record<string, string> {
+	const env: Record<string, string> = {
+		PATH: process.env.PATH ?? "",
+		HOME: process.env.HOME ?? "",
+		SHELL: process.env.SHELL ?? "/bin/zsh",
+	};
+
+	if (process.env.TERM) {
+		env.TERM = process.env.TERM;
+	}
+
+	return env;
+}
+
+function buildSessionInit(
+	agent: string,
+	cwd: string,
+	purpose: "agent" | "judge",
+): Record<string, unknown> {
+	const sessionInit: Record<string, unknown> = {
+		cwd,
+		mcpServers: [],
+	};
+
+	if (agent === "claude") {
+		sessionInit._meta = {
+			claudeCode: {
+				options: {
+					env: buildClaudeToolEnv(),
+					...(purpose === "judge"
+						? {
+							disallowedTools: ["Write", "Edit", "NotebookEdit", "TodoWrite"],
+						}
+						: {}),
+				},
+			},
+		};
+	}
+
+	return sessionInit;
+}
+
+function buildSandboxSpawnOptions(): { log: "silent" | "inherit"; env?: Record<string, string> } {
+	const env: Record<string, string> = {
+		SANDBOX_AGENT_ACP_REQUEST_TIMEOUT_MS: "600000",
+	};
+
+	if (!SANDBOX_DEBUG) {
+		return { log: "silent", env };
+	}
+
+	return {
+		log: "inherit",
+		env: {
+			...env,
+			RUST_LOG: "info,sandbox_agent=debug,acp_http_adapter=debug,agent_management=debug",
+			SANDBOX_AGENT_LOG_HTTP: "1",
+			SANDBOX_AGENT_LOG_HTTP_HEADERS: "1",
+		},
+	};
+}
+
+function createLogSink(
+	stream: ReturnType<typeof createWriteStream>,
+	mirrorStdout: boolean,
+): {
+	writeDelta: (delta: string) => void;
+	writeLine: (line: string) => void;
+} {
+	let atLineStart = true;
+
+	return {
+		writeDelta: (delta: string) => {
+			stream.write(delta);
+			if (mirrorStdout) process.stdout.write(delta);
+			atLineStart = delta.endsWith("\n");
+		},
+		writeLine: (line: string) => {
+			if (!atLineStart) {
+				stream.write("\n");
+				if (mirrorStdout) process.stdout.write("\n");
+			}
+			stream.write(line + "\n");
+			if (mirrorStdout) process.stdout.write(line + "\n");
+			atLineStart = true;
+		},
+	};
+}
+
 // --- Prompt helpers ---
 
 const { buildProjectAgentSystemPrompt } = (() => {
 	const DEFAULT_BASE = "Create a project in {{TMP_DIR}}. Install dependencies. Do not ask questions; proceed autonomously.";
+	const CLAUDE_SHELL_BOOTSTRAP = [
+		"Claude shell note: the default PATH may be incomplete.",
+		'When using shell commands, prefer absolute paths on this host: `/bin/mkdir`, `/bin/ls`, `/usr/bin/find`, `/usr/bin/env`, `/usr/bin/curl`, `/opt/homebrew/opt/node@22/bin/node`, `/opt/homebrew/opt/node@22/bin/npm`, and `/opt/homebrew/opt/node@22/bin/npx`.',
+		'If you still need PATH, prefix each shell command with `export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" &&`.',
+	].join(" ");
 
 	function interpolate(template: string, data: Record<string, string>): string {
 		let out = template;
@@ -181,6 +279,10 @@ const { buildProjectAgentSystemPrompt } = (() => {
 		}).trim();
 
 		const friction = `Keep a friction log as you work: append bullet points to ${frictionLogPath} whenever you hit errors, confusing docs/APIs, or need workarounds.`;
+		const handoff = "Do not start the dev server yourself, do not run browser-style verification, and do not spend time on exhaustive validation loops. Finish once the project files and any required dependencies are ready. The harness and judge will validate the result after you stop.";
+		const scope = "Work only inside the current working directory unless the task explicitly tells you to fetch a reference into a named subdirectory. Create and modify the migrated project only under `{{TMP_DIR}}`. Do not inspect `~/.claude`, `~/.config`, `/Users/nathan`, other repositories, sibling eval projects, or search for more skills. Any skill documentation you need is already included below.";
+		const packageManager = "Package manager: this repository uses a pnpm workspace. Use `pnpm`, not `npm`, for installs and scripts so local workspace package resolution works correctly.";
+		const dependencyVersions = "Dependency versions: prefer versions already used by nearby local examples or workspace packages. Do not invent older package versions when a current local example exists.";
 
 		const rivetkitLinking = [
 			"RivetKit linking: If you create a package.json that depends on RivetKit packages, set versions to '*' (do not pin).",
@@ -190,7 +292,9 @@ const { buildProjectAgentSystemPrompt } = (() => {
 			'  "@rivetkit/react": "*",',
 		].join("\n");
 
-		return ["# System", baseInterpolated, friction, rivetkitLinking].filter(Boolean).join("\n\n");
+		const shellBootstrap = AGENT === "claude" ? CLAUDE_SHELL_BOOTSTRAP : "";
+
+		return ["# System", baseInterpolated, friction, handoff, interpolate(scope, { TMP_DIR: tmpDir }), packageManager, dependencyVersions, rivetkitLinking, shellBootstrap].filter(Boolean).join("\n\n");
 	}
 
 	return { buildProjectAgentSystemPrompt };
@@ -198,7 +302,7 @@ const { buildProjectAgentSystemPrompt } = (() => {
 
 // --- Sandbox agent helpers ---
 
-const { collectTurnText } = (() => {
+const { collectTurnText, getSessionMode } = (() => {
 	type AgentLogSink = {
 		writeDelta: (delta: string) => void;
 		writeLine: (line: string) => void;
@@ -240,88 +344,98 @@ const { collectTurnText } = (() => {
 		}
 	}
 
+	function formatToolUpdateText(update: {
+		content?: Array<{ type?: string; content?: { type?: string; text?: string } }>;
+		rawOutput?: string;
+		status?: string;
+		title?: string;
+	}): string[] {
+		const lines: string[] = [];
+		if (Array.isArray(update.content)) {
+			for (const item of update.content) {
+				const text = item?.content?.text?.trim();
+				if (text) lines.push(text);
+			}
+		}
+		if (update.status === "failed" && update.rawOutput?.trim()) {
+			lines.push(update.rawOutput.trim());
+		}
+		return lines;
+	}
+
+	function getSessionMode(agent: string): string | undefined {
+		if (agent === "claude") return "bypassPermissions";
+		if (agent === "codex") return "full-access";
+		return undefined;
+	}
+
 	async function collectTurnText(
-		client: SandboxAgent,
-		sessionId: string,
+		session: {
+			prompt: (prompt: Array<{ type: "text"; text: string }>) => Promise<unknown>;
+			onEvent: (listener: (event: any) => void) => (() => void) | void;
+		},
 		message: string,
 		sink?: AgentLogSink,
-		signal?: AbortSignal,
+		timeoutMs = 600_000,
 	): Promise<string> {
-		const eventStream = await client.streamTurn(sessionId, { message }, undefined, signal);
-
 		let deltaText = "";
-		let completedTexts: string[] = [];
+		let unsubscribe: (() => void) | void;
 
-		for await (const event of eventStream) {
-			if (event.type === "error") {
-				const data = event.data as { message: string };
-				if (sink) sink.writeLine(`[error] ${data.message}`);
-				throw new Error(data.message);
+		unsubscribe = session.onEvent((event: any) => {
+			if (event?.sender !== "agent") return;
+
+			const payload = event.payload;
+			if (payload?.method !== "session/update") return;
+
+			const update = payload.params?.update;
+			if (!update) return;
+
+			if (update.sessionUpdate === "agent_message_chunk") {
+				const chunk = update.content?.text ?? "";
+				if (chunk) {
+					deltaText += chunk;
+					sink?.writeDelta(chunk);
+				}
+				return;
 			}
 
-			if (event.type === "session.ended") {
-				const data = event.data as { reason: string; message?: string | null };
-				if (data.reason === "error") {
-					const msg = data.message || "Session ended with error";
-					if (sink) sink.writeLine(`[session.ended] ${msg}`);
-					throw new Error(msg);
-				}
+			if (update.sessionUpdate === "tool_call") {
+				const title = update.title ?? update._meta?.claudeCode?.toolName ?? "tool";
+				sink?.writeLine(`[tool] ${title}`);
+				return;
 			}
 
-			if (event.type === "agent.unparsed") {
-				const data = event.data as { error: string };
-				if (sink) sink.writeLine(`[agent.unparsed] ${data.error}`);
-			}
-
-			if (event.type === "item.delta") {
-				const data = event.data as ItemDeltaData;
-				if (data.delta) {
-					deltaText += data.delta;
-					if (sink) sink.writeDelta(data.delta);
+			if (update.sessionUpdate === "tool_call_update") {
+				for (const line of formatToolUpdateText(update)) {
+					sink?.writeLine(`[tool] ${line}`);
 				}
 			}
+		});
 
-			if (event.type === "item.completed") {
-				const data = event.data as {
-					item?: {
-						kind?: string;
-						role?: string;
-						content?: Array<{ type?: string; text?: string; label?: string; detail?: string | null }>;
-					};
-				};
-				if (sink && data.item) {
-					logItemParts(data.item, sink);
-				}
-				if (data.item?.role === "assistant" && Array.isArray(data.item.content)) {
-					const text = data.item.content
-						.filter((p) => p.type === "text" && p.text)
-						.map((p) => p.text!)
-						.join("");
-					if (text) completedTexts.push(text);
-				}
-			}
-
-			// Auto-approve any permission requests
-			if (event.type === "permission.requested") {
-				const data = event.data as { permission_id: string };
-				try {
-					await client.replyPermission(sessionId, data.permission_id, { reply: "always" });
-				} catch {
-					// Best effort
-				}
+		try {
+			await Promise.race([
+				session.prompt([{ type: "text", text: message }]),
+				new Promise((_, reject) =>
+					setTimeout(() => reject(new Error(`Prompt timed out after ${timeoutMs}ms`)), timeoutMs),
+				),
+			]);
+		} finally {
+			try {
+				unsubscribe?.();
+			} catch {
+				// Best effort
 			}
 		}
 
-		// Prefer delta text (streaming), fall back to completed item text
-		return deltaText || completedTexts.join("\n");
+		return deltaText;
 	}
 
-	return { collectTurnText };
+	return { collectTurnText, getSessionMode };
 })();
 
 // --- Assert skills are built ---
 
-const { assertSkillsBuilt, assertRivetkitBuilt, loadSkillContent, discoverSkillIds } = (() => {
+const { assertSkillsBuilt, assertRivetkitBuilt, cleanupOldEvalProjects, loadSkillContent, discoverSkillIds } = (() => {
 	async function assertSkillsBuilt(): Promise<void> {
 		try {
 			await access(SKILLS_DIR);
@@ -345,9 +459,27 @@ const { assertSkillsBuilt, assertRivetkitBuilt, loadSkillContent, discoverSkillI
 		}
 	}
 
+	async function cleanupOldEvalProjects(): Promise<void> {
+		await mkdir(EVAL_PROJECTS_DIR, { recursive: true });
+		const entries = await readdir(EVAL_PROJECTS_DIR, { withFileTypes: true });
+		for (const entry of entries) {
+			if (!entry.isDirectory()) continue;
+			if (!entry.name.startsWith("skill-eval-")) continue;
+			await rm(join(EVAL_PROJECTS_DIR, entry.name), { recursive: true, force: true });
+		}
+	}
+
 	async function loadSkillContent(skillId: string): Promise<string> {
 		const skillDir = join(SKILLS_DIR, skillId);
+		const baseSkillMdPath = join(skillDir, "BASE_SKILL.md");
 		const skillMdPath = join(skillDir, "SKILL.md");
+
+		let baseSkillMd = "";
+		try {
+			baseSkillMd = await readFile(baseSkillMdPath, "utf-8");
+		} catch {
+			// Some skills do not have a base document.
+		}
 
 		let skillMd: string;
 		try {
@@ -356,7 +488,13 @@ const { assertSkillsBuilt, assertRivetkitBuilt, loadSkillContent, discoverSkillI
 			throw new Error(`Skill file not found: ${skillMdPath}`);
 		}
 
-		return `# Skill: ${skillId}\n\n${skillMd.trim()}\n`;
+		const sections = [`# Reference Bundle: ${skillId}`];
+		if (baseSkillMd.trim()) {
+			sections.push("## Preloaded BASE_SKILL.md", baseSkillMd.trim());
+		}
+		sections.push("## Preloaded SKILL.md", skillMd.trim());
+
+		return `${sections.join("\n\n")}\n`;
 	}
 
 	async function discoverSkillIds(): Promise<string[]> {
@@ -373,8 +511,27 @@ const { assertSkillsBuilt, assertRivetkitBuilt, loadSkillContent, discoverSkillI
 		return skillIds;
 	}
 
-	return { assertSkillsBuilt, assertRivetkitBuilt, loadSkillContent, discoverSkillIds };
+	return { assertSkillsBuilt, assertRivetkitBuilt, cleanupOldEvalProjects, loadSkillContent, discoverSkillIds };
 })();
+
+function getEvalSkillIds(evalName: string, availableSkillIds: string[]): string[] {
+	const byEval: Array<[string, string[]]> = [
+		["cf-do-", ["migrate-cloudflare-durable-objects", "rivetkit"]],
+		["cf-agents-", ["migrate-cloudflare-agents", "rivetkit"]],
+		["cf-workflows-", ["migrate-cloudflare-workflows", "rivetkit"]],
+		["cf-d1-", ["migrate-cloudflare-d1", "rivetkit"]],
+		["cf-queues-", ["migrate-cloudflare-queues", "rivetkit"]],
+		["cf-partykit-", ["migrate-partykit", "rivetkit"]],
+	];
+
+	for (const [prefix, skills] of byEval) {
+		if (evalName.startsWith(prefix)) {
+			return skills.filter((skillId) => availableSkillIds.includes(skillId));
+		}
+	}
+
+	return [];
+}
 
 // --- Resolve eval files ---
 
@@ -422,7 +579,7 @@ const { startDevServer, waitForServer, killServer } = (() => {
 		tail: Tail;
 		closeLogs: () => void;
 	} {
-		const proc = spawn("npm", ["run", "dev"], {
+		const proc = spawn("pnpm", ["run", "dev"], {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
 			detached: true,
@@ -430,8 +587,8 @@ const { startDevServer, waitForServer, killServer } = (() => {
 
 		const stdoutPath = join(resultDir, "dev-server.stdout.log");
 		const stderrPath = join(resultDir, "dev-server.stderr.log");
-		const stdoutStream = createWriteStream(stdoutPath, { flags: "a" });
-		const stderrStream = createWriteStream(stderrPath, { flags: "a" });
+		const stdoutStream = createWriteStream(stdoutPath, { flags: "w" });
+		const stderrStream = createWriteStream(stderrPath, { flags: "w" });
 		const tail: Tail = { stdout: [], stderr: [] };
 
 		proc.stdout?.on("data", (buf) => {
@@ -453,14 +610,29 @@ const { startDevServer, waitForServer, killServer } = (() => {
 		return { proc, stdoutPath, stderrPath, tail, closeLogs };
 	}
 
-	async function waitForServer(url: string, timeoutMs = 60_000): Promise<void> {
+	function extractServerUrl(tail: Tail): string | null {
+		const lines = [...tail.stdout, ...tail.stderr];
+		for (const line of lines) {
+			const match = line.match(/https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):(\d+)/);
+			if (!match) continue;
+			return `http://127.0.0.1:${match[1]}`;
+		}
+		return null;
+	}
+
+	async function waitForServer(url: string, tail: Tail, timeoutMs = 60_000): Promise<string> {
 		const start = Date.now();
 		while (Date.now() - start < timeoutMs) {
-			try {
-				const resp = await fetch(url);
-				if (resp.ok || resp.status < 500) return;
-			} catch {
-				// Not ready yet
+			const candidates = [url, extractServerUrl(tail)].filter(
+				(value, index, arr): value is string => !!value && arr.indexOf(value) === index,
+			);
+			for (const candidate of candidates) {
+				try {
+					const resp = await fetch(candidate);
+					if (resp.ok || resp.status < 500) return candidate;
+				} catch {
+					// Not ready yet
+				}
 			}
 			await new Promise((r) => setTimeout(r, 1000));
 		}
@@ -485,6 +657,75 @@ const { startDevServer, waitForServer, killServer } = (() => {
 	return { startDevServer, waitForServer, killServer };
 })();
 
+async function pathExists(path: string): Promise<boolean> {
+	try {
+		await access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function waitForProjectReady(tmpDir: string, timeoutMs = 180_000): Promise<boolean> {
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		const hasPackageJson = await pathExists(join(tmpDir, "package.json"));
+		const hasNodeModules = await pathExists(join(tmpDir, "node_modules"));
+		const hasSrc = await pathExists(join(tmpDir, "src"));
+		const hasIndexHtml = await pathExists(join(tmpDir, "index.html"));
+
+		if (hasPackageJson && (hasNodeModules || hasSrc || hasIndexHtml)) {
+			return true;
+		}
+
+		await new Promise((resolve) => setTimeout(resolve, 1000));
+	}
+
+	return false;
+}
+
+async function waitForProjectScaffold(tmpDir: string, timeoutMs = 120_000): Promise<boolean> {
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		const hasPackageJson = await pathExists(join(tmpDir, "package.json"));
+		const hasSrc = await pathExists(join(tmpDir, "src"));
+		const hasIndexHtml = await pathExists(join(tmpDir, "index.html"));
+		if (hasPackageJson || hasSrc || hasIndexHtml) {
+			return true;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 1000));
+	}
+	return false;
+}
+
+async function readTextIfExists(path: string): Promise<string> {
+	try {
+		return await readFile(path, "utf-8");
+	} catch {
+		return "";
+	}
+}
+
+async function destroySessionBestEffort(
+	client: SandboxAgent,
+	sessionId: string,
+	timeoutMs = 5000,
+): Promise<void> {
+	try {
+		await Promise.race([
+			client.destroySession(sessionId),
+			new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+		]);
+	} catch {
+		// Best effort.
+	}
+}
+
+function tailText(text: string, maxChars = 4000): string {
+	if (text.length <= maxChars) return text;
+	return text.slice(text.length - maxChars);
+}
+
 // --- Judge verdict schema ---
 
 const { VerdictSchema, parseVerdict } = (() => {
@@ -504,6 +745,10 @@ const { VerdictSchema, parseVerdict } = (() => {
 		})),
 		pass: z.boolean(),
 		summary: z.string(),
+	});
+	const SimpleVerdictSchema = z.object({
+		verdict: z.enum(["pass", "fail"]),
+		reason: z.string(),
 	});
 
 	function extractJson(text: string): unknown | null {
@@ -536,6 +781,27 @@ const { VerdictSchema, parseVerdict } = (() => {
 
 		const result = VerdictSchema.safeParse(json);
 		if (!result.success) {
+			const simple = SimpleVerdictSchema.safeParse(json);
+			if (simple.success) {
+				const pass = simple.data.verdict === "pass";
+				return {
+					verdict: {
+						criteria: [
+							{
+								name: "overall",
+								pass,
+								reason: simple.data.reason,
+							},
+						],
+						observations: [],
+						friction: [],
+						pass,
+						summary: simple.data.reason,
+					},
+					errors: [],
+				};
+			}
+
 			const errors = result.error.issues.map(
 				(issue) => `${issue.path.join(".")}: ${issue.message}`,
 			);
@@ -561,8 +827,8 @@ async function main() {
 	const judgeSystem = await readFile(JUDGE_SYSTEM_PATH, "utf-8");
 	const { promptPath, judgePath } = await resolveEvalFiles();
 
-	// Load all skills once upfront
-	const skillIds = await discoverSkillIds();
+	const availableSkillIds = await discoverSkillIds();
+	const skillIds = getEvalSkillIds(EVAL_NAME, availableSkillIds);
 
 	const allSkillContent: string[] = [];
 	for (const skillId of skillIds) {
@@ -579,7 +845,7 @@ async function main() {
 	console.log(`${fmt.bold("judge:")} ${JUDGE} (${fmtModel(JUDGE_MODEL, JUDGE_VARIANT)})`);
 	console.log("");
 	console.log("Starting sandbox-agent daemon...");
-	const client = await SandboxAgent.start({ spawn: { log: "silent" } });
+	const client = await SandboxAgent.start({ spawn: buildSandboxSpawnOptions() });
 	console.log("Daemon ready.\n");
 
 	try {
@@ -588,11 +854,13 @@ async function main() {
 
 		const resultDir = join(RESULTS_DIR, EVAL_NAME);
 		await mkdir(resultDir, { recursive: true });
+		await cleanupOldEvalProjects();
 
 		const start = Date.now();
 
-		// Create temp project directory
-		const tmpDir = join(tmpdir(), `skill-eval-${EVAL_NAME}-${Date.now()}`);
+		// Create temp project directory inside a gitignored pnpm workspace path.
+		await mkdir(EVAL_PROJECTS_DIR, { recursive: true });
+		const tmpDir = join(EVAL_PROJECTS_DIR, `skill-eval-${EVAL_NAME}-${Date.now()}`);
 		await mkdir(tmpDir, { recursive: true });
 		console.log(`${fmt.bold("tmp:")} ${tmpDir}`);
 
@@ -602,7 +870,9 @@ async function main() {
 		const agentMessage = [
 			systemPrompt,
 			"",
-			"# Skill Documentation\n",
+			"# Preloaded Migration References\n",
+			"These reference files are already loaded inline below. Use them directly. Do not search the filesystem for `SKILL.md`, `BASE_SKILL.md`, or any other skill files.",
+			"",
 			skillsBlock,
 			"\n---\n",
 			"# Task\n",
@@ -612,47 +882,57 @@ async function main() {
 		// 2) Run agent to generate the project
 		const agentSessionId = `eval-agent-${EVAL_NAME}-${Date.now()}`;
 		let response: string;
+		let agentStoppedEarly = false;
+		let agentSession:
+			| Awaited<ReturnType<SandboxAgent["createSession"]>>
+			| null = null;
 		console.log(`${fmt.bold("== agent ==")}`);
 		try {
-			await client.createSession(agentSessionId, {
+			agentSession = await client.createSession({
+				id: agentSessionId,
 				agent: AGENT,
 				model: MODEL,
-				...(VARIANT ? { variant: VARIANT } : {}),
-				permissionMode: "bypass",
+				...(getSessionMode(AGENT) ? { mode: getSessionMode(AGENT) } : {}),
+				sessionInit: buildSessionInit(AGENT, tmpDir, "agent") as any,
 			});
 
 			const agentLogPath = join(resultDir, "agent.log");
-			const agentLogStream = createWriteStream(agentLogPath, { flags: "a" });
-			let atLineStart = true;
-			const sink = {
-				writeDelta: (delta: string) => {
-					agentLogStream.write(delta);
-					process.stdout.write(delta);
-					atLineStart = delta.endsWith("\n");
-				},
-				writeLine: (line: string) => {
-					if (!atLineStart) {
-						agentLogStream.write("\n");
-						process.stdout.write("\n");
-					}
-					agentLogStream.write(line + "\n");
-					process.stdout.write(line + "\n");
-					atLineStart = true;
-				},
-			};
+				const agentLogStream = createWriteStream(agentLogPath, { flags: "w" });
+				const sink = createLogSink(agentLogStream, true);
 
-			const timeout = AbortSignal.timeout(600_000); // 10 minute timeout
-			response = await collectTurnText(client, agentSessionId, agentMessage, sink, timeout);
-			try { agentLogStream.end(); } catch {}
-		} catch (err) {
+				const promptPromise = collectTurnText(agentSession, agentMessage, sink);
+				const readyPromise = waitForProjectReady(tmpDir);
+				const scaffoldPromise = waitForProjectScaffold(tmpDir);
+				const winner = await Promise.race([
+					promptPromise.then((value) => ({ kind: "prompt" as const, value })),
+					readyPromise.then((ready) => ({ kind: "ready" as const, ready })),
+					scaffoldPromise.then((hasScaffold) => ({ kind: "scaffold" as const, hasScaffold })),
+				]);
+
+				if (winner.kind === "prompt") {
+					response = winner.value;
+				} else if (winner.kind === "ready" && winner.ready) {
+					response = "Project appears ready; stopping agent and proceeding to judge.";
+					agentStoppedEarly = true;
+					await destroySessionBestEffort(client, agentSessionId);
+					await new Promise((resolve) => setTimeout(resolve, 500));
+				} else if (winner.kind === "scaffold" && !winner.hasScaffold) {
+					throw new Error("Agent made no project scaffold progress after 120s");
+				} else {
+					response = await promptPromise;
+				}
+				try { agentLogStream.end(); } catch {}
+			} catch (err) {
 			const duration = Math.round((Date.now() - start) / 1000);
 			console.log(`\n${fmt.red("ERROR")} (agent, ${duration}s)  ${(err as Error).message.slice(0, 200)}`);
-			try { await client.terminateSession(agentSessionId); } catch {}
-			console.log(`${fmt.bold("results:")} ${RESULTS_DIR}`);
-			process.exit(1);
-		}
+				await destroySessionBestEffort(client, agentSessionId);
+				console.log(`${fmt.bold("results:")} ${RESULTS_DIR}`);
+				process.exit(1);
+			}
 
-		try { await client.terminateSession(agentSessionId); } catch {}
+			if (!agentStoppedEarly) {
+				await destroySessionBestEffort(client, agentSessionId);
+			}
 		await writeFile(join(resultDir, "response.md"), response);
 
 		// Read friction log if it exists
@@ -664,27 +944,39 @@ async function main() {
 			// No friction log created, that's fine
 		}
 
-		// 3) Start the dev server
-		let serverProc: ChildProcess | null = null;
-		let serverLogs: ReturnType<typeof startDevServer> | null = null;
-		const devUrl = "http://localhost:5173";
-		console.log(`\n${fmt.bold("== dev-server ==")}`);
-		try {
-			serverLogs = startDevServer(tmpDir, resultDir);
-			serverProc = serverLogs.proc;
-			await waitForServer(devUrl, 60_000);
-		} catch (err) {
-			if (serverProc) killServer(serverProc);
-			if (serverLogs) serverLogs.closeLogs();
-			const duration = Math.round((Date.now() - start) / 1000);
-			console.log(`${fmt.red("ERROR")} (server, ${duration}s)  ${(err as Error).message.slice(0, 200)}`);
-			console.log(`${fmt.bold("results:")} ${RESULTS_DIR}`);
-			process.exit(1);
-		}
+		const expectedDevUrl = EVAL_NAME.startsWith("cf-")
+			? "http://127.0.0.1:3000"
+			: "http://127.0.0.1:5173";
+		const devUrl = expectedDevUrl;
 
-		// 4) Run the judge, retrying on invalid JSON
-		const judgeInput = judgeTemplate.replace(/\{\{URL\}\}/g, devUrl);
+		// 3) Run the judge, retrying on invalid JSON
+		const baseJudgeInput = judgeTemplate.replace(/\{\{URL\}\}/g, devUrl);
+		const judgeInput = [
+			`Expected local URL: ${expectedDevUrl}`,
+			"The app is not pre-started by the harness. Start it yourself from the current working directory if needed, then verify it or diagnose the startup failure.",
+			"",
+			"Agent final response:",
+			"```text",
+			tailText(response, 3000),
+			"```",
+			"",
+			"Agent log tail:",
+			"```text",
+			tailText(await readTextIfExists(join(resultDir, "agent.log"))),
+			"```",
+			"",
+			"Friction log:",
+			"```text",
+			tailText(frictionLog, 2000),
+			"```",
+			"",
+			"Original eval instructions:",
+			baseJudgeInput,
+		].join("\n");
 		const MAX_JUDGE_ATTEMPTS = 3;
+		const judgeShellBootstrap = JUDGE === "claude"
+			? 'Claude shell note: prefix every shell command with `export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH" &&` because the default PATH may be incomplete.'
+			: "";
 
 		let verdict: Verdict | null = null;
 		let verdictRaw = "";
@@ -694,26 +986,39 @@ async function main() {
 		console.log(`\n${fmt.bold("== judge ==")}`);
 		for (let attempt = 1; attempt <= MAX_JUDGE_ATTEMPTS; attempt++) {
 			const retryInput = attempt === 1
-				? `${judgeSystem}\n\n${judgeInput}`
-				: `${judgeSystem}\n\n${judgeInput}\n\nIMPORTANT: Your previous response had invalid JSON. Validation errors:\n${lastValidationErrors!.map((e) => `- ${e}`).join("\n")}\n\nYou MUST respond with valid JSON matching the schema exactly. Every field is required.`;
+				? [judgeSystem, judgeShellBootstrap, judgeInput].filter(Boolean).join("\n\n")
+				: [
+					judgeSystem,
+					judgeShellBootstrap,
+					judgeInput,
+					`IMPORTANT: Your previous response had invalid JSON. Validation errors:\n${lastValidationErrors!.map((e) => `- ${e}`).join("\n")}\n\nYou MUST respond with valid JSON matching the schema exactly. Every field is required.`,
+				].filter(Boolean).join("\n\n");
 
 			const judgeSessionId = `eval-judge-${EVAL_NAME}-${attempt}-${Date.now()}`;
 			try {
-				await client.createSession(judgeSessionId, {
+				const judgeSession = await client.createSession({
+					id: judgeSessionId,
 					agent: JUDGE,
 					model: JUDGE_MODEL,
-					...(JUDGE_VARIANT ? { variant: JUDGE_VARIANT } : {}),
-					permissionMode: "bypass",
+					...(getSessionMode(JUDGE) ? { mode: getSessionMode(JUDGE) } : {}),
+					sessionInit: buildSessionInit(JUDGE, tmpDir, "judge") as any,
 				});
 
-				verdictRaw = await collectTurnText(client, judgeSessionId, retryInput);
-			} catch (err) {
-				judgeError = err as Error;
-				try { await client.terminateSession(judgeSessionId); } catch {}
-				break;
-			}
+				const judgeLogPath = join(resultDir, "judge.log");
+				const judgeLogStream = createWriteStream(judgeLogPath, {
+					flags: attempt === 1 ? "w" : "a",
+				});
+				const judgeSink = createLogSink(judgeLogStream, false);
+				judgeSink.writeLine(`[attempt] ${attempt}`);
+				verdictRaw = await collectTurnText(judgeSession, retryInput, judgeSink);
+				try { judgeLogStream.end(); } catch {}
+				} catch (err) {
+					judgeError = err as Error;
+					await destroySessionBestEffort(client, judgeSessionId);
+					break;
+				}
 
-			try { await client.terminateSession(judgeSessionId); } catch {}
+				await destroySessionBestEffort(client, judgeSessionId);
 
 			const parsed = parseVerdict(verdictRaw);
 			if (parsed.verdict) {
@@ -726,10 +1031,6 @@ async function main() {
 				console.log(`judge attempt ${attempt} invalid JSON, retrying`);
 			}
 		}
-
-		// 5) Kill the server
-		killServer(serverProc);
-		if (serverLogs) serverLogs.closeLogs();
 
 		if (judgeError) {
 			const duration = Math.round((Date.now() - start) / 1000);
@@ -754,6 +1055,7 @@ async function main() {
 			skills: skillIds,
 			duration_s: duration,
 			tmp_dir: tmpDir,
+			dev_url: devUrl,
 			has_friction_log: !!frictionLog,
 			timestamp: new Date().toISOString(),
 		};

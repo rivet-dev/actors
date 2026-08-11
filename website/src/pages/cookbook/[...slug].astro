@@ -6,6 +6,8 @@ import { templates as allTemplates, type Template } from "@/data/templates/share
 import { cookbookCovers } from "@/data/cookbook/covers";
 import * as mdxComponents from "@/components/mdx";
 import { jsonLdString } from "@/lib/jsonLd";
+import { Icon } from "@rivet-gg/icons";
+import { getCookbookIcon } from "@/components/cookbook/icons";
 
 export async function getStaticPaths() {
 	const cookbook = await getCollection("cookbook");
@@ -26,11 +28,13 @@ export async function getStaticPaths() {
 const { entry } = Astro.props;
 const { Content, headings } = await render(entry);
 
-const { title, description, templates } = entry.data as {
+const { title, description, icon, templates } = entry.data as {
 	title: string;
 	description: string;
+	icon?: string;
 	templates?: string[];
 };
+const cookbookIcon = getCookbookIcon(icon);
 
 // Build table of contents from headings (same pattern as docs)
 const tableOfContents = headings
@@ -138,7 +142,12 @@ if (coverArt) {
 					<a href="/cookbook" class="inline-flex items-center gap-2 text-xs text-ink-faint transition-colors hover:text-ink">
 						← Back to Cookbooks
 					</a>
-					<h1 class="mt-8 text-4xl font-medium leading-[1.06] tracking-[-0.015em] text-ink md:text-[3.75rem]">
+					{cookbookIcon && (
+						<div class="mt-8 flex h-12 w-12 items-center justify-center rounded-xl border border-ink/15 bg-white/55 text-pine">
+							<Icon icon={cookbookIcon} className="h-5 w-5" />
+						</div>
+					)}
+					<h1 class:list={["text-4xl font-medium leading-[1.06] tracking-[-0.015em] text-ink md:text-[3.75rem]", cookbookIcon ? "mt-6" : "mt-8"]}>
 						{title}
 					</h1>
 					{description && (

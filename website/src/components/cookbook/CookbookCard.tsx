@@ -1,3 +1,6 @@
+import { Icon } from "@rivet-gg/icons";
+import { getCookbookIcon } from "./icons";
+
 export interface CookbookCardCover {
 	src: string;
 	objectPosition?: string;
@@ -13,6 +16,7 @@ export interface CookbookPageCardData {
 	description: string;
 	href: string;
 	cover?: CookbookCardCover;
+	icon?: string;
 	primaryTemplate?: {
 		name: string;
 		displayName: string;
@@ -30,6 +34,8 @@ const DEFAULT_KEN = { x: "0%", y: "0%", scale: 1.16 };
 
 export function CookbookCard({ page }: { page: CookbookPageCardData }) {
 	const drift = page.cover?.ken ?? DEFAULT_KEN;
+	const icon = getCookbookIcon(page.icon);
+
 	return (
 		<div className="group relative">
 			{/* Soft ground beneath the card, mirroring the hero reel's hover glow. */}
@@ -66,6 +72,11 @@ export function CookbookCard({ page }: { page: CookbookPageCardData }) {
 					</div>
 					<div className="absolute inset-0 bg-[linear-gradient(to_bottom,rgba(0,0,0,0.8),rgba(0,0,0,0.3)_32%,transparent_58%)]" />
 				</>
+			)}
+			{!page.cover && icon && (
+				<div className="absolute inset-0 flex items-center justify-center text-cream/25">
+					<Icon icon={icon} className="h-[22cqw] w-[22cqw]" />
+				</div>
 			)}
 			{/* Title sizes use container-query units so the lockup scales with the card. */}
 			<h3

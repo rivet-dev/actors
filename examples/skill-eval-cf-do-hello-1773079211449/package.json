@@ -1,0 +1,24 @@
+{
+	"name": "skill-eval-cf-do-hello",
+	"version": "2.0.21",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "npx srvx --import tsx src/server.ts",
+		"start": "npx srvx --import tsx src/server.ts",
+		"check-types": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@hono/node-server": "^1.19.7",
+		"@hono/node-ws": "^1.2.0",
+		"hono": "^4.11.3",
+		"rivetkit": "*",
+		"srvx": "^0.10.0"
+	},
+	"devDependencies": {
+		"@types/node": "^22.13.9",
+		"tsx": "^3.12.7",
+		"typescript": "^5.5.2"
+	},
+	"license": "MIT"
+}

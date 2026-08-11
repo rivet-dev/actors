@@ -1,0 +1,816 @@
+---
+title: "Migrate Cloudflare Workflows to Rivet"
+icon: "cloudflare"
+description: "Before-and-after migration guide for moving Cloudflare Workflows capabilities to Rivet, with code for every supported migration path and explicit unsupported gaps."
+---
+
+Cloudflare Workflows maps to Rivet's native workflow engine inside actors. The core durability model (steps, sleeps, replay) translates directly, but the API surface differs: Rivet models durable steps, sleeps, and event waits inside an actor via `workflow()` rather than through `WorkflowEntrypoint` bindings and `WorkflowInstance` control APIs. The biggest semantic caveat is that external event waits use queue receives or actor actions instead of a dedicated `waitForEvent`/`sendEvent` pair.
+
+## Status Summary
+
+**Status legend:** `native` = direct Rivet equivalent, `partial` = some functionality available, `pattern` = achievable with a documented pattern, `external` = requires an outside service or library, `vendor` = Cloudflare-proprietary service replaced by a recommended third-party SDK or provider, `unsupported` = no current Rivet equivalent, `out-of-scope` = not a runtime migration concern.
+
+| Feature | Status | Rivet Path |
+| --- | --- | --- |
+| Workflow definition (`WorkflowEntrypoint`) | native | [`workflow()`](https://rivet.dev/docs/actors/workflows) in actor `run` |
+| `step.do()` | native | [`ctx.step()`](https://rivet.dev/docs/actors/workflows) |
+| `step.sleep()` | native | [`ctx.sleep()`](https://rivet.dev/docs/actors/workflows) |
+| `step.sleepUntil()` | native | [`ctx.sleepUntil()`](https://rivet.dev/docs/actors/workflows) |
+| `step.waitForEvent()` | pattern | Queue receive or actor action inside workflow |
+| `sendEvent` to running instance | pattern | Queue send, actor action, or client message |
+| Retry configuration (`WorkflowStepConfig`) | native | Step options in `ctx.step()` |
+| Error handling (`NonRetryableError`) | pattern | Throw inside step with `retries: { limit: 0 }` to prevent retries |
+| Triggering workflows (Workers binding) | native | [`createClient()`](https://rivet.dev/docs/clients/javascript) or HTTP |
+| Passing data (event payloads) | native | [Actor input](https://rivet.dev/docs/actors/input) and workflow state |
+| Instance management (`create`, `get`, `status`) | pattern | Actor handles and [inspector](https://rivet.dev/docs/actors/debugging) |
+| Pause and resume instances | pattern | Paused flag plus queue/action resume |
+| Terminate and restart instances | native | [Actor destroy](https://rivet.dev/docs/actors/destroy) and [versions](https://rivet.dev/docs/actors/versions) |
+| Nested/child workflows | pattern | Actor-to-actor orchestration |
+| State passing between steps | native | Step return values |
+| Configuration (`wrangler.jsonc`) | pattern | Actor registry config |
+| Cross-script workflow bindings | pattern | [Client-to-actor communication](https://rivet.dev/docs/actors/communicating-between-actors) |
+| CPU and subrequest limits | native | [Actor limits](https://rivet.dev/docs/actors/limits) (different model) |
+| Rules and best practices | native | Same principles apply |
+| Human-in-the-loop pattern | native | [Approval example](https://github.com/rivet-dev/rivet/blob/main/examples/sandbox/src/actors/workflow/approval.ts) |
+| Event subscriptions | pattern | Connection events or explicit fanout |
+| Calling workflows from Pages | pattern | Any HTTP caller via [client](https://rivet.dev/docs/clients/javascript) |
+| Durable AI agents | pattern | [AI actors](https://rivet.dev/docs/actors/ai-and-user-generated-actors) with workflows |
+| Local development | native | [Testing](https://rivet.dev/docs/actors/testing) |
+| Metrics and analytics | pattern | [Inspector](https://rivet.dev/docs/actors/debugging) history and logs |
+| Workflow visualizer | unsupported | Inspector exposes history, not a graph UI |
+| Wrangler CLI commands | out-of-scope | No workflow control-plane CLI |
+| Limits | native | [Different limit model](https://rivet.dev/docs/actors/limits) |
+| Pricing | out-of-scope | Commercial comparison |
+| Deployment | out-of-scope | Platform-specific; see [Connect docs](https://rivet.dev/docs/connect) to choose your deployment target |
+| Glossary | out-of-scope | Terminology difference only |
+
+## Workflow Definition
+
+Cloudflare uses `WorkflowEntrypoint` with a `run` method. Rivet uses `workflow()` inside an actor's `run` handler.
+
+### Before (Cloudflare)
+
+[Workflows](https://developers.cloudflare.com/workflows/)
+
+```ts @nocheck
+import { WorkflowEntrypoint } from "cloudflare:workers";
+
+export class MyWorkflow extends WorkflowEntrypoint {
+  async run(event: { payload: unknown }, step: WorkflowStep): Promise<{ processed: boolean }> {
+    const result = await step.do("my step", async () => {
+      return { processed: true };
+    });
+    return result;
+  }
+}
+```
+
+### After (Rivet)
+
+[Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts
+import { actor } from "rivetkit";
+import { workflow } from "rivetkit/workflow";
+
+const myWorkflow = actor({
+  run: workflow(async (ctx) => {
+    const result = await ctx.step("my step", async () => {
+      return { processed: true };
+    });
+    return result;
+  }),
+});
+```
+
+## Steps (step.do)
+
+Each `step.do()` maps directly to `ctx.step()`. Both persist return values and replay on restart.
+
+### Before (Cloudflare)
+
+[Steps](https://developers.cloudflare.com/workflows/build/steps/)
+
+```ts @nocheck
+declare const step: WorkflowStep;
+
+const data = await step.do("fetch data", async () => {
+  const res = await fetch("https://api.example.com/data");
+  return await res.json();
+});
+
+const result = await step.do("process data", async () => {
+  return { count: data.items.length };
+});
+```
+
+### After (Rivet)
+
+[Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts @nocheck
+import { ActorWorkflowContext } from "rivetkit/workflow";
+
+declare const ctx: ActorWorkflowContext;
+
+const data = await ctx.step("fetch data", async () => {
+  const res = await fetch("https://api.example.com/data");
+  return await res.json();
+});
+
+const result = await ctx.step("process data", async () => {
+  return { count: data.items.length };
+});
+```
+
+## Sleep
+
+Both platforms support relative-duration sleeps that hibernate without consuming CPU.
+
+### Before (Cloudflare)
+
+[Sleeping](https://developers.cloudflare.com/workflows/build/sleeping/)
+
+```ts @nocheck
+declare const step: WorkflowStep;
+
+await step.sleep("wait for cooldown", "1 hour");
+```
+
+### After (Rivet)
+
+[Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts @nocheck
+import { ActorWorkflowContext } from "rivetkit/workflow";
+declare const ctx: ActorWorkflowContext;
+
+await ctx.sleep(60 * 60 * 1000); // milliseconds
+```
+
+### Behavioral Delta
+
+- Cloudflare accepts human-readable duration strings (`"1 hour"`). Rivet accepts milliseconds.
+
+## Sleep Until
+
+Pause execution until a specific point in time.
+
+### Before (Cloudflare)
+
+[Sleeping](https://developers.cloudflare.com/workflows/build/sleeping/)
+
+```ts @nocheck
+declare const step: WorkflowStep;
+
+const targetDate = Date.parse("2026-10-24T13:00:00Z");
+await step.sleepUntil("wait until launch", targetDate);
+```
+
+### After (Rivet)
+
+[Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts @nocheck
+import { ActorWorkflowContext } from "rivetkit/workflow";
+declare const ctx: ActorWorkflowContext;
+
+const targetDate = new Date("2026-10-24T13:00:00Z");
+await ctx.sleepUntil(targetDate);
+```
+
+## Wait for Event
+
+Cloudflare has a dedicated `step.waitForEvent()` API. In Rivet, model this with a queue receive or an action handler that feeds data into the workflow.
+
+### Before (Cloudflare)
+
+[Events](https://developers.cloudflare.com/workflows/build/events/)
+
+```ts @nocheck
+declare const step: WorkflowStep;
+
+const approval = await step.waitForEvent("wait for approval", {
+  type: "approval",
+  timeout: "1 hour",
+});
+
+if (approval.payload.approved) {
+  await step.do("process", async () => { /* ... */ });
+}
+```
+
+### After (Rivet)
+
+[Queues](https://rivet.dev/docs/actors/queues) and [Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts @nocheck
+import { actor, queue } from "rivetkit";
+import { workflow } from "rivetkit/workflow";
+
+// Use a queue to model external event waits inside a workflow
+const approvalWorkflow = actor({
+  queues: {
+    approval: queue<{ approved: boolean }>(),
+  },
+  actions: {
+    approve: async (c, data: { approved: boolean }) => {
+      await c.queue.send("approval", data);
+    },
+  },
+  run: workflow(async (ctx) => {
+    const approval = await ctx.step("wait for approval", async () => {
+      const msg = await ctx.queue.next();
+      return msg.body;
+    });
+
+    if (approval.approved) {
+      await ctx.step("process", async () => { /* ... */ });
+    }
+  }),
+});
+```
+
+### Behavioral Delta
+
+- Cloudflare uses a typed event system with `type` filtering. Rivet uses queue receives or actor actions.
+- Timeout behavior must be implemented via application logic in Rivet (e.g., `Promise.race` with a sleep).
+
+## Send Event / Resume
+
+Cloudflare sends events to paused workflows via `instance.sendEvent()`. In Rivet, deliver data via the owning actor's action or queue.
+
+### Before (Cloudflare)
+
+[Events](https://developers.cloudflare.com/workflows/build/events/)
+
+```ts @nocheck
+declare const env: { MY_WORKFLOW: { get(id: string): { sendEvent(event: unknown): Promise<void> } } };
+declare const instanceId: string;
+
+// From a Worker fetch handler
+const instance = await env.MY_WORKFLOW.get(instanceId);
+await instance.sendEvent({
+  type: "approval",
+  payload: { approved: true },
+});
+```
+
+### After (Rivet)
+
+[Actions](https://rivet.dev/docs/actors/actions) and [JavaScript Client](https://rivet.dev/docs/clients/javascript)
+
+```ts @nocheck
+// From any client or another actor
+import { createClient } from "rivetkit/client";
+
+const client = createClient({ endpoint: "https://api.rivet.dev" });
+const handle = client.actor.getHandle({ name: "my-workflow", key: ["order-123"] });
+await handle.action("approve", { approved: true });
+```
+
+### Behavioral Delta
+
+- Cloudflare uses a dedicated event transport. Rivet uses actor actions, queue sends, or WebSocket messages.
+- Rivet actions are RPC-style calls on the actor, not a separate event bus.
+
+## Retries and Timeouts
+
+Per-step retry configuration maps to step options in Rivet.
+
+### Before (Cloudflare)
+
+[Errors and Retries](https://developers.cloudflare.com/workflows/build/errors/)
+
+```ts @nocheck
+declare const step: WorkflowStep;
+
+const result = await step.do(
+  "call flaky API",
+  {
+    retries: { limit: 5, delay: "10 seconds", backoff: "exponential" },
+    timeout: "30 minutes",
+  },
+  async () => {
+    return await fetch("https://api.example.com/flaky");
+  }
+);
+```
+
+### After (Rivet)
+
+[Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts @nocheck
+import { ActorWorkflowContext } from "rivetkit/workflow";
+declare const ctx: ActorWorkflowContext;
+
+const result = await ctx.step(
+  "call flaky API",
+  {
+    retries: { limit: 5, delay: 10_000, backoff: "exponential" },
+    timeout: 30 * 60 * 1000,
+  },
+  async () => {
+    return await fetch("https://api.example.com/flaky");
+  }
+);
+```
+
+### Behavioral Delta
+
+- Cloudflare accepts human-readable durations for delay and timeout. Rivet uses milliseconds.
+- Validate that backoff behavior matches your workload if you relied on exact Cloudflare defaults.
+
+## Error Handling
+
+Cloudflare has `NonRetryableError` to immediately fail a step. In Rivet, throw a standard error inside the step.
+
+### Before (Cloudflare)
+
+[Errors and Retries](https://developers.cloudflare.com/workflows/build/errors/)
+
+```ts @nocheck
+import { NonRetryableError } from "cloudflare:workflows";
+declare const step: WorkflowStep;
+declare const data: { isValid: boolean };
+
+await step.do("validate input", async () => {
+  if (!data.isValid) {
+    throw new NonRetryableError("invalid input, do not retry");
+  }
+});
+```
+
+### After (Rivet)
+
+[Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts @nocheck
+import { ActorWorkflowContext } from "rivetkit/workflow";
+declare const ctx: ActorWorkflowContext;
+declare const data: { isValid: boolean };
+
+await ctx.step("validate input", async () => {
+  if (!data.isValid) {
+    // Throwing inside a step will fail the step.
+    // Configure retries: { limit: 0 } to prevent retries for validation steps.
+    throw new Error("invalid input");
+  }
+});
+```
+
+### Behavioral Delta
+
+- Rivet does not have a dedicated `NonRetryableError` class. Use `retries` with `limit: 0` on the step config to prevent retries for steps where failure should be immediate.
+
+## Triggering Workflows
+
+Cloudflare triggers workflows via Worker bindings. Rivet triggers via client calls or HTTP.
+
+### Before (Cloudflare)
+
+[Triggers](https://developers.cloudflare.com/workflows/build/triggers/)
+
+```ts @nocheck
+interface WorkflowInstance {
+  id: string;
+}
+declare const env: { MY_WORKFLOW: { create(opts: { id: string; params: unknown }): Promise<WorkflowInstance> } };
+
+export default {
+  async fetch(req: Request, env: unknown): Promise<Response> {
+    const instance = await (env as any).MY_WORKFLOW.create({
+      id: crypto.randomUUID(),
+      params: { url: req.url },
+    });
+    return Response.json({ id: instance.id });
+  },
+};
+```
+
+### After (Rivet)
+
+[JavaScript Client](https://rivet.dev/docs/clients/javascript)
+
+```ts @nocheck
+import { createClient } from "rivetkit/client";
+
+const client = createClient({ endpoint: "https://api.rivet.dev" });
+
+// Create an actor that runs the workflow
+const handle = await client.actor.create({
+  name: "my-workflow",
+  input: { url: requestUrl },
+});
+```
+
+## Passing Data (Input)
+
+Cloudflare passes data via `params` in `create()`. Rivet passes data via actor input.
+
+### Before (Cloudflare)
+
+[Workflows API](https://developers.cloudflare.com/workflows/build/workflows-api/)
+
+```ts @nocheck
+declare const env: { MY_WORKFLOW: { create(opts: { id: string; params: unknown }): Promise<{ id: string }> } };
+
+const instance = await env.MY_WORKFLOW.create({
+  id: crypto.randomUUID(),
+  params: { email: "user@example.com", plan: "pro" },
+});
+```
+
+### After (Rivet)
+
+[Workflows](https://rivet.dev/docs/actors/workflows) and [Lifecycle](https://rivet.dev/docs/actors/lifecycle)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+import { workflow } from "rivetkit/workflow";
+
+// Define the actor with input access
+const billingWorkflow = actor({
+  run: workflow(async (ctx) => {
+    // Access input passed at creation
+    const { email, plan } = ctx.input;
+
+    await ctx.step("provision", async () => {
+      // Use email and plan
+    });
+  }),
+});
+```
+
+## Nested / Child Workflows
+
+Cloudflare triggers child workflows from within a parent step. In Rivet, use actor-to-actor communication.
+
+### Before (Cloudflare)
+
+[Workflows API](https://developers.cloudflare.com/workflows/build/workflows-api/)
+
+```ts @nocheck
+import { WorkflowEntrypoint } from "cloudflare:workers";
+
+export class ParentWorkflow extends WorkflowEntrypoint {
+  async run(event: { instanceId: string; payload: unknown }, step: WorkflowStep): Promise<void> {
+    const result = await step.do("initial processing", async () => {
+      return { fileKey: "output.pdf" };
+    });
+
+    await step.do("trigger child workflow", async () => {
+      return await this.env.CHILD_WORKFLOW.create({
+        id: `child-${event.instanceId}`,
+        params: { fileKey: result.fileKey },
+      });
+    });
+  }
+}
+```
+
+### After (Rivet)
+
+[Actors](https://rivet.dev/docs/actors) and [Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+import { workflow } from "rivetkit/workflow";
+
+const parentWorkflow = actor({
+  run: workflow(async (ctx) => {
+    const result = await ctx.step("initial processing", async () => {
+      return { fileKey: "output.pdf" };
+    });
+
+    await ctx.step("trigger child workflow", async () => {
+      const child = await ctx.client().actor.create({
+        name: "child-workflow",
+        input: { fileKey: result.fileKey },
+      });
+      return { childId: child.id };
+    });
+  }),
+});
+```
+
+### Behavioral Delta
+
+- Both platforms create child workflows without blocking on completion.
+- Rivet child workflows are separate actors. Coordinate via actions or shared state if you need the parent to wait.
+
+## Human-in-the-Loop (Approval Pattern)
+
+Cloudflare combines `waitForEvent` with external approval. Rivet models the same flow with queue waits and actor actions.
+
+### Before (Cloudflare)
+
+[Events](https://developers.cloudflare.com/workflows/build/events/)
+
+```ts @nocheck
+import { WorkflowEntrypoint } from "cloudflare:workers";
+
+export class ApprovalWorkflow extends WorkflowEntrypoint {
+  async run(event: { payload: unknown }, step: WorkflowStep): Promise<void> {
+    await step.do("save metadata", async () => {
+      // persist to D1
+    });
+
+    const approval = await step.waitForEvent("wait for approval", {
+      type: "approval",
+      timeout: "5 minute",
+    });
+
+    if (approval.payload.approved) {
+      await step.do("run approved action", async () => {
+        // process
+      });
+    }
+  }
+}
+```
+
+### After (Rivet)
+
+[Queues](https://rivet.dev/docs/actors/queues) and [Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts @nocheck
+import { actor, queue } from "rivetkit";
+import { workflow } from "rivetkit/workflow";
+
+const approvalWorkflow = actor({
+  queues: {
+    approval: queue<{ approved: boolean }>(),
+  },
+  actions: {
+    approve: async (c, data: { approved: boolean }) => {
+      // Send approval into the workflow's queue
+      await c.queue.send("approval", data);
+    },
+  },
+  run: workflow(async (ctx) => {
+    await ctx.step("save metadata", async () => {
+      // persist to DB
+    });
+
+    const approval = await ctx.step("wait for approval", async () => {
+      const msg = await ctx.queue.next();
+      return msg.body;
+    });
+
+    if (approval.approved) {
+      await ctx.step("run approved action", async () => {
+        // process
+      });
+    }
+  }),
+});
+```
+
+## Pause and Resume
+
+Cloudflare has `instance.pause()` and `instance.resume()` APIs. In Rivet, implement this as application-level state.
+
+### Before (Cloudflare)
+
+[Workflows API](https://developers.cloudflare.com/workflows/build/workflows-api/)
+
+```ts @nocheck
+declare const env: { MY_WORKFLOW: { get(id: string): Promise<{ pause(): Promise<void>; resume(): Promise<void> }> } };
+
+const instance = await env.MY_WORKFLOW.get("abc-123");
+await instance.pause();
+// later
+await instance.resume();
+```
+
+### After (Rivet)
+
+[State](https://rivet.dev/docs/actors/state), [Queues](https://rivet.dev/docs/actors/queues), and [Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts @nocheck
+import { actor, queue } from "rivetkit";
+import { workflow } from "rivetkit/workflow";
+
+const pausableWorkflow = actor({
+  state: { paused: false },
+  queues: {
+    resume: queue<Record<string, never>>(),
+  },
+  actions: {
+    pause: (c) => { c.state.paused = true; },
+    resume: async (c) => {
+      c.state.paused = false;
+      await c.queue.send("resume", {});
+    },
+  },
+  run: workflow(async (ctx) => {
+    // Check pause flag before each major step
+    if (ctx.state.paused) {
+      await ctx.step("wait for resume", async () => {
+        const msg = await ctx.queue.next();
+        return msg.body;
+      });
+    }
+
+    await ctx.step("do work", async () => {
+      // ...
+    });
+  }),
+});
+```
+
+### Behavioral Delta
+
+- Cloudflare pause/resume is a platform primitive. Rivet requires explicit application logic with state flags and queue waits.
+
+## Local Development
+
+Cloudflare uses `wrangler dev` for local workflow emulation. Rivet has a built-in test harness.
+
+### Before (Cloudflare)
+
+[Workflows](https://developers.cloudflare.com/workflows/)
+
+```ts @nocheck
+// Terminal
+// npx wrangler dev
+
+// Then trigger via HTTP
+// curl http://localhost:8787/
+```
+
+### After (Rivet)
+
+[Actors](https://rivet.dev/docs/actors)
+
+```ts @nocheck
+import { setupTest } from "rivetkit/test";
+
+const test = await setupTest({
+  actors: { myWorkflow },
+});
+
+const handle = await test.client.actor.create({
+  name: "myWorkflow",
+  input: { url: "https://example.com" },
+});
+```
+
+## Observability
+
+Cloudflare exposes GraphQL analytics for workflow and step-level metrics. Rivet provides inspector-based history and logging.
+
+### Before (Cloudflare)
+
+[Workflows](https://developers.cloudflare.com/workflows/)
+
+```ts @nocheck
+// Query via GraphQL API
+// POST https://api.cloudflare.com/client/v4/graphql
+// { query: "{ viewer { accounts { workflowsAdaptiveGroups { count } } } }" }
+```
+
+### After (Rivet)
+
+[Debugging](https://rivet.dev/docs/actors/debugging)
+
+```ts @nocheck
+// Inspect workflow history via the inspector HTTP API
+// GET /inspect/workflow/history
+// Or use the Rivet dashboard at https://hub.rivet.dev
+
+// Programmatic access:
+import { createClient } from "rivetkit/client";
+declare const client: ReturnType<typeof createClient>;
+const handle = client.actor.getHandle({ name: "my-workflow", key: ["order-123"] });
+// Inspector endpoints expose step history, logs, and replay state
+```
+
+### Behavioral Delta
+
+- Cloudflare offers dedicated GraphQL analytics with retention. Rivet offers inspector history endpoints and dashboard logging.
+- There is no Cloudflare-style workflow visualizer in Rivet today.
+
+## Durable AI Agents
+
+Cloudflare combines workflows with the Agents SDK for durable AI agent loops. Rivet supports the same pattern using actors with workflows.
+
+### Before (Cloudflare)
+
+[Workflows](https://developers.cloudflare.com/workflows/)
+
+```ts @nocheck
+import { AgentWorkflow } from "agents/workflows";
+
+declare function callLLM(task: string): Promise<{ done: boolean }>;
+
+export class ResearchWorkflow extends AgentWorkflow {
+  async run(event: { payload: { task: string } }, step: WorkflowStep): Promise<{ done: boolean } | undefined> {
+    for (let turn = 0; turn < 10; turn++) {
+      const response = await step.do(`llm-turn-${turn}`, async () => {
+        return await callLLM(event.payload.task);
+      });
+      if (response.done) return response;
+    }
+  }
+}
+```
+
+### After (Rivet)
+
+[Actors](https://rivet.dev/docs/actors) and [Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+import { workflow } from "rivetkit/workflow";
+
+const researchAgent = actor({
+  run: workflow(async (ctx) => {
+    const task = ctx.input.task;
+
+    for (let turn = 0; turn < 10; turn++) {
+      const response = await ctx.step(`llm-turn-${turn}`, async () => {
+        return await callLLM(task);
+      });
+      if (response.done) return response;
+    }
+  }),
+});
+```
+
+### Behavioral Delta
+
+- Cloudflare provides `AgentWorkflow` with built-in `reportProgress` and `broadcastToClients`. In Rivet, use actor connections and `c.broadcast()` for client communication.
+- Rivet does not have an Agents SDK equivalent, but the workflow-inside-actor model supports the same durable agent loop pattern.
+
+## Event Subscriptions
+
+Cloudflare publishes lifecycle events (queued, started, completed, etc.) to queues. In Rivet, use connection events or explicit fanout from the actor.
+
+### Before (Cloudflare)
+
+[Events](https://developers.cloudflare.com/workflows/build/events/)
+
+```ts @nocheck
+interface QueueMessage {
+  body: { type: string };
+}
+interface MessageBatch {
+  messages: QueueMessage[];
+}
+
+// Configure queue consumer to receive workflow lifecycle events
+// Events: instance.queued, instance.started, instance.completed, etc.
+export default {
+  async queue(batch: MessageBatch, env: unknown): Promise<void> {
+    for (const msg of batch.messages) {
+      console.log("Workflow event:", msg.body.type);
+    }
+  },
+};
+```
+
+### After (Rivet)
+
+[Events](https://rivet.dev/docs/actors/events) and [Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+import { workflow } from "rivetkit/workflow";
+
+const observableWorkflow = actor({
+  run: workflow(async (ctx) => {
+    // Broadcast lifecycle to connected clients
+    ctx.broadcast("lifecycle", { status: "started" });
+
+    await ctx.step("work", async () => { /* ... */ });
+
+    ctx.broadcast("lifecycle", { status: "completed" });
+  }),
+});
+```
+
+## Unsupported or External Features
+
+- **Workflow Visualizer** (unsupported): Rivet exposes workflow history via the inspector, but does not have a Cloudflare-style visual diagram of steps, conditionals, and loops.
+- **Wrangler CLI Commands** (out-of-scope): No equivalent workflow control-plane CLI exists in Rivet. Use the client SDK or dashboard instead.
+- **Pricing** (out-of-scope): Commercial comparison, not a runtime migration concern.
+- **Glossary** (out-of-scope): Terminology differences are documentation-only.
+
+## Deploying
+
+Rivet actors can be deployed to any supported platform. See the [Connect docs](/docs/connect) to choose your deployment target.
+
+## Validation Checklist
+
+| Test Case | Expected Result | Proof |
+| --- | --- | --- |
+| Durable steps replay safely | Step history survives restarts | [actor-workflow.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-workflow.ts) |
+| Sleep and sleepUntil work | Workflow pauses and resumes on time | [timer.ts](https://github.com/rivet-dev/rivet/blob/main/examples/sandbox/src/actors/workflow/timer.ts) |
+| External approval flow works | Workflow pauses for input and continues | [approval.ts](https://github.com/rivet-dev/rivet/blob/main/examples/sandbox/src/actors/workflow/approval.ts) |
+| Step retries and timeouts | Flaky steps retry with configured backoff | [history-examples.ts](https://github.com/rivet-dev/rivet/blob/main/examples/sandbox/src/actors/workflow/history-examples.ts) |
+| Workflow status is observable | Inspector exposes history and step state | [actor-inspector.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-inspector.ts) |
+| Nested workflows | Parent creates child actor without blocking | [order.ts](https://github.com/rivet-dev/rivet/blob/main/examples/sandbox/src/actors/workflow/order.ts) |
+| Local dev and testing | Workflows run in test harness | [Testing docs](https://rivet.dev/docs/actors/testing) |

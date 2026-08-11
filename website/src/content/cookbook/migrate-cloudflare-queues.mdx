@@ -1,0 +1,782 @@
+---
+title: "Migrate Cloudflare Queues to Rivet"
+icon: "cloudflare"
+description: "Before-and-after migration guide for moving Cloudflare Queues capabilities to Rivet, with code for every supported migration path and explicit unsupported gaps."
+---
+
+Cloudflare Queues is a managed, shared queue service. Rivet replaces it with **actor-local durable mailboxes** via [Queues & Run Loops](https://rivet.dev/docs/actors/queues). This is a strong fit for per-entity serialized work, but it is not a drop-in replacement for a global broker. You must design an actor sharding model to distribute queue ownership.
+
+## Status Summary
+
+**Status legend:**
+
+- **native** = direct Rivet equivalent exists
+- **pattern** = achievable with a documented Rivet pattern
+- **external** = requires an external service or library
+- **vendor** = Cloudflare-proprietary service replaced by a recommended third-party SDK or provider
+- **out-of-scope** = platform-specific; not applicable to Rivet
+
+| Feature | Status | Rivet Path |
+| --- | --- | --- |
+| Queue Creation and Management | pattern | Actor keys and types define queue identity ([docs](https://rivet.dev/docs/actors/keys)) |
+| Producer Bindings | pattern | `createClient()` or server-side actor handles ([docs](https://rivet.dev/docs/clients/javascript)) |
+| Producing Messages (`send` / `sendBatch`) | native | `handle.send(...)`, `c.queue.send(...)` ([docs](https://rivet.dev/docs/actors/queues)) |
+| Content Types | pattern | JSON payloads work directly; binary uses manual serialization ([docs](https://rivet.dev/docs/actors/queues)) |
+| Consumer Bindings | pattern | Consumer logic lives in actor code, not a binding block |
+| Consuming Messages (Push-Based) | pattern | Actor run loops deliver messages as they arrive; queue is actor-local ([docs](https://rivet.dev/docs/actors/queues)) |
+| Message Batching | native | `nextBatch` and `tryNextBatch` ([docs](https://rivet.dev/docs/actors/queues)) |
+| Explicit Acknowledgment and Retries | pattern | Completion-based retries are native; retry counts and backoff use app-level logic ([docs](https://rivet.dev/docs/actors/queues)) |
+| Message Delays | pattern | Use `c.schedule.after(...)` for delayed enqueue ([docs](https://rivet.dev/docs/actors/schedule)) |
+| Dead Letter Queues | pattern | Build an explicit dead-letter actor or failure table |
+| Consumer Concurrency (Autoscaling) | pattern | Shard queue ownership across actor keys ([docs](https://rivet.dev/docs/actors/scaling)) |
+| Pull-Based Consumers (HTTP Pull) | pattern | Expose a custom pull endpoint via `onRequest` ([docs](https://rivet.dev/docs/actors/request-handler)) |
+| Publishing via HTTP (REST API) | pattern | Use `onRequest` or a gateway layer |
+| Publishing via Workers | native | Rivet actors can be deployed to any supported platform ([docs](/docs/connect)) |
+| Actor-to-Actor Queueing | native | `c.queue.send(...)` between actors ([docs](https://rivet.dev/docs/actors/communicating-between-actors)) |
+| Delivery Guarantees | pattern | Durable queues retry uncompleted messages; guarantees operate at the actor level ([docs](https://rivet.dev/docs/actors/queues)) |
+| Pause and Resume Delivery | pattern | Application-level paused flag with guarded consumers |
+| Purge Queue | pattern | Custom admin logic, not a built-in command |
+| Local Development | native | Full local queue coverage via test driver ([docs](https://rivet.dev/docs/actors/testing)) |
+| Metrics and Observability | pattern | Inspector and structured logging provide observability; backlog metrics use app-level tracking ([docs](https://rivet.dev/docs/actors/debugging)) |
+| Error Codes | native | Well-covered error handling ([docs](https://rivet.dev/docs/actors/errors)) |
+| Limits | native | Rivet enforces its own limits; review and re-plan during migration ([docs](https://rivet.dev/docs/actors/limits)) |
+| Rate Limit Handling Pattern | native | Actor-local queues plus timers ([docs](https://rivet.dev/docs/actors/design-patterns)) |
+| Queues with R2 (Batch Error Storage) | vendor | Use [AWS S3](https://aws.amazon.com/s3/), [Cloudflare R2](https://developers.cloudflare.com/r2/) (still works outside Workers), or [Tigris](https://www.tigrisdata.com/) |
+| R2 Event Notifications | vendor | Use [AWS S3](https://aws.amazon.com/s3/), [Cloudflare R2](https://developers.cloudflare.com/r2/) (still works outside Workers), or [Tigris](https://www.tigrisdata.com/) |
+| Consumer Management (CLI) | out-of-scope | No equivalent managed consumer CLI |
+| Dashboard Operations | out-of-scope | No Cloudflare Queues-style dashboard ops |
+| Wrangler Global Flags | out-of-scope | No equivalent control-plane CLI |
+| Pricing | out-of-scope | Commercial comparison, not a runtime feature |
+| How Queues Works (Architecture) | pattern | Concepts map directly once you account for actor-local queue ownership ([docs](https://rivet.dev/docs/actors/queues)) |
+
+## Producing Messages
+
+Cloudflare uses a queue binding with `send()`. Rivet sends messages to an actor's durable queue via a handle.
+
+### Before (Cloudflare)
+
+[Queues JS API - Producer](https://developers.cloudflare.com/queues/configuration/javascript-apis/#producer)
+
+```ts @nocheck
+interface QueueBinding {
+  send(body: unknown): Promise<void>;
+}
+interface Env {
+  MY_QUEUE: QueueBinding;
+}
+
+// Worker fetch handler sends to a managed queue
+export default {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    await env.MY_QUEUE.send({
+      url: req.url,
+      method: req.method,
+      headers: Object.fromEntries(req.headers),
+    });
+    return new Response("Sent!");
+  },
+};
+```
+
+### After (Rivet)
+
+[Queues](https://rivet.dev/docs/actors/queues)
+
+```ts @nocheck
+import { createClient } from "rivetkit/client";
+
+declare const client: ReturnType<typeof createClient>;
+
+// Send a message to a specific actor's durable queue
+const handle = await client.taskWorker.getOrCreate(["worker-1"]);
+await handle.send("processRequest", {
+  url: "https://example.com",
+  method: "GET",
+});
+```
+
+### Behavioral Delta
+
+- Rivet messages target a specific actor instance by key, not a shared global queue.
+- The actor must be alive or creatable for the message to land.
+
+## Batch Send
+
+Cloudflare offers `sendBatch` for bulk publishing. In Rivet, send multiple messages in a loop to the target actor.
+
+### Before (Cloudflare)
+
+[Queues JS API - Producer](https://developers.cloudflare.com/queues/configuration/javascript-apis/#producer)
+
+```ts @nocheck
+interface QueueBinding {
+  sendBatch(messages: { body: unknown }[]): Promise<void>;
+}
+declare const env: { MY_QUEUE: QueueBinding };
+declare const results: unknown[];
+
+const batch = results.map((value) => ({ body: value }));
+await env.MY_QUEUE.sendBatch(batch);
+```
+
+### After (Rivet)
+
+[Queues](https://rivet.dev/docs/actors/queues)
+
+```ts @nocheck
+import { createClient } from "rivetkit/client";
+
+declare const client: ReturnType<typeof createClient>;
+declare const results: unknown[];
+
+// Send multiple messages to the same actor queue
+const handle = await client.taskWorker.getOrCreate(["worker-1"]);
+for (const item of results) {
+  await handle.send("processItem", item);
+}
+```
+
+### Behavioral Delta
+
+- There is no atomic batch send in Rivet. Each `send` is an independent durable enqueue.
+
+## Consuming Messages
+
+Cloudflare pushes batches to a `queue()` handler. Rivet actors consume from their local queue inside a run loop.
+
+### Before (Cloudflare)
+
+[Queues JS API - Consumer](https://developers.cloudflare.com/queues/configuration/javascript-apis/#consumer)
+
+```ts @nocheck
+interface QueueMessage {
+  body: unknown;
+  ack(): void;
+  retry(options?: { delaySeconds?: number }): void;
+}
+interface MessageBatch {
+  messages: QueueMessage[];
+  queue: string;
+}
+
+export default {
+  async queue(batch: MessageBatch, env: unknown, ctx: ExecutionContext): Promise<void> {
+    for (const message of batch.messages) {
+      console.log("Received", message.body);
+    }
+  },
+};
+```
+
+### After (Rivet)
+
+[Queues](https://rivet.dev/docs/actors/queues)
+
+```ts
+import { actor, queue } from "rivetkit";
+
+const taskWorker = actor({
+  state: {},
+  queues: {
+    processRequest: queue<unknown>(),
+  },
+  run: async (c) => {
+    for await (const message of c.queue.iter()) {
+      console.log("Received", message.body);
+    }
+  },
+});
+```
+
+### Behavioral Delta
+
+- Rivet queues are consumed inside the actor's `run` function, not via a separate handler export.
+- Messages must be explicitly completed with `message.complete()`.
+
+## Message Batching
+
+Cloudflare configures batch size and timeout in wrangler config. Rivet uses `nextBatch` or `tryNextBatch` in the run loop.
+
+### Before (Cloudflare)
+
+[Batching & Retries](https://developers.cloudflare.com/queues/configuration/batching-retries/)
+
+```ts @nocheck
+interface QueueMessage {
+  body: unknown;
+  ack(): void;
+  retry(options?: { delaySeconds?: number }): void;
+}
+interface MessageBatch {
+  messages: QueueMessage[];
+  queue: string;
+}
+
+// wrangler.toml sets max_batch_size = 10, max_batch_timeout = 30
+export default {
+  async queue(batch: MessageBatch, env: unknown, ctx: ExecutionContext): Promise<void> {
+    console.log(`Processing ${batch.messages.length} messages`);
+    for (const msg of batch.messages) {
+      // process each message in the batch
+      msg.ack();
+    }
+  },
+};
+```
+
+### After (Rivet)
+
+[Queues](https://rivet.dev/docs/actors/queues)
+
+```ts
+import { actor, queue } from "rivetkit";
+
+const batchWorker = actor({
+  state: {},
+  queues: {
+    work: queue<unknown>(),
+  },
+  run: async (c) => {
+    while (!c.aborted) {
+      // Wait for up to 10 messages
+      const batch = await c.queue.nextBatch({ count: 10 });
+      console.log(`Processing ${batch.length} messages`);
+      for (const msg of batch) {
+        // process each message
+      }
+    }
+  },
+});
+```
+
+## Acknowledgment and Retry
+
+Cloudflare provides per-message `ack()` and `retry()`. Rivet uses completion-based semantics: completed messages are removed, uncompleted messages are retried.
+
+### Before (Cloudflare)
+
+[Batching & Retries](https://developers.cloudflare.com/queues/configuration/batching-retries/)
+
+```ts @nocheck
+interface QueueMessage {
+  body: unknown;
+  ack(): void;
+  retry(options?: { delaySeconds?: number }): void;
+}
+interface MessageBatch {
+  messages: QueueMessage[];
+  queue: string;
+}
+
+declare function processMessage(body: unknown): Promise<void>;
+
+export default {
+  async queue(batch: MessageBatch, env: unknown, ctx: ExecutionContext): Promise<void> {
+    for (const msg of batch.messages) {
+      try {
+        await processMessage(msg.body);
+        msg.ack();
+      } catch (e) {
+        msg.retry({ delaySeconds: 5 });
+      }
+    }
+  },
+};
+```
+
+### After (Rivet)
+
+[Queues](https://rivet.dev/docs/actors/queues)
+
+```ts
+import { actor, queue } from "rivetkit";
+
+declare function processMessage(msg: unknown): Promise<void>;
+
+const reliableWorker = actor({
+  state: {},
+  queues: {
+    work: queue<unknown>(),
+  },
+  run: async (c) => {
+    for await (const msg of c.queue.iter()) {
+      try {
+        await processMessage(msg.body);
+      } catch (e) {
+        // Uncompleted messages are automatically retried.
+        // For explicit backoff, schedule a delayed re-enqueue.
+        console.error("Processing failed, will retry", e);
+      }
+    }
+  },
+});
+```
+
+### Behavioral Delta
+
+- Rivet has no built-in retry count or backoff policy. Implement retry tracking in actor state if needed.
+- There is no `retryAll()` / `ackAll()` batch-level API.
+
+## Message Delays
+
+Cloudflare supports `delaySeconds` on `send()`. Rivet uses `c.schedule.after(...)` to delay future enqueues.
+
+### Before (Cloudflare)
+
+[Batching & Delays](https://developers.cloudflare.com/queues/configuration/batching-retries/)
+
+```ts @nocheck
+interface QueueBinding {
+  send(body: unknown, options?: { delaySeconds?: number }): Promise<void>;
+}
+declare const env: { MY_QUEUE: QueueBinding };
+declare const message: unknown;
+
+// Delay delivery by 60 seconds
+await env.MY_QUEUE.send(message, { delaySeconds: 60 });
+```
+
+### After (Rivet)
+
+[Schedule](https://rivet.dev/docs/actors/schedule)
+
+```ts
+import { actor, queue } from "rivetkit";
+
+const delayedWorker = actor({
+  state: {},
+  queues: {
+    processTask: queue<unknown>(),
+  },
+  actions: {
+    // Schedule a delayed enqueue
+    scheduleTask: (c, task: unknown) => {
+      c.schedule.after(60_000, "enqueueTask", task);
+    },
+    // Called after the delay
+    enqueueTask: async (c, task: unknown) => {
+      await c.queue.send("processTask", task);
+    },
+  },
+  run: async (c) => {
+    for await (const msg of c.queue.iter()) {
+      console.log("Processing delayed task", msg.body);
+    }
+  },
+});
+```
+
+### Behavioral Delta
+
+- Delays and scheduling are separate concerns in Rivet. There is no `delaySeconds` parameter on queue send.
+- Maximum delay depends on actor lifetime, not a fixed 12-hour cap.
+
+## Dead Letter Queue Pattern
+
+Cloudflare routes failed messages to a DLQ after retry exhaustion. Rivet requires building this as an application pattern.
+
+### Before (Cloudflare)
+
+[Dead Letter Queues](https://developers.cloudflare.com/queues/configuration/dead-letter-queues/)
+
+```ts @nocheck
+interface QueueMessage {
+  body: unknown;
+  ack(): void;
+  retry(options?: { delaySeconds?: number }): void;
+}
+interface MessageBatch {
+  messages: QueueMessage[];
+  queue: string;
+}
+
+declare function processMessage(body: unknown): Promise<void>;
+
+// wrangler.toml:
+// [[queues.consumers]]
+// queue = "my-queue"
+// max_retries = 3
+// dead_letter_queue = "my-queue-dlq"
+
+export default {
+  async queue(batch: MessageBatch, env: unknown, ctx: ExecutionContext): Promise<void> {
+    for (const msg of batch.messages) {
+      // After 3 failures, message auto-routes to DLQ
+      await processMessage(msg.body);
+    }
+  },
+};
+```
+
+### After (Rivet)
+
+[Queues](https://rivet.dev/docs/actors/queues)
+
+```ts
+import { actor, queue } from "rivetkit";
+
+declare function processMessage(msg: unknown): Promise<void>;
+
+const workerWithDlq = actor({
+  state: { retryCounts: {} as Record<string, number> },
+  queues: {
+    processTask: queue<{ id: string }>(),
+  },
+  actions: {
+    enqueueTask: async (c, task: { id: string }) => {
+      await c.queue.send("processTask", task);
+    },
+  },
+  run: async (c) => {
+    const MAX_RETRIES = 3;
+    for await (const msg of c.queue.iter()) {
+      const key = msg.body.id;
+      const attempts = (c.state.retryCounts[key] || 0) + 1;
+      try {
+        await processMessage(msg.body);
+        delete c.state.retryCounts[key];
+      } catch (e) {
+        if (attempts >= MAX_RETRIES) {
+          // Route to a dead-letter actor
+          delete c.state.retryCounts[key];
+        } else {
+          c.state.retryCounts[key] = attempts;
+          // Leave uncompleted for automatic retry
+        }
+      }
+    }
+  },
+});
+```
+
+### Behavioral Delta
+
+- Rivet has no first-class DLQ primitive. You must track retry counts in actor state and forward to a dead-letter actor explicitly.
+
+## HTTP Publish and Pull
+
+Cloudflare provides REST endpoints for publishing and pulling messages. Rivet exposes custom HTTP endpoints via `onRequest`.
+
+### Before (Cloudflare)
+
+[Queues Configuration](https://developers.cloudflare.com/queues/configuration/)
+
+```ts @nocheck
+declare const ACCOUNT_ID: string;
+declare const QUEUE_ID: string;
+declare const API_TOKEN: string;
+
+// Publish via REST API
+const resp = await fetch(
+  `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/queues/${QUEUE_ID}/messages`,
+  {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${API_TOKEN}`,
+    },
+    body: JSON.stringify({ body: { greeting: "hello" } }),
+  }
+);
+```
+
+### After (Rivet)
+
+[Request Handler](https://rivet.dev/docs/actors/request-handler)
+
+```ts
+import { actor, queue } from "rivetkit";
+
+// Actor exposes a custom HTTP endpoint for publishing
+const httpQueue = actor({
+  state: {},
+  queues: {
+    processItem: queue<unknown>(),
+  },
+  onRequest: async (c, req) => {
+    if (req.method === "POST") {
+      const body = await req.json();
+      await c.queue.send("processItem", body);
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    }
+    return new Response("Method not allowed", { status: 405 });
+  },
+  run: async (c) => {
+    for await (const msg of c.queue.iter()) {
+      console.log("Processing", msg.body);
+    }
+  },
+});
+```
+
+## Actor-to-Actor Queueing
+
+Cloudflare publishes from Durable Objects to a shared queue. Rivet actors send directly to other actors' queues.
+
+### Before (Cloudflare)
+
+[Queues JS API - Producer](https://developers.cloudflare.com/queues/configuration/javascript-apis/#producer)
+
+```ts @nocheck
+interface QueueBinding {
+  send(body: unknown): Promise<void>;
+}
+interface DurableObjectEnv {
+  YOUR_QUEUE: QueueBinding;
+}
+
+// Durable Object publishes to a shared queue
+export class YourDurableObject extends DurableObject {
+  env: DurableObjectEnv;
+
+  async fetch(req: Request): Promise<Response> {
+    await this.env.YOUR_QUEUE.send({
+      id: this.ctx.id.toString(),
+      data: await req.json(),
+    });
+    return new Response("Queued");
+  }
+}
+```
+
+### After (Rivet)
+
+[Queues](https://rivet.dev/docs/actors/queues)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+
+const producer = actor({
+  state: {},
+  actions: {
+    forwardWork: async (c, data: unknown) => {
+      // Send directly to another actor's queue
+      const client = c.client();
+      const consumer = client.consumerWorker.getOrCreate(["main"]);
+      await consumer.send("processWork", { data });
+    },
+  },
+});
+```
+
+## Rate Limit Pattern
+
+Cloudflare uses queue batching and delays to respect external API rate limits. Rivet achieves this with actor-local queues and scheduled timers.
+
+### Before (Cloudflare)
+
+[Batching & Retries](https://developers.cloudflare.com/queues/configuration/batching-retries/)
+
+```ts @nocheck
+interface QueueMessage {
+  body: { email: string };
+  ack(): void;
+  retry(options?: { delaySeconds?: number }): void;
+}
+interface MessageBatch {
+  messages: QueueMessage[];
+}
+interface QueueBinding {
+  send(body: unknown, options?: { delaySeconds?: number }): Promise<void>;
+}
+interface Env {
+  EMAIL_QUEUE: QueueBinding;
+}
+
+declare function sendEmail(email: string): Promise<void>;
+
+// wrangler.toml: max_batch_size = 2
+export default {
+  async fetch(req: Request, env: Env): Promise<Response> {
+    await env.EMAIL_QUEUE.send(
+      { email: await req.text() },
+      { delaySeconds: 1 }
+    );
+    return new Response("Queued");
+  },
+  async queue(batch: MessageBatch, env: Env): Promise<void> {
+    for (const msg of batch.messages) {
+      try {
+        await sendEmail(msg.body.email);
+        msg.ack();
+      } catch (e) {
+        msg.retry({ delaySeconds: 5 });
+      }
+    }
+  },
+};
+```
+
+### After (Rivet)
+
+[Queues](https://rivet.dev/docs/actors/queues)
+
+```ts
+import { actor, queue } from "rivetkit";
+
+declare function sendEmail(email: string): Promise<void>;
+
+const rateLimitedSender = actor({
+  state: { processing: false },
+  queues: {
+    sendEmail: queue<{ email: string }>(),
+  },
+  actions: {
+    enqueue: async (c, payload: { email: string }) => {
+      await c.queue.send("sendEmail", payload);
+    },
+  },
+  run: async (c) => {
+    for await (const msg of c.queue.iter()) {
+      try {
+        await sendEmail(msg.body.email);
+      } catch (e) {
+        // Wait before retrying to respect rate limits
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+      // Throttle: wait 500ms between sends (2 req/sec)
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  },
+});
+```
+
+### Behavioral Delta
+
+- Rate limiting is fully application-level in Rivet. The actor's single-threaded run loop naturally serializes work.
+
+## Consumer Concurrency (Scaling)
+
+Cloudflare auto-scales consumer Workers horizontally. In Rivet, scale by sharding queue ownership across multiple actor instances.
+
+### Before (Cloudflare)
+
+[Queues Configuration](https://developers.cloudflare.com/queues/configuration/)
+
+```ts @nocheck
+interface QueueMessage {
+  body: unknown;
+  ack(): void;
+}
+interface MessageBatch {
+  messages: QueueMessage[];
+}
+
+declare function processMessage(body: unknown): Promise<void>;
+
+// wrangler.toml: max_concurrency = 10
+// Cloudflare auto-scales consumer invocations
+export default {
+  async queue(batch: MessageBatch, env: unknown): Promise<void> {
+    for (const msg of batch.messages) {
+      await processMessage(msg.body);
+    }
+  },
+};
+```
+
+### After (Rivet)
+
+[Scaling](https://rivet.dev/docs/actors/scaling)
+
+```ts @nocheck
+import { actor, queue } from "rivetkit";
+
+declare function processMessage(msg: unknown): Promise<void>;
+
+// Router actor distributes work across sharded workers
+const router = actor({
+  state: { nextShard: 0 },
+  actions: {
+    enqueue: async (c, task: unknown) => {
+      // Round-robin across 10 worker shards
+      const shardId = `shard-${c.state.nextShard % 10}`;
+      c.state.nextShard++;
+      const client = c.client();
+      const worker = client.queueWorker.getOrCreate([shardId]);
+      await worker.send("processTask", task);
+    },
+  },
+});
+
+const queueWorker = actor({
+  state: {},
+  queues: {
+    processTask: queue<unknown>(),
+  },
+  run: async (c) => {
+    for await (const msg of c.queue.iter()) {
+      await processMessage(msg.body);
+    }
+  },
+});
+```
+
+### Behavioral Delta
+
+- Rivet does not auto-scale a single queue consumer. Concurrency requires explicit sharding across actor keys.
+- Each actor processes its queue single-threaded.
+
+## Pause and Resume Delivery
+
+Cloudflare pauses delivery via CLI. Rivet implements this as an application-level flag.
+
+### Before (Cloudflare)
+
+[Queues Configuration](https://developers.cloudflare.com/queues/configuration/)
+
+```ts @nocheck
+// CLI: npx wrangler queues pause-delivery my-queue
+// CLI: npx wrangler queues resume-delivery my-queue
+```
+
+### After (Rivet)
+
+[State](https://rivet.dev/docs/actors/state)
+
+```ts
+import { actor, queue } from "rivetkit";
+
+declare function processMessage(msg: unknown): Promise<void>;
+
+const pausableWorker = actor({
+  state: { paused: false },
+  queues: {
+    work: queue<unknown>(),
+  },
+  actions: {
+    pause: (c) => { c.state.paused = true; },
+    resume: (c) => { c.state.paused = false; },
+  },
+  run: async (c) => {
+    for await (const msg of c.queue.iter()) {
+      // Wait while paused
+      while (c.state.paused) {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      await processMessage(msg.body);
+    }
+  },
+});
+```
+
+## Unsupported or External Features
+
+- **Queues with R2 (Batch Error Storage)** -- vendor: Use [AWS S3](https://aws.amazon.com/s3/), [Cloudflare R2](https://developers.cloudflare.com/r2/) (still works outside Workers), or [Tigris](https://www.tigrisdata.com/) for object storage. Rivet does not bundle R2-equivalent storage.
+- **R2 Event Notifications** -- vendor: Use [AWS S3](https://aws.amazon.com/s3/), [Cloudflare R2](https://developers.cloudflare.com/r2/) (still works outside Workers), or [Tigris](https://www.tigrisdata.com/) for object-storage eventing to trigger queue messages on bucket changes.
+- **Consumer Management (CLI)** -- out-of-scope: No equivalent managed consumer CLI exists in Rivet.
+- **Dashboard Operations** -- out-of-scope: No Cloudflare Queues-style UI for fetching, acknowledging, or sending messages.
+- **Wrangler Global Flags** -- out-of-scope: No equivalent control-plane CLI.
+- **Pricing** -- out-of-scope: Commercial comparison, not a runtime feature.
+
+## Validation Checklist
+
+| Test Item | Expected Result | Proof |
+| --- | --- | --- |
+| Queue send and receive | Actor queue durably accepts and consumes messages | [actor-queue.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-queue.ts) |
+| Completable send paths | Sender can wait for completion and receive status | [actor-queue.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-queue.ts) |
+| Retry behavior | Uncompleted messages retry; app code is idempotent | [actor-queue.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-queue.ts) |
+| Delay scheduling | Delayed tasks fire in timestamp order | [actor-schedule.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-schedule.ts) |
+| Global queue topology redesigned | Migration plan defines shard key and actor ownership model | Review [Scaling](https://rivet.dev/docs/actors/scaling) and [Design Patterns](https://rivet.dev/docs/actors/design-patterns) |
+| DLQ path defined | Failure routing exists after retry exhaustion | Build on [Queues](https://rivet.dev/docs/actors/queues); no first-class DLQ proof exists today |
+| Ops observability sufficient | Alternative dashboards or alerts cover queue backlog and failures | [Debugging](https://rivet.dev/docs/actors/debugging) exists; no Cloudflare-style backlog metrics surface |

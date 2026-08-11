@@ -38,6 +38,20 @@ Use the inspector HTTP API to examine running actors. These endpoints are access
 
 In local dev, no auth token is needed. In production, pass `Authorization: Bearer <inspector-token>`, where the inspector token is the actor-specific token auto-generated on first start and persisted in the actor's internal KV at key `0x03`. The Rivet dashboard retrieves this token automatically; for direct API access, fetch it through the management KV endpoint. See the [debugging docs](https://rivet.dev/docs/actors/debugging) for details.
 
+## Project Isolation And Finish Criteria
+
+When working inside a monorepo or eval workspace, treat the current project directory as the only writable target unless the task explicitly says to fetch a reference into a named subdirectory. Do not inspect or modify sibling generated projects such as `../skill-eval-*`, neighboring examples, or other workspace packages just because they happen to be nearby.
+
+When you need to compare against local examples, read only stable checked-in examples that are directly relevant. Do not use sibling generated eval directories as reference material.
+
+Do not finish early just because the source files look plausible. Before you declare the migration complete, make sure the current project itself is in a runnable state:
+
+- dependencies install successfully for the current project
+- the intended local startup command is valid for the current project
+- obvious version mistakes are fixed in the current project instead of being deferred
+
+If the local install or startup command fails, keep working on the current project until you either fix it or have a concrete, project-local blocker.
+
 ## Citing Sources
 
 When providing information from Rivet documentation, cite the canonical URL so users can learn more. Each reference file includes its canonical URL in the header metadata.

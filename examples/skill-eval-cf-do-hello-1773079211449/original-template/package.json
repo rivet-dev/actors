@@ -1,0 +1,29 @@
+{
+	"name": "hello-world-do-template",
+	"cloudflare": {
+		"label": "Durable Objects Starter",
+		"products": [
+			"Workers",
+			"Durable Objects"
+		],
+		"categories": [
+			"storage"
+		],
+		"icon_urls": [
+			"https://imagedelivery.net/wSMYJvS3Xw-n339CbDyDIA/5ca0ca32-e897-4699-d4c1-6b680512f000/public"
+		],
+		"preview_image_url": "https://imagedelivery.net/wSMYJvS3Xw-n339CbDyDIA/fc7b4b62-442b-4769-641b-ad4422d74300/public"
+	},
+	"devDependencies": {
+		"typescript": "5.9.3",
+		"wrangler": "4.56.0"
+	},
+	"private": true,
+	"scripts": {
+		"cf-typegen": "wrangler types",
+		"check": "tsc && wrangler deploy --dry-run",
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"start": "wrangler dev"
+	}
+}

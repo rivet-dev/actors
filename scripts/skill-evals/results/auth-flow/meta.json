@@ -1,9 +1,0 @@
-{
-  "agent": "claude",
-  "model": "sonnet",
-  "judge_model": "haiku",
-  "eval": "auth-flow",
-  "run": 1,
-  "duration_s": 68,
-  "timestamp": "2026-02-12T22:02:47.642Z"
-}

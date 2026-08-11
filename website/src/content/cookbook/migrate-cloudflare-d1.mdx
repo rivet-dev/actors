@@ -1,0 +1,913 @@
+---
+title: "Migrate Cloudflare D1 to Rivet"
+icon: "cloudflare"
+description: "Before-and-after migration guide for moving Cloudflare D1 capabilities to Rivet, with code for every supported migration path and explicit unsupported gaps."
+---
+
+Cloudflare D1 is a shared, managed SQLite service accessed via Worker bindings. Rivet provides **actor-local SQLite** where each actor instance owns its own database. The single biggest semantic difference is that D1 databases are shared across many Workers, while Rivet SQLite is scoped to one actor. You must decide whether each D1 database maps to a single actor, multiple sharded actors, or an external shared database like PostgreSQL.
+
+## Status Summary
+
+**Status legend:**
+
+- **native** = direct Rivet equivalent exists
+- **pattern** = achievable with a documented Rivet pattern
+- **external** = requires an external service or library
+- **vendor** = Cloudflare-proprietary service replaced by a recommended third-party SDK or provider
+- **unsupported** = no current Rivet equivalent
+- **out-of-scope** = platform-specific; not applicable to Rivet
+
+| Feature | Status | Rivet path |
+| --- | --- | --- |
+| Database Creation and Management | pattern | Actor creation replaces DB creation; topology redesign required |
+| Shared/Cross-Actor Database | vendor | Use [PostgreSQL](https://rivet.dev/docs/actors/postgres), [Turso](https://turso.tech/), or [PlanetScale](https://planetscale.com/) for shared state across actors |
+| Bindings and Configuration | native | Actor-local SQLite via `c.db`; no binding declaration needed |
+| Worker Binding API (D1Database Methods) | pattern | `c.db.execute(...)` and Drizzle cover query use cases; `dump()` and sessions are D1-specific and not applicable |
+| Prepared Statement Methods | pattern | Parameterized SQL fully supported; API shape differs from D1 |
+| Return Objects | pattern | Row arrays returned directly; metadata available via SQLite functions |
+| SQL Query Execution via Wrangler | out-of-scope | No D1-style SQL CLI for actor-local SQLite |
+| Complete Worker Example | native | End-to-end examples exist for Workers plus actor-local SQLite |
+| Migrations | native | `db()` with `onMigrate` or Drizzle migrations inside the actor |
+| Time Travel (PITR) | unsupported | No documented PITR equivalent for actor-local SQLite |
+| Legacy Backups | unsupported | No actor-local backup API |
+| Import and Export | pattern | Custom admin actions or request handlers |
+| Indexes and Performance | native | Standard SQLite indexing available |
+| SQL Statements and SQLite Compatibility | native | Full SQLite SQL support including PRAGMAs and extensions |
+| JSON Querying | native | Standard SQLite JSON functions available (`json_extract`, `json_each`, etc.) |
+| Foreign Keys | native | Standard SQLite foreign key support via `PRAGMA foreign_keys = ON` |
+| Generated Columns | native | Standard SQLite generated column support |
+| Read Replication | unsupported | No Sessions or bookmark-consistent read-replica model |
+| REST API | pattern | Build actor-scoped DB APIs with `onRequest` |
+| Environments | native | Separate deployments or namespace-based env vars |
+| Data Location and Jurisdiction | pattern | Actors can be pinned to specific regions; no D1-style jurisdiction labels |
+| Local Development | native | Local actor-local SQLite is well-covered |
+| Remote Development | out-of-scope | No hosted playground equivalent |
+| Retry Logic | pattern | App-defined retries via workflows or queues |
+| Observability and Metrics | pattern | Inspector, logs, and actor metrics provide full observability; structured differently from D1 |
+| Debugging and Error Handling | native | Rich debugging via inspector, logs, and structured error handling |
+| Data Security | pattern | Actor auth and network isolation; storage security depends on hosting configuration |
+| Full-Text Search (FTS5) | native | FTS5 available through SQLite |
+| Type Conversion | pattern | SQLite type affinity applies; results returned as native JS types |
+| Horizontal Scaling Model | pattern | Actor sharding is a strong fit; routing is app-defined |
+| Limits | native | Actor-local storage limits documented; different values than D1 |
+| Billing and Usage | out-of-scope | No D1-style row metering |
+| Audit Logs | out-of-scope | No actor-local audit-log surface |
+| Pricing | out-of-scope | Platform/commercial comparison, not a runtime feature |
+| Deployment | out-of-scope | Platform-specific; see [Connect docs](/docs/connect) to choose your deployment target |
+| Wrangler Commands Reference | out-of-scope | No D1-equivalent admin CLI surface |
+
+## Database Creation and Management
+
+In D1, databases are standalone resources created via CLI or REST API. In Rivet, each actor instance owns its own SQLite database. Creating an actor is the equivalent of creating a database.
+
+### Before (Cloudflare)
+
+[D1 Overview](https://developers.cloudflare.com/d1/)
+
+```bash
+npx wrangler d1 create my-database
+npx wrangler d1 list
+npx wrangler d1 delete my-database
+```
+
+### After (Rivet)
+
+[SQLite](https://rivet.dev/docs/actors/sqlite)
+
+```ts
+import { actor, setup } from "rivetkit";
+import { createClient } from "rivetkit/client";
+import { db } from "rivetkit/db";
+
+const myDatabase = actor({
+  db: db({
+    onMigrate: async (database) => {
+      await database.execute(`
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL
+        )
+      `);
+    },
+  }),
+  actions: {
+    query: async (c, { sql }: { sql: string }) => {
+      return (await c.db.execute(sql)) as Record<string, unknown>[];
+    },
+  },
+});
+
+const registry = setup({ use: { myDatabase } });
+
+// Creating an actor implicitly creates its SQLite database.
+// The actor key determines identity.
+const client = createClient<typeof registry>("http://localhost:6420");
+const dbHandle = client.myDatabase.getOrCreate(["user-123"]);
+
+// Query the actor's database through actions
+const rows = await dbHandle.query({ sql: "SELECT * FROM users" });
+```
+
+### Behavioral Delta
+
+- D1 databases are standalone shared resources; Rivet databases are scoped to an actor instance.
+- There is no `list` or `delete` equivalent. Actor lifecycle manages database lifecycle.
+
+## Bindings and Configuration
+
+D1 requires explicit binding declarations in `wrangler.jsonc`. Rivet actor-local SQLite needs no binding; it is available on `c.db` automatically.
+
+### Before (Cloudflare)
+
+[D1 Bindings](https://developers.cloudflare.com/d1/configuration/bindings/)
+
+```json
+{
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "prod-db",
+      "database_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    }
+  ]
+}
+```
+
+### After (Rivet)
+
+[SQLite](https://rivet.dev/docs/actors/sqlite)
+
+```ts
+import { actor } from "rivetkit";
+import { db } from "rivetkit/db";
+
+// No binding configuration needed. SQLite is available
+// on every actor instance via c.db.
+const myActor = actor({
+  db: db(),
+  onRequest: async (c, request) => {
+    const result = await c.db.execute("SELECT 1 as value");
+    return Response.json(result);
+  },
+  actions: {},
+});
+```
+
+## Worker Binding API (D1Database Methods)
+
+D1 exposes `prepare`, `batch`, `exec`, `dump`, and `withSession` on the D1Database object. Rivet provides `c.db.execute(...)` for parameterized queries, transactions via `BEGIN`/`COMMIT`, and Drizzle integration. `dump()` and session bookmarks are D1-specific features tied to its shared database model and do not apply to actor-local SQLite.
+
+### Before (Cloudflare)
+
+[D1 Client API](https://developers.cloudflare.com/d1/worker-api/d1-database/)
+
+```ts @nocheck
+interface D1Database {
+  prepare(sql: string): D1PreparedStatement;
+  batch(statements: D1PreparedStatement[]): Promise<D1Result[]>;
+  exec(sql: string): Promise<D1ExecResult>;
+}
+
+interface D1PreparedStatement {
+  bind(...values: unknown[]): D1PreparedStatement;
+  run(): Promise<D1Result>;
+  raw(): Promise<unknown[][]>;
+  first(column?: string): Promise<unknown>;
+}
+
+interface D1Result {
+  success: boolean;
+  results: unknown[];
+  meta: { changes: number; rows_read: number; rows_written: number };
+}
+
+interface D1ExecResult {
+  count: number;
+  duration: number;
+}
+
+declare const env: { DB: D1Database };
+declare const userId: string;
+
+// prepare + bind + run
+const result = await env.DB
+  .prepare("SELECT * FROM users WHERE id = ?")
+  .bind(userId)
+  .run();
+
+// batch (sequential, atomic rollback)
+const batchResult = await env.DB.batch([
+  env.DB.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice"),
+  env.DB.prepare("INSERT INTO users (name) VALUES (?)").bind("Bob"),
+]);
+
+// exec (raw SQL, no bindings)
+const execResult = await env.DB.exec("PRAGMA table_list");
+```
+
+### After (Rivet)
+
+[SQLite](https://rivet.dev/docs/actors/sqlite)
+
+```ts
+import { actor } from "rivetkit";
+import { db } from "rivetkit/db";
+
+declare const userId: string;
+
+const myActor = actor({
+  db: db({
+    onMigrate: async (database) => {
+      await database.execute(`
+        CREATE TABLE IF NOT EXISTS users (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL
+        )
+      `);
+    },
+  }),
+  actions: {
+    demo: async (c) => {
+      // Single parameterized query (params are spread, not in an array)
+      const result = await c.db.execute("SELECT * FROM users WHERE id = ?", userId);
+
+      // Batch via transaction
+      await c.db.execute("BEGIN");
+      await c.db.execute("INSERT INTO users (id, name) VALUES (?, ?)", "1", "Alice");
+      await c.db.execute("INSERT INTO users (id, name) VALUES (?, ?)", "2", "Bob");
+      await c.db.execute("COMMIT");
+
+      // Raw SQL execution
+      const tables = await c.db.execute("PRAGMA table_list");
+
+      return { result, tables };
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- `dump()` has no Rivet equivalent.
+- `withSession()` and `getBookmark()` do not exist. There is no read-replica consistency model.
+- Batch rollback is manual via `BEGIN`/`ROLLBACK` instead of automatic.
+
+## Prepared Statement Methods
+
+D1 provides `bind`, `run`, `raw`, and `first` on prepared statements. Rivet uses `c.db.execute(sql, ...params)` which fully supports parameterized queries with results returned as row objects.
+
+### Before (Cloudflare)
+
+[D1 Prepared Statements](https://developers.cloudflare.com/d1/worker-api/d1-database/#prepare)
+
+```ts @nocheck
+interface D1Database {
+  prepare(sql: string): D1PreparedStatement;
+}
+
+interface D1PreparedStatement {
+  bind(...values: unknown[]): D1PreparedStatement;
+  run(): Promise<{ results: unknown[]; meta: { changes: number } }>;
+  first(column?: string): Promise<unknown>;
+  raw(): Promise<unknown[][]>;
+}
+
+declare const env: { DB: D1Database };
+
+// .run() returns D1Result with metadata
+const { results, meta } = await env.DB
+  .prepare("SELECT * FROM customers WHERE company = ?")
+  .bind("Acme")
+  .run();
+
+// .first() returns single row
+const row = await env.DB
+  .prepare("SELECT * FROM customers WHERE id = ?")
+  .bind(11)
+  .first();
+
+// .raw() returns arrays-of-arrays
+const raw = await env.DB
+  .prepare("SELECT id, name FROM customers")
+  .raw();
+// [[11, "Alice"], [12, "Bob"]]
+```
+
+### After (Rivet)
+
+[SQLite](https://rivet.dev/docs/actors/sqlite)
+
+```ts
+import { actor } from "rivetkit";
+import { db } from "rivetkit/db";
+
+const myActor = actor({
+  db: db({
+    onMigrate: async (database) => {
+      await database.execute(`
+        CREATE TABLE IF NOT EXISTS customers (
+          id INTEGER PRIMARY KEY,
+          name TEXT NOT NULL,
+          company TEXT
+        )
+      `);
+    },
+  }),
+  actions: {
+    demo: async (c) => {
+      // Returns row objects directly
+      const rows = await c.db.execute(
+        "SELECT * FROM customers WHERE company = ?",
+        "Acme",
+      );
+
+      // First row: use LIMIT 1
+      const [row] = await c.db.execute(
+        "SELECT * FROM customers WHERE id = ? LIMIT 1",
+        11,
+      );
+
+      // No built-in raw mode; results are always row objects.
+      // Map to arrays if needed:
+      const raw = rows.map((r: Record<string, unknown>) => Object.values(r));
+
+      return { rows, row, raw };
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- D1 wraps results in a metadata envelope with success, meta, and results fields; Rivet returns row arrays directly.
+- No `rows_read`/`rows_written` metadata is provided.
+
+## Return Objects
+
+D1 returns `D1Result` (with `success`, `meta`, and `results`) and `D1ExecResult` (with `count` and `duration`). Rivet returns row arrays directly. Metadata like change counts is available via SQLite built-in functions such as `changes()`.
+
+### Before (Cloudflare)
+
+[D1 Query Results](https://developers.cloudflare.com/d1/worker-api/d1-result/)
+
+```ts @nocheck
+interface D1Database {
+  prepare(sql: string): D1PreparedStatement;
+}
+
+interface D1PreparedStatement {
+  bind(...values: unknown[]): D1PreparedStatement;
+  run(): Promise<{ success: boolean; meta: { changes: number; rows_read: number } }>;
+}
+
+declare const env: { DB: D1Database };
+
+const result = await env.DB
+  .prepare("INSERT INTO users (name) VALUES (?)")
+  .bind("Alice")
+  .run();
+
+console.log(result.success);        // true
+console.log(result.meta.changes);   // 1
+console.log(result.meta.rows_read); // 0
+```
+
+### After (Rivet)
+
+[SQLite](https://rivet.dev/docs/actors/sqlite)
+
+```ts
+import { actor } from "rivetkit";
+import { db } from "rivetkit/db";
+
+const myActor = actor({
+  db: db({
+    onMigrate: async (database) => {
+      await database.execute(`
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL
+        )
+      `);
+    },
+  }),
+  actions: {
+    insertUser: async (c) => {
+      await c.db.execute("INSERT INTO users (name) VALUES (?)", "Alice");
+
+      // Use SQLite built-in functions for metadata
+      const [{ count }] = (await c.db.execute("SELECT changes() as count")) as { count: number }[];
+      console.log(count); // 1
+    },
+  },
+});
+```
+
+## Migrations
+
+D1 uses versioned `.sql` files managed by Wrangler CLI. Rivet runs migrations inside the actor on startup via `onMigrate` or Drizzle.
+
+### Before (Cloudflare)
+
+[D1 Migrations](https://developers.cloudflare.com/d1/reference/migrations/)
+
+```bash
+npx wrangler d1 migrations create my-db init-schema
+# Edit migrations/0000_init-schema.sql
+npx wrangler d1 migrations apply my-db --local
+npx wrangler d1 migrations apply my-db --remote
+```
+
+### After (Rivet)
+
+[SQLite](https://rivet.dev/docs/actors/sqlite)
+
+```ts
+import { actor } from "rivetkit";
+import { db } from "rivetkit/db";
+
+const myActor = actor({
+  db: db({
+    // Migrations run automatically on actor startup
+    onMigrate: async (database) => {
+      // Migration 1: initial schema
+      await database.execute(`
+        CREATE TABLE IF NOT EXISTS customers (
+          id INTEGER PRIMARY KEY,
+          name TEXT NOT NULL,
+          email TEXT UNIQUE
+        )
+      `);
+
+      // Migration 2: add column
+      // Use IF NOT EXISTS or check before altering to make idempotent
+      const cols = (await database.execute("PRAGMA table_info(customers)")) as { name: string }[];
+      if (!cols.some((col) => col.name === "created_at")) {
+        await database.execute("ALTER TABLE customers ADD COLUMN created_at INTEGER");
+      }
+    },
+  }),
+  actions: {
+    getCustomers: async (c) => {
+      return (await c.db.execute("SELECT * FROM customers")) as {
+        id: number;
+        name: string;
+        email: string;
+        created_at: number | null;
+      }[];
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- Migrations are code, not separate `.sql` files.
+- No `list` or `apply` CLI commands; migrations run automatically on actor startup.
+
+## Indexes and Performance
+
+Standard SQLite indexing works the same way inside actor-local SQLite.
+
+### Before (Cloudflare)
+
+[D1 Overview](https://developers.cloudflare.com/d1/)
+
+```ts @nocheck
+interface D1Database {
+  exec(sql: string): Promise<{ count: number; duration: number }>;
+}
+
+declare const env: { DB: D1Database };
+
+await env.DB.exec(`
+  CREATE INDEX IF NOT EXISTS idx_customers_email
+    ON customers(email);
+  CREATE INDEX idx_orders_customer_date
+    ON orders(customer_id, order_date);
+`);
+```
+
+### After (Rivet)
+
+[SQLite](https://rivet.dev/docs/actors/sqlite)
+
+```ts
+import { actor } from "rivetkit";
+import { db } from "rivetkit/db";
+
+const myActor = actor({
+  db: db({
+    onMigrate: async (database) => {
+      await database.execute(`
+        CREATE TABLE IF NOT EXISTS customers (
+          id INTEGER PRIMARY KEY,
+          email TEXT
+        )
+      `);
+      await database.execute(`
+        CREATE TABLE IF NOT EXISTS orders (
+          id INTEGER PRIMARY KEY,
+          customer_id INTEGER,
+          order_date TEXT
+        )
+      `);
+
+      // Indexes are created in migrations
+      await database.execute(`
+        CREATE INDEX IF NOT EXISTS idx_customers_email
+          ON customers(email)
+      `);
+      await database.execute(`
+        CREATE INDEX IF NOT EXISTS idx_orders_customer_date
+          ON orders(customer_id, order_date)
+      `);
+    },
+  }),
+  actions: {},
+});
+```
+
+## Import and Export
+
+D1 provides CLI-based import/export. In Rivet, build custom admin actions or HTTP handlers for data import and export.
+
+### Before (Cloudflare)
+
+[D1 Overview](https://developers.cloudflare.com/d1/)
+
+```bash
+# Export
+npx wrangler d1 export my-db --remote --output=./backup.sql
+
+# Import
+npx wrangler d1 execute my-db --remote --file=./data.sql
+```
+
+### After (Rivet)
+
+[Actions](https://rivet.dev/docs/actors/actions)
+
+```ts
+import { actor } from "rivetkit";
+import { db } from "rivetkit/db";
+
+const dbActor = actor({
+  db: db({
+    onMigrate: async (database) => {
+      await database.execute(`
+        CREATE TABLE IF NOT EXISTS data (
+          id INTEGER PRIMARY KEY,
+          value TEXT
+        )
+      `);
+    },
+  }),
+
+  onRequest: async (c, request) => {
+    const url = new URL(request.url);
+
+    if (url.pathname.endsWith("/export")) {
+      const tables = (await c.db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'",
+      )) as { name: string }[];
+      const dump = [];
+      for (const t of tables) {
+        const rows = await c.db.execute(`SELECT * FROM "${t.name}"`);
+        dump.push({ table: t.name, rows });
+      }
+      return Response.json(dump);
+    }
+
+    if (url.pathname.endsWith("/import") && request.method === "POST") {
+      const { statements } = (await request.json()) as { statements: string[] };
+      await c.db.execute("BEGIN");
+      for (const sql of statements) {
+        await c.db.execute(sql);
+      }
+      await c.db.execute("COMMIT");
+      return Response.json({ ok: true });
+    }
+
+    return new Response("Not Found", { status: 404 });
+  },
+
+  actions: {},
+});
+```
+
+## REST API
+
+D1 exposes HTTP endpoints for management and queries. In Rivet, build equivalent HTTP surfaces using the actor's request handler.
+
+### Before (Cloudflare)
+
+[D1 Overview](https://developers.cloudflare.com/d1/)
+
+```bash
+curl -X POST \
+  "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/d1/database/{DB_ID}/query" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"sql": "SELECT * FROM users WHERE id = ?", "params": [1]}'
+```
+
+### After (Rivet)
+
+[Actions](https://rivet.dev/docs/actors/actions)
+
+```ts
+import { actor } from "rivetkit";
+import { db } from "rivetkit/db";
+
+// Actor exposes query endpoint via onRequest
+const dbActor = actor({
+  db: db({
+    onMigrate: async (database) => {
+      await database.execute(`
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY,
+          name TEXT
+        )
+      `);
+    },
+  }),
+
+  onRequest: async (c, request) => {
+    if (request.method === "POST") {
+      const { sql, params } = (await request.json()) as {
+        sql: string;
+        params?: unknown[];
+      };
+      const rows = await c.db.execute(sql, ...(params || []));
+      return Response.json({ results: rows });
+    }
+    return new Response("Method Not Allowed", { status: 405 });
+  },
+
+  actions: {},
+});
+```
+
+## Environments
+
+D1 uses Wrangler environment blocks to bind different databases per stage. Rivet uses separate deployments or environment variables.
+
+### Before (Cloudflare)
+
+[D1 Bindings](https://developers.cloudflare.com/d1/configuration/bindings/)
+
+```json
+{
+  "env": {
+    "staging": {
+      "d1_databases": [{
+        "binding": "DB",
+        "database_name": "staging-db",
+        "database_id": "uuid-staging"
+      }]
+    },
+    "production": {
+      "d1_databases": [{
+        "binding": "DB",
+        "database_name": "prod-db",
+        "database_id": "uuid-prod"
+      }]
+    }
+  }
+}
+```
+
+### After (Rivet)
+
+[Actors](https://rivet.dev/docs/actors)
+
+```ts
+import { actor, setup } from "rivetkit";
+import { createClient } from "rivetkit/client";
+import { db } from "rivetkit/db";
+
+const myDb = actor({
+  db: db(),
+  actions: {
+    query: async (c, { sql }: { sql: string }) => {
+      return (await c.db.execute(sql)) as Record<string, unknown>[];
+    },
+  },
+});
+
+const registry = setup({ use: { myDb } });
+
+// Use environment variables or separate Rivet deployments.
+// Actor keys can incorporate the environment:
+const env = process.env.RIVET_ENV || "development";
+const client = createClient<typeof registry>("http://localhost:6420");
+const dbHandle = client.myDb.getOrCreate([`${env}-user-123`]);
+```
+
+## Local Development
+
+D1 uses `wrangler dev` for local SQLite. Rivet actors run locally with the same SQLite semantics as production.
+
+### Before (Cloudflare)
+
+[D1 Overview](https://developers.cloudflare.com/d1/)
+
+```bash
+npx wrangler dev
+# Local D1 state persists between restarts
+npx wrangler d1 execute my-db --local --command="SELECT * FROM users"
+```
+
+### After (Rivet)
+
+[Actors](https://rivet.dev/docs/actors)
+
+```bash
+# Start the Rivet dev server
+npx rivetkit dev
+
+# Actor-local SQLite works identically in local and production.
+# State persists across dev server restarts.
+```
+
+## Retry Logic
+
+D1 auto-retries read queries up to 2 times. Rivet retries are app-defined using workflows or queues.
+
+### Before (Cloudflare)
+
+[D1 Overview](https://developers.cloudflare.com/d1/)
+
+```ts @nocheck
+// D1 automatically retries read queries.
+// For writes, implement manual retry:
+function shouldRetry(err: unknown, attempt: number): boolean {
+  const msg = String(err);
+  const retryable =
+    msg.includes("Network connection lost") ||
+    msg.includes("storage caused object to be reset");
+  return attempt <= 5 && retryable;
+}
+```
+
+### After (Rivet)
+
+[SQLite](https://rivet.dev/docs/actors/sqlite)
+
+```ts
+import { actor } from "rivetkit";
+import { db } from "rivetkit/db";
+
+// Simple retry wrapper
+async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 3): Promise<T> {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i === maxAttempts - 1) throw err;
+    }
+  }
+  throw new Error("unreachable");
+}
+
+const myActor = actor({
+  db: db({
+    onMigrate: async (database) => {
+      await database.execute(`
+        CREATE TABLE IF NOT EXISTS users (
+          id TEXT PRIMARY KEY,
+          name TEXT
+        )
+      `);
+    },
+  }),
+  actions: {
+    getUser: async (c, { userId }: { userId: string }) => {
+      // Use retry wrapper around database queries
+      const rows = await withRetry(() =>
+        c.db.execute("SELECT * FROM users WHERE id = ?", userId),
+      );
+      return rows;
+    },
+  },
+});
+```
+
+## Horizontal Scaling Model
+
+D1 scales out across many small databases (10 GB each). Rivet actors are a natural sharding primitive: each actor owns its own SQLite database.
+
+### Before (Cloudflare)
+
+[D1 Overview](https://developers.cloudflare.com/d1/)
+
+```ts @nocheck
+interface D1Database {
+  prepare(sql: string): {
+    bind(...values: unknown[]): {
+      run(): Promise<{ results: unknown[] }>;
+    };
+  };
+}
+
+declare const userId: number;
+declare const env: Record<string, D1Database>;
+
+// Shard across multiple D1 databases
+function getDbForUser(userId: number, env: Record<string, D1Database>): D1Database {
+  const shard = userId % 4;
+  return env[`DB_SHARD_${shard}`];
+}
+
+const shardDb = getDbForUser(userId, env);
+const result = await shardDb
+  .prepare("SELECT * FROM users WHERE id = ?")
+  .bind(userId)
+  .run();
+```
+
+### After (Rivet)
+
+[Keys](https://rivet.dev/docs/actors/keys)
+
+```ts
+import { actor, setup } from "rivetkit";
+import { createClient } from "rivetkit/client";
+import { db } from "rivetkit/db";
+
+declare const userId: string;
+declare const regionId: string;
+
+const userDb = actor({
+  db: db({
+    onMigrate: async (database) => {
+      await database.execute(`
+        CREATE TABLE IF NOT EXISTS profile (
+          id TEXT PRIMARY KEY,
+          name TEXT
+        )
+      `);
+    },
+  }),
+  actions: {
+    getProfile: async (c, { id }: { id: string }) => {
+      return (await c.db.execute("SELECT * FROM profile WHERE id = ?", id)) as {
+        id: string;
+        name: string;
+      }[];
+    },
+  },
+});
+
+const regionDb = actor({
+  db: db(),
+  actions: {},
+});
+
+const registry = setup({ use: { userDb, regionDb } });
+
+// Each actor IS a shard. Routing is by actor key.
+// No manual shard selection needed.
+const client = createClient<typeof registry>("http://localhost:6420");
+const userHandle = client.userDb.getOrCreate([`user-${userId}`]);
+const result = await userHandle.getProfile({ id: userId });
+
+// For range-based sharding, use composite keys:
+const regionHandle = client.regionDb.getOrCreate([`region-${regionId}`]);
+```
+
+### Behavioral Delta
+
+- D1 sharding requires manual database selection; Rivet actors route by key automatically.
+- Cross-shard queries require application-level fan-out in both models.
+- Actor-local SQLite has different size limits than D1's 10 GB cap.
+
+## Deploying
+
+Rivet actors can be deployed to any supported platform. See the [Connect docs](/docs/connect) to choose your deployment target.
+
+## Unsupported, External, and Vendor Features
+
+- **Shared/Cross-Actor Database** -- vendor -- D1 databases are shared across Workers. Use [PostgreSQL](https://rivet.dev/docs/actors/postgres), [Turso](https://turso.tech/), or [PlanetScale](https://planetscale.com/) for shared state across actors.
+- **Time Travel (PITR)** -- unsupported -- No documented point-in-time recovery for actor-local SQLite.
+- **Legacy Backups** -- unsupported -- No actor-local backup or snapshot API.
+- **Read Replication** -- unsupported -- No Sessions API, bookmark consistency, or read-replica model. Redesign around actor ownership or use an external database.
+- **SQL Query Execution via Wrangler** -- out-of-scope -- No D1-style SQL CLI. Use app-defined admin actions or external DB tooling.
+- **Remote Development** -- out-of-scope -- No hosted playground. Use local dev with `npx rivetkit dev`.
+- **Billing and Usage** -- out-of-scope -- No D1-style row metering.
+- **Audit Logs** -- out-of-scope -- No actor-local audit-log surface.
+- **Pricing** -- out-of-scope -- Platform/commercial comparison, not a runtime feature.
+- **Wrangler Commands Reference** -- out-of-scope -- No D1-equivalent admin CLI surface.
+
+## Validation Checklist
+
+| Test item | Expected result | Proof |
+| --- | --- | --- |
+| Actor-local SQLite bootstraps schema | Migration/init runs on actor startup | [examples/sqlite-drizzle](https://github.com/rivet-dev/rivet/tree/main/examples/sqlite-drizzle) |
+| CRUD and transactions work | Inserts, updates, deletes, and rollback semantics hold | [actor-db.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-db.ts) |
+| SQLite persists through sleep/wake | Data remains after actor sleep cycles | [actor-db.ts](https://github.com/rivet-dev/rivet/blob/main/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-db.ts) |
+| Shared-DB topology is explicit | Migration design decides per-D1-DB mapping (one actor, many actors, or external Postgres) | Review [Scaling](https://rivet.dev/docs/actors/scaling) and [Design Patterns](https://rivet.dev/docs/actors/design-patterns) |
+| Foreign keys and generated columns work | Schema-level SQLite features function on actor-local SQLite | Standard SQLite behavior; see [SQLite docs](https://rivet.dev/docs/actors/sqlite) |
+| FTS and JSON functions are proven | Advanced SQLite extensions tested on Rivet | Available through SQLite; see [SQLite docs](https://rivet.dev/docs/actors/sqlite) |
+| PITR/backups replacement exists | Ops runbook covers recovery and export paths | Gap: no built-in PITR/backup/export features documented |

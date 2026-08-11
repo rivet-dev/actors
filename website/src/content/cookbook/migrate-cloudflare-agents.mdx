@@ -1,0 +1,1097 @@
+---
+title: "Migrate Cloudflare Agents to Rivet"
+icon: "cloudflare"
+description: "Before-and-after migration guide for moving Cloudflare Agents capabilities to Rivet, with code for every migration path."
+---
+
+This guide maps every Cloudflare Agents feature to its Rivet Actor equivalent. The single most important semantic difference: Cloudflare Agents have automatic bidirectional state sync between server and client, while Rivet requires you to model writes as actions and outbound sync as explicit events.
+
+## Status Summary
+
+**Status legend:**
+
+- **native** = direct Rivet equivalent exists
+- **pattern** = achievable with a documented Rivet pattern
+- **external** = requires an external service or library
+- **vendor** = Cloudflare-proprietary service replaced by a recommended third-party SDK or provider
+- **out-of-scope** = platform-specific; not applicable to Rivet
+
+| Feature | Status | Rivet path |
+| --- | --- | --- |
+| Agent Class and Lifecycle | native | [`actor()`](https://rivet.dev/docs/actors/lifecycle) with lifecycle hooks |
+| State Management | pattern | [State](https://rivet.dev/docs/actors/state) + [Events](https://rivet.dev/docs/actors/events) for explicit sync |
+| SQL Database (Embedded SQLite) | native | [`db()`](https://rivet.dev/docs/actors/sqlite) per actor |
+| Callable Methods (RPC) | native | [Actions](https://rivet.dev/docs/actors/actions) |
+| WebSocket Support | native | [Connections](https://rivet.dev/docs/actors/connections) and [WebSocket Handler](https://rivet.dev/docs/actors/websocket-handler) |
+| Hibernation | native | [WebSocket Handler](https://rivet.dev/docs/actors/websocket-handler) |
+| HTTP | native | [Request Handler](https://rivet.dev/docs/actors/request-handler) |
+| SSE / Streaming | pattern | Use WebSocket connections for real-time streaming |
+| Routing | native | [Actor Keys](https://rivet.dev/docs/actors/keys) + app router |
+| Scheduling (Timers) | native | [Schedule](https://rivet.dev/docs/actors/schedule) |
+| Scheduling (Cron) | pattern | Compute next occurrence and chain with `c.schedule.at` |
+| Queue Tasks | native | [Queues](https://rivet.dev/docs/actors/queues) |
+| AI Chat Agent | vendor | Use Vercel AI SDK `streamText` + `useChat` with actor WebSocket transport |
+| Tool Use / Function Calling | pattern | [Actions](https://rivet.dev/docs/actors/actions) + [Workflows](https://rivet.dev/docs/actors/workflows) |
+| AI Model Integration | vendor | Use the [Vercel AI SDK](https://sdk.vercel.ai/) (`ai` package) with any supported provider (OpenAI, Anthropic, Google, etc.) |
+| Workflows | native | [Workflows](https://rivet.dev/docs/actors/workflows) |
+| Human-in-the-Loop | pattern | Workflow waits + action/HTTP resumes |
+| Client SDK | native | [JavaScript](https://rivet.dev/docs/clients/javascript) and [React](https://rivet.dev/docs/clients/react) clients |
+| Email Routing | vendor | Use [Resend](https://resend.com/), [SendGrid](https://sendgrid.com/), or [Postmark](https://postmarkapp.com/) |
+| Browse the Web | vendor | Use [Browserbase](https://www.browserbase.com/), [Browserless](https://www.browserless.io/), or Playwright with a remote browser |
+| Model Context Protocol (MCP) | vendor | Use the [Model Context Protocol SDK](https://github.com/modelcontextprotocol/sdk) (`@modelcontextprotocol/sdk`) |
+| Protocol Messages | pattern | Rivet has its own client protocol; map Cloudflare frame shapes to Rivet actions/events |
+| Observability | native | [Inspector](https://rivet.dev/docs/actors/debugging) + structured logs |
+| Webhooks | pattern | [Request Handler](https://rivet.dev/docs/actors/request-handler) + app-level verification |
+| Configuration (Wrangler) | pattern | Rivet configuration replaces Agents SDK bindings; see [Connect docs](https://rivet.dev/docs/connect) |
+| x402 Payment Protocol | external | Implement at API edge/gateway |
+| Agent Patterns | pattern | [Design Patterns](https://rivet.dev/docs/actors/design-patterns) + [Workflows](https://rivet.dev/docs/actors/workflows) |
+| Platform Limits | native | [Limits](https://rivet.dev/docs/actors/limits) |
+| Deployment | out-of-scope | Platform-specific; see [Connect docs](https://rivet.dev/docs/connect) to choose your deployment target |
+| Getting Started | native | [Cloudflare Workers Quickstart](https://rivet.dev/docs/actors/quickstart/cloudflare-workers) |
+
+## Agent Class and Lifecycle
+
+Rivet's `actor()` function replaces the `Agent` base class. Lifecycle hooks map directly.
+
+### Before (Cloudflare)
+
+[Agents API](https://developers.cloudflare.com/agents/api-reference/agents-api/)
+
+```ts @nocheck
+import { Agent } from "agents";
+
+class MyAgent extends Agent {
+  onStart(): void {
+    console.log("Agent started");
+  }
+
+  async onRequest(request: Request): Promise<Response> {
+    return new Response("OK");
+  }
+
+  onConnect(connection: Connection, ctx: ConnectionContext): void {
+    connection.send("welcome");
+  }
+
+  onMessage(connection: Connection, message: string): void {
+    console.log("received:", message);
+  }
+
+  onClose(connection: Connection, code: number, reason: string): void {
+    console.log("closed");
+  }
+}
+```
+
+### After (Rivet)
+
+[Lifecycle](https://rivet.dev/docs/actors/lifecycle)
+
+```ts
+import { actor } from "rivetkit";
+
+const myActor = actor({
+  // Called when the actor is first created
+  onCreate(c) {
+    console.log("actor created");
+  },
+
+  // Actions replace callable methods
+  actions: {
+    hello(c) {
+      return "OK";
+    },
+  },
+
+  // Connection lifecycle
+  onConnect(c, conn) {
+    conn.send("welcome");
+  },
+
+  onDisconnect(c, conn) {
+    console.log("closed");
+  },
+
+  // For raw WebSocket message handling, use onWebSocket
+  onWebSocket(c, ws) {
+    ws.addEventListener("message", (event) => {
+      console.log("received:", event.data);
+    });
+  },
+});
+```
+
+### Behavioral Delta
+
+- `onStart` fires on every wake in Cloudflare. Rivet splits this into `onCreate` (first creation) and the actor simply resuming on wake.
+- There is no `onError` WebSocket hook in Rivet; handle errors in `onMessage`.
+
+## State Management
+
+Cloudflare Agents auto-sync state bidirectionally between server and all clients. Rivet requires explicit action calls for writes and explicit event broadcasts for fanout.
+
+### Before (Cloudflare)
+
+[Store and Sync State](https://developers.cloudflare.com/agents/api-reference/store-and-sync-state/)
+
+```ts @nocheck
+import { Agent } from "agents";
+
+class GameAgent extends Agent {
+  initialState = { score: 0, players: [] as string[] };
+
+  onStateChanged(state: { score: number; players: string[] }, source: "server" | { id: string }): void {
+    console.log("state updated by:", source === "server" ? "server" : source.id);
+  }
+}
+
+// Client-side (Cloudflare)
+// agent.setState({ ...agent.state, score: 100 });
+```
+
+### After (Rivet)
+
+[State](https://rivet.dev/docs/actors/state)
+
+```ts
+import { actor } from "rivetkit";
+
+const gameActor = actor({
+  state: { score: 0, players: [] as string[] },
+
+  actions: {
+    setScore(c, newScore) {
+      c.state.score = newScore;
+      // Explicitly broadcast to connected clients
+      c.broadcast("stateUpdate", c.state);
+    },
+
+    addPlayer(c, name) {
+      c.state.players.push(name);
+      c.broadcast("stateUpdate", c.state);
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- Clients cannot push state directly. All mutations go through actions.
+- You must explicitly broadcast state changes to connected clients.
+- There is no `validateStateChange` hook; validate inside each action.
+
+## SQL Database (Embedded SQLite)
+
+Both platforms provide per-instance embedded SQLite. Rivet requires opting in with `db()`.
+
+### Before (Cloudflare)
+
+[SQL Storage](https://developers.cloudflare.com/agents/api-reference/sql-storage/)
+
+```ts @nocheck
+import { Agent } from "agents";
+
+class DataAgent extends Agent {
+  onStart(): void {
+    this.sql`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT)`;
+  }
+
+  getUser(id: string): unknown {
+    const [user] = this.sql`SELECT * FROM users WHERE id = ${id}`;
+    return user;
+  }
+}
+```
+
+### After (Rivet)
+
+[SQLite](https://rivet.dev/docs/actors/sqlite)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+import { db } from "rivetkit/db";
+
+const dataActor = actor({
+  db: db({}),
+
+  onCreate(c) {
+    c.db.exec("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT)");
+  },
+
+  actions: {
+    getUser(c, id) {
+      return c.db.prepare("SELECT * FROM users WHERE id = ?").bind(id).first();
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- Cloudflare uses tagged template literals (`this.sql\`...\``). Rivet uses a standard prepared statement API.
+- SQLite must be explicitly enabled per actor with `db: db()`.
+
+## Callable Methods (RPC)
+
+Cloudflare's `@callable()` decorator maps to Rivet's `actions` object.
+
+### Before (Cloudflare)
+
+[Callable Methods](https://developers.cloudflare.com/agents/api-reference/callable-methods/)
+
+```ts @nocheck
+import { Agent, callable } from "agents";
+
+class MyAgent extends Agent {
+  // @callable()
+  async greet(name: string): Promise<string> {
+    return `Hello, ${name}!`;
+  }
+}
+
+// Client: const result = await agent.stub.greet("World");
+```
+
+### After (Rivet)
+
+[Actions](https://rivet.dev/docs/actors/actions)
+
+```ts
+import { actor } from "rivetkit";
+
+const myActor = actor({
+  actions: {
+    async greet(c, name) {
+      return `Hello, ${name}!`;
+    },
+  },
+});
+
+// Client: const result = await actor.greet("World");
+```
+
+### Behavioral Delta
+
+- No decorator syntax needed. Define actions as plain functions in the `actions` object.
+- The first parameter `c` is the actor context, provided automatically.
+
+## WebSocket Support
+
+Rivet supports both a high-level connection model (with actions and events) and a low-level `onWebSocket` handler for raw protocol control.
+
+### Before (Cloudflare)
+
+[WebSocket](https://developers.cloudflare.com/agents/api-reference/websocket/)
+
+```ts @nocheck
+import { Agent } from "agents";
+
+class ChatAgent extends Agent {
+  onConnect(connection: Connection, ctx: ConnectionContext): void {
+    connection.setState({ joinedAt: Date.now() });
+  }
+
+  onMessage(connection: Connection, message: string): void {
+    // Broadcast to all except sender
+    this.broadcast(message, [connection.id]);
+  }
+
+  onClose(connection: Connection, code: number, reason: string, wasClean: boolean): void {
+    console.log("disconnected:", connection.id);
+  }
+}
+```
+
+### After (Rivet)
+
+[Connections](https://rivet.dev/docs/actors/connections)
+
+```ts
+import { actor } from "rivetkit";
+
+const chatActor = actor({
+  state: {},
+
+  onConnect(c, conn) {
+    // Connection state is set via createConnState
+  },
+
+  onDisconnect(c, conn) {
+    console.log("disconnected");
+  },
+
+  // Use onWebSocket for raw message handling
+  onWebSocket(c, ws) {
+    ws.addEventListener("message", (event) => {
+      // Broadcast to all connections except sender
+      for (const [, conn] of c.conns) {
+        conn.send("message", event.data as string);
+      }
+    });
+  },
+});
+```
+
+### Behavioral Delta
+
+- Rivet uses `c.conns` to iterate connections instead of `this.broadcast(msg, excludeList)`.
+- Connection tags are not a built-in primitive; use connection state to group connections.
+
+## Hibernation
+
+Rivet natively supports connection hibernation. State persists across sleep/wake cycles.
+
+### Before (Cloudflare)
+
+[WebSocket](https://developers.cloudflare.com/agents/api-reference/websocket/)
+
+```ts @nocheck
+import { Agent } from "agents";
+
+class MyAgent extends Agent {
+  // Hibernation is on by default; disable with:
+  // static options = { hibernate: false };
+
+  initialState = { counter: 0 };
+
+  onMessage(connection: Connection, message: string): void {
+    // this.state persists across hibernation
+    this.setState({ counter: this.state.counter + 1 });
+
+    // Class properties like this.localVar are lost after hibernation
+  }
+}
+```
+
+### After (Rivet)
+
+[Lifecycle](https://rivet.dev/docs/actors/lifecycle)
+
+```ts
+import { actor } from "rivetkit";
+
+const myActor = actor({
+  state: { counter: 0 },
+
+  // Use onWebSocket for raw message handling
+  onWebSocket(c, ws) {
+    ws.addEventListener("message", () => {
+      // c.state persists across sleep/wake cycles
+      c.state.counter += 1;
+
+      // In-memory variables outside state are lost on sleep
+    });
+  },
+});
+```
+
+### Behavioral Delta
+
+- Both platforms lose class/module-level variables across hibernation. Use `state` or SQLite for durable data.
+
+## HTTP Request Handling
+
+Rivet's `onRequest` handler handles standard HTTP requests with full support for all methods, headers, and JSON bodies.
+
+### Before (Cloudflare)
+
+[Request Handler](https://developers.cloudflare.com/agents/api-reference/request-handler/)
+
+```ts @nocheck
+import { Agent } from "agents";
+
+class APIAgent extends Agent {
+  async onRequest(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (url.pathname.endsWith("/status")) {
+      return Response.json({ status: "ok" });
+    }
+
+    if (url.pathname.endsWith("/action") && request.method === "POST") {
+      const data = await request.json();
+      return Response.json({ success: true });
+    }
+
+    return new Response("Not found", { status: 404 });
+  }
+}
+```
+
+### After (Rivet)
+
+[Request Handler](https://rivet.dev/docs/actors/request-handler)
+
+```ts
+import { actor } from "rivetkit";
+
+const apiActor = actor({
+  onRequest(c, req) {
+    const url = new URL(req.url);
+
+    if (url.pathname.endsWith("/status")) {
+      return Response.json({ status: "ok" });
+    }
+
+    if (url.pathname.endsWith("/action") && req.method === "POST") {
+      const data = req.json();
+      return Response.json({ success: true });
+    }
+
+    return new Response("Not found", { status: 404 });
+  },
+});
+```
+
+### Behavioral Delta
+
+- The request handler maps directly. Route matching is done in application code or your app router.
+
+## SSE / Streaming Responses
+
+Cloudflare Agents support SSE and streaming responses from `onRequest`. Rivet handles real-time streaming via WebSocket connections instead of SSE. This is a different approach that provides the same real-time data delivery capability.
+
+### Before (Cloudflare)
+
+[Request Handler](https://developers.cloudflare.com/agents/api-reference/request-handler/)
+
+```ts @nocheck
+import { Agent } from "agents";
+
+class StreamAgent extends Agent {
+  async onRequest(request: Request): Promise<Response> {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode("data: hello\n\n"));
+        controller.enqueue(encoder.encode("data: world\n\n"));
+        controller.close();
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+      },
+    });
+  }
+}
+```
+
+### After (Rivet)
+
+[Connections](https://rivet.dev/docs/actors/connections)
+
+```ts
+import { actor } from "rivetkit";
+
+// Use WebSocket connections for real-time streaming instead of SSE.
+const streamActor = actor({
+  onConnect(c, conn) {
+    conn.send("hello");
+    conn.send("world");
+  },
+
+  // For clients that need HTTP-only access, return
+  // the full payload in a single response instead.
+  onRequest(c, req) {
+    return Response.json({ messages: ["hello", "world"] });
+  },
+});
+```
+
+### Behavioral Delta
+
+- Rivet uses WebSocket connections for real-time streaming instead of SSE. The streaming capability is fully supported, just through a different transport.
+- For HTTP-only clients, return complete payloads in a single response.
+
+## Routing
+
+Cloudflare routes via URL pattern `/agents/:agent-name/:instance-name`. Rivet routes via actor keys in your app router.
+
+### Before (Cloudflare)
+
+[Agents API](https://developers.cloudflare.com/agents/api-reference/agents-api/)
+
+```ts @nocheck
+import { routeAgentRequest } from "agents";
+
+export default {
+  async fetch(request: Request, env: unknown): Promise<Response> {
+    // Auto-routes to /agents/chat-agent/room-123
+    return (
+      routeAgentRequest(request, env) ||
+      new Response("Not found", { status: 404 })
+    );
+  },
+};
+```
+
+### After (Rivet)
+
+[Keys](https://rivet.dev/docs/actors/keys)
+
+```ts @nocheck
+// Router maps URL params to actor keys
+// GET /chat/room-123 -> actor key ["room-123"]
+import { createClient } from "rivetkit/client";
+
+const client = createClient();
+
+// Get or create an actor by name and key
+const chatRoom = await client.chat.getOrCreate(["room-123"]);
+const result = await chatRoom.sendMessage("hello");
+```
+
+### Behavioral Delta
+
+- Rivet does not auto-derive kebab-case routes from class names. You define routing in your app and look up actors by name and key.
+
+## Scheduling (Timers)
+
+Rivet natively supports delayed, absolute, and repeating timers.
+
+### Before (Cloudflare)
+
+[Schedule](https://developers.cloudflare.com/agents/api-reference/schedule/)
+
+```ts @nocheck
+import { Agent } from "agents";
+
+class MyAgent extends Agent {
+  async onStart(): Promise<void> {
+    // Delayed (60 seconds)
+    await this.schedule(60, "sendReminder", { msg: "check" });
+
+    // Fixed interval (every 30 seconds)
+    this.scheduleEvery(30, "poll", { source: "api" });
+  }
+
+  async sendReminder(payload: { msg: string }): Promise<void> {
+    console.log(payload.msg);
+  }
+}
+```
+
+### After (Rivet)
+
+[Schedule](https://rivet.dev/docs/actors/schedule)
+
+```ts
+import { actor } from "rivetkit";
+
+const myActor = actor({
+  actions: {
+    setupSchedules(c) {
+      // Delayed (60 seconds from now)
+      c.schedule.after(60_000, "sendReminder", { msg: "check" });
+
+      // Absolute time
+      c.schedule.at(new Date("2026-02-01T08:00:00Z").getTime(), "dailyDigest");
+    },
+
+    sendReminder(c, payload: { msg: string }) {
+      console.log(payload.msg);
+    },
+
+    dailyDigest(c) {
+      console.log("Running daily digest");
+    },
+
+    // For repeating schedules, reschedule at the end of each execution
+    poll(c) {
+      console.log("Polling API");
+      c.schedule.after(30_000, "poll");
+    },
+  },
+});
+```
+
+### Behavioral Delta
+
+- Rivet uses milliseconds for schedule durations, not seconds.
+
+## Scheduling (Cron)
+
+Cloudflare supports cron expressions natively. Rivet supports the same scheduling patterns by computing the next occurrence and chaining with `c.schedule.at`. This approach gives you full control over scheduling logic and works with any recurrence pattern.
+
+### Before (Cloudflare)
+
+[Schedule](https://developers.cloudflare.com/agents/api-reference/schedule/)
+
+```ts @nocheck
+import { Agent } from "agents";
+
+class MyAgent extends Agent {
+  async onStart(): Promise<void> {
+    // Cron (daily at 8am)
+    await this.schedule("0 8 * * *", "dailyDigest", {});
+  }
+
+  async dailyDigest(): Promise<void> {
+    console.log("Running daily digest");
+  }
+}
+```
+
+### After (Rivet)
+
+[Schedule](https://rivet.dev/docs/actors/schedule)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+
+const myActor = actor({
+  onCreate(c) {
+    // Schedule the first run
+    scheduleNextDaily(c);
+  },
+
+  actions: {
+    dailyDigest(c) {
+      console.log("Running daily digest");
+
+      // Schedule the next occurrence
+      scheduleNextDaily(c);
+    },
+  },
+});
+
+function scheduleNextDaily(c) {
+  const now = new Date();
+  const next = new Date(now);
+  next.setUTCHours(8, 0, 0, 0);
+  if (next <= now) {
+    next.setUTCDate(next.getUTCDate() + 1);
+  }
+  c.schedule.at(next.getTime(), "dailyDigest", {});
+}
+```
+
+### Behavioral Delta
+
+- You can use a library like `cron-parser` to compute the next occurrence for complex cron expressions.
+- The pattern is: execute the task, then schedule the next run. This gives full control over scheduling logic.
+
+## Queue Tasks
+
+Both platforms provide per-instance sequential FIFO queues with retry semantics.
+
+### Before (Cloudflare)
+
+[Agents API](https://developers.cloudflare.com/agents/api-reference/agents-api/)
+
+```ts @nocheck
+import { Agent } from "agents";
+
+class MyAgent extends Agent {
+  async onMessage(message: string): Promise<void> {
+    await this.queue("processEmail", {
+      email: "user@example.com",
+      subject: "Welcome!",
+    });
+  }
+
+  async processEmail(data: { email: string; subject: string }): Promise<void> {
+    console.log("Processing:", data.subject);
+    // Task auto-removes on success
+  }
+}
+```
+
+### After (Rivet)
+
+[Queues](https://rivet.dev/docs/actors/queues)
+
+```ts
+import { actor, queue } from "rivetkit";
+
+const myActor = actor({
+  queues: {
+    processEmail: queue<{ email: string; subject: string }>(),
+  },
+
+  actions: {
+    enqueue: async (c) => {
+      await c.queue.send("processEmail", {
+        email: "user@example.com",
+        subject: "Welcome!",
+      });
+    },
+  },
+
+  run: async (c) => {
+    for await (const msg of c.queue.iter()) {
+      console.log("Processing:", msg.body.subject);
+    }
+  },
+});
+```
+
+### Behavioral Delta
+
+- Both platforms use actor-local queues. The configuration API for retries differs slightly.
+
+## Workflows
+
+Both platforms support durable multi-step workflows. The API surface differs.
+
+### Before (Cloudflare)
+
+[Agents API](https://developers.cloudflare.com/agents/api-reference/agents-api/)
+
+```ts @nocheck
+import { AgentWorkflow } from "agents/workflows";
+
+class MyWorkflow extends AgentWorkflow {
+  async run(event: { payload: unknown }, step: WorkflowStep): Promise<void> {
+    const validated = await step.do("validate", async () => {
+      return { valid: true, data: event.payload };
+    });
+
+    await step.do("process", async () => {
+      // Process validated data
+      return { processed: true };
+    });
+
+    await step.reportComplete({ success: true });
+  }
+}
+```
+
+### After (Rivet)
+
+[Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts @nocheck
+import { actor } from "rivetkit";
+import { workflow } from "rivetkit/workflow";
+
+const myActor = actor({
+  run: workflow(async (ctx) => {
+    const validated = await ctx.step("validate", async () => {
+      return { valid: true, data: ctx.input };
+    });
+
+    const result = await ctx.step("process", async () => {
+      return { processed: true };
+    });
+
+    return { success: true };
+  }),
+});
+```
+
+### Behavioral Delta
+
+- Rivet workflows are defined inside the actor rather than as separate classes.
+- Step methods and lifecycle callbacks have different names and signatures.
+
+## Human-in-the-Loop
+
+Cloudflare uses `waitForApproval()` in workflows. Rivet models this as workflow waits that resume on action calls or queue messages.
+
+### Before (Cloudflare)
+
+[Agents API](https://developers.cloudflare.com/agents/api-reference/agents-api/)
+
+```ts @nocheck
+import { AgentWorkflow } from "agents/workflows";
+
+class ExpenseWorkflow extends AgentWorkflow {
+  async run(event: { payload: { amount: number } }, step: WorkflowStep): Promise<void> {
+    const expense = event.payload;
+
+    await this.reportProgress({
+      step: "approval",
+      status: "pending",
+      message: `Awaiting approval for $${expense.amount}`,
+    });
+
+    const approval = await this.waitForApproval(step, {
+      timeout: "7 days",
+    });
+
+    await step.do("process", async () => {
+      return { approved: true };
+    });
+  }
+}
+```
+
+### After (Rivet)
+
+[Workflows](https://rivet.dev/docs/actors/workflows)
+
+```ts @nocheck
+import { actor, queue } from "rivetkit";
+import { workflow } from "rivetkit/workflow";
+
+const expenseActor = actor({
+  queues: {
+    approval: queue<{ approved: boolean; approvedBy: string }>(),
+  },
+  actions: {
+    approve: async (c, data: { approved: boolean; approvedBy: string }) => {
+      // Send approval to the workflow's queue
+      await c.queue.send("approval", data);
+    },
+  },
+  run: workflow(async (ctx) => {
+    ctx.broadcast("approvalNeeded", {
+      amount: ctx.input.amount,
+    });
+
+    // Wait for an external signal via queue
+    const approval = await ctx.step("wait for approval", async () => {
+      const msg = await ctx.queue.next();
+      return msg.body;
+    });
+
+    await ctx.step("process", async () => {
+      return { approved: true, approvedBy: approval.approvedBy };
+    });
+  }),
+});
+```
+
+### Behavioral Delta
+
+- There is no built-in `waitForApproval` with timeout strings. Model approval waits as workflow signals resumed by actions.
+
+## Client SDK
+
+Both platforms offer JavaScript and React clients. The API shapes differ.
+
+### Before (Cloudflare)
+
+[Agents API](https://developers.cloudflare.com/agents/api-reference/agents-api/)
+
+```ts @nocheck
+// React
+import { useAgent } from "agents/react";
+
+const agent = useAgent({
+  agent: "ChatAgent",
+  name: "room-123",
+  onStateUpdate: (state: unknown) => console.log(state),
+});
+
+await agent.call("sendMessage", ["Hello!"]);
+
+// Vanilla JS
+import { AgentClient } from "agents/client";
+
+const client = new AgentClient({
+  agent: "ChatAgent",
+  name: "room-123",
+});
+```
+
+### After (Rivet)
+
+[JavaScript Client](https://rivet.dev/docs/clients/javascript)
+
+```ts @nocheck
+// React
+import { useActor } from "@rivetkit/react";
+
+const [state, actor] = useActor("chat", { key: ["room-123"] });
+await actor.sendMessage("Hello!");
+
+// Vanilla JS
+import { createClient } from "rivetkit/client";
+
+const client = createClient();
+const chat = await client.actor("chat").getOrCreate(["room-123"]);
+```
+
+### Behavioral Delta
+
+- Rivet does not auto-sync state to clients. Use events to push updates.
+- Actor lookup uses name + key array instead of agent name + instance name string.
+
+## Webhooks
+
+Cloudflare uses `getAgentByName()` to route webhooks to agent instances. Rivet uses the request handler with app-level signature verification.
+
+### Before (Cloudflare)
+
+[Request Handler](https://developers.cloudflare.com/agents/api-reference/request-handler/)
+
+```ts @nocheck
+import { Agent, getAgentByName } from "agents";
+
+class WebhookAgent extends Agent {
+  async onRequest(request: Request): Promise<Response> {
+    const signature = request.headers.get("X-Hub-Signature-256");
+    const body = await request.text();
+
+    if (!(await this.verifySignature(body, signature))) {
+      return new Response("Invalid signature", { status: 401 });
+    }
+
+    const payload = JSON.parse(body);
+    await this.processEvent(payload);
+    return new Response("OK", { status: 200 });
+  }
+
+  async verifySignature(body: string, signature: string | null): Promise<boolean> {
+    return true; // Implementation omitted
+  }
+
+  async processEvent(payload: unknown): Promise<void> {
+    // Process event
+  }
+}
+
+export default {
+  async fetch(request: Request, env: Record<string, unknown>): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith("/webhooks/")) {
+      const entityId = url.pathname.split("/")[2];
+      const agent = await getAgentByName(env.WebhookAgent, entityId);
+      return agent.fetch(request);
+    }
+    return new Response("Not found", { status: 404 });
+  },
+};
+```
+
+### After (Rivet)
+
+[Request Handler](https://rivet.dev/docs/actors/request-handler)
+
+```ts @nocheck
+import { actor, queue } from "rivetkit";
+
+declare function verifyHmac(body: string, signature: string | null, secret: string): boolean;
+declare const WEBHOOK_SECRET: string;
+
+const webhookActor = actor({
+  queues: {
+    processWebhook: queue<unknown>(),
+  },
+
+  onRequest: async (c, req) => {
+    if (req.method !== "POST") {
+      return new Response("Method not allowed", { status: 405 });
+    }
+
+    const signature = req.headers.get("X-Hub-Signature-256");
+    const body = await req.text();
+
+    // Verify signature in app code
+    if (!verifyHmac(body, signature, WEBHOOK_SECRET)) {
+      return new Response("Invalid signature", { status: 401 });
+    }
+
+    const payload = JSON.parse(body);
+    // Process or enqueue for async processing
+    await c.queue.send("processWebhook", payload);
+    return new Response("Accepted", { status: 202 });
+  },
+
+  run: async (c) => {
+    for await (const msg of c.queue.iter()) {
+      // Idempotency: check if already processed using SQLite
+      // Process the webhook event
+      console.log("Processing webhook:", msg.body);
+    }
+  },
+});
+```
+
+### Behavioral Delta
+
+- Signature verification and deduplication are app-level concerns in Rivet. There is no built-in `getAgentByName()` routing helper.
+- Route webhook URLs to specific actor instances using actor keys in your app router.
+
+## Deploying
+
+Rivet actors can be deployed to any supported platform. See the [Connect docs](/docs/connect) to choose your deployment target.
+
+## Vendor, External, and Pattern-Based Features
+
+- **AI Model Integration** (vendor): Workers AI binding is Cloudflare-proprietary. Use the [Vercel AI SDK](https://sdk.vercel.ai/) (`ai` package) with any supported provider (OpenAI, Anthropic, Google, etc.) directly from your Rivet actors.
+- **AI Chat Agent** (vendor): Cloudflare's `AIChatAgent` base class is proprietary. Use Vercel AI SDK [`streamText`](https://sdk.vercel.ai/docs/reference/ai-sdk-core/stream-text) + [`useChat`](https://sdk.vercel.ai/docs/reference/ai-sdk-ui/use-chat) with actor WebSocket transport for equivalent streaming chat functionality.
+- **Browse the Web / Headless Browser** (vendor): Cloudflare's Browser Rendering API is platform-specific. Use [Browserbase](https://www.browserbase.com/), [Browserless](https://www.browserless.io/), or Playwright with a remote browser from your Rivet actors.
+- **Model Context Protocol (MCP)** (vendor): Cloudflare's managed MCP integration is proprietary. Use the [Model Context Protocol SDK](https://github.com/modelcontextprotocol/sdk) (`@modelcontextprotocol/sdk`) to self-host MCP server endpoints via the request handler and WebSocket handler.
+- **Email Routing** (vendor): Cloudflare Email Routing is a Cloudflare-specific service. Use [Resend](https://resend.com/), [SendGrid](https://sendgrid.com/), or [Postmark](https://postmarkapp.com/) and forward events into Rivet via HTTP or queues.
+- **x402 Payment Protocol** (external): Implement payment middleware at your API edge or gateway. This is not a Rivet Actor runtime feature.
+- **SSE / Streaming Responses** (pattern): Rivet handles real-time streaming via WebSocket connections instead of SSE. Replace SSE endpoints with WebSocket connections for equivalent functionality.
+
+### AI Model Integration Example
+
+#### Before (Cloudflare Workers AI)
+
+[Agents API](https://developers.cloudflare.com/agents/api-reference/agents-api/)
+
+```ts @nocheck
+import { Agent } from "agents";
+
+class AIAgent extends Agent {
+  async onRequest(request: Request): Promise<Response> {
+    const { messages } = await request.json() as { messages: unknown[] };
+
+    const response = await this.env.AI.run("@cf/meta/llama-3-8b-instruct", {
+      messages,
+    });
+
+    return Response.json(response);
+  }
+}
+```
+
+#### After (Rivet with Vercel AI SDK)
+
+[Actions](https://rivet.dev/docs/actors/actions)
+
+```ts @nocheck
+// Vercel AI SDK in a RivetKit actor
+import { actor } from "rivetkit";
+import { streamText } from "ai";
+import { openai } from "@ai-sdk/openai";
+
+const aiActor = actor({
+  state: { messages: [] as { role: string; content: string }[] },
+
+  actions: {
+    async chat(c, userMessage) {
+      c.state.messages.push({ role: "user", content: userMessage });
+
+      const result = await streamText({
+        model: openai("gpt-4o"),
+        messages: c.state.messages,
+      });
+
+      let fullResponse = "";
+      for await (const chunk of result.textStream) {
+        fullResponse += chunk;
+        // Stream chunks to connected clients in real time
+        c.broadcast("chunk", chunk);
+      }
+
+      c.state.messages.push({ role: "assistant", content: fullResponse });
+      c.broadcast("done", fullResponse);
+      return fullResponse;
+    },
+  },
+});
+```
+
+The Vercel AI SDK supports OpenAI, Anthropic, Google, Mistral, and many other providers through a unified interface. Swap the provider import to switch models without changing application logic.
+
+## Validation Checklist
+
+| Test item | Expected result | Proof |
+| --- | --- | --- |
+| Lifecycle hooks survive sleep/wake | `onCreate`/wake semantics hold across actor restarts | [actor-lifecycle.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-lifecycle.ts) |
+| Embedded SQLite CRUD works | Insert, select, update, delete, and transactions succeed | [actor-db.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-db.ts) |
+| Connection hibernation preserves state | Connection state survives sleep without extra hooks | [actor-conn-hibernation.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-conn-hibernation.ts) |
+| Raw HTTP routing works | `onRequest` handles custom paths and bodies | [raw-http.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/raw-http.ts) |
+| Raw WebSocket routing works | `onWebSocket` handles messages and path/query metadata | [raw-websocket.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/raw-websocket.ts) |
+| Queue retries work | Uncompleted messages retry and completion paths return durable status | [actor-queue.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-queue.ts) |
+| Scheduling fires correctly | Delayed and interval timers execute at expected times | [actor-schedule.ts](https://github.com/rivet-dev/rivet/blob/ba46891b1/rivetkit-typescript/packages/rivetkit/src/driver-test-suite/tests/actor-schedule.ts) |
+| SSE replacement uses WebSockets | Migration replaces SSE with WebSocket connections for real-time streaming | [request-handler.mdx](https://github.com/rivet-dev/rivet/blob/ba46891b1/website/src/content/docs/actors/request-handler.mdx) documents streaming via WebSockets |

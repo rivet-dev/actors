@@ -15,6 +15,7 @@ const cookbook = defineCollection({
 	schema: z.object({
 		title: z.string(),
 		description: z.string(),
+		icon: z.string().optional(),
 		templates: z.array(z.string()).optional(),
 	}),
 });

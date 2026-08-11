@@ -24,7 +24,11 @@ docker-stop:
 
 [group('skill-evals')]
 skill-eval name *args:
-	cd scripts/skill-evals && npx tsx src/index.ts --eval {{name}} {{args}}
+	cd scripts/skill-evals && ./node_modules/.bin/tsx src/index.ts --eval {{name}} {{args}}
+
+[group('skill-evals')]
+skill-evals *args:
+	cd scripts/skill-evals && ./node_modules/.bin/tsx src/index.ts {{args}}
 
 [group('skill-evals')]
 skill-eval-clean:

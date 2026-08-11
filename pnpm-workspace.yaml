@@ -1,4 +1,5 @@
 packages:
+  - .context/skill-eval-projects/*
   - engine
   - self-host/compose/template
   - engine/sdks/typescript/api-full
