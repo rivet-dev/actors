@@ -712,10 +712,10 @@ function ActorDetailsIframePath({
 						{bootTimedOut ? (
 							<div className="flex max-w-sm flex-col items-center gap-3">
 								<p>
-									Inspector UI didn't load. Check that the
+									Inspector didn't load. Check that the
 									actor is running and reachable.
 								</p>
-								<div className="flex flex-col items-center gap-2">
+								<div className="flex items-center gap-2">
 									<Button
 										size="sm"
 										onClick={() => {
@@ -729,20 +729,20 @@ function ActorDetailsIframePath({
 									>
 										Reload
 									</Button>
-									<Button
-										variant="ghost"
-										size="sm"
-										className="text-muted-foreground"
-										onClick={onFallbackToLegacy}
-									>
-										Use legacy inspector
-									</Button>
+									<WithTooltip
+										content="Older, less secure inspector. Use it only if this keeps failing to load."
+										trigger={
+											<Button
+												variant="ghost"
+												size="sm"
+												className="text-muted-foreground"
+												onClick={onFallbackToLegacy}
+											>
+												Use legacy inspector
+											</Button>
+										}
+									/>
 								</div>
-								<p className="text-xs text-muted-foreground/80">
-									The legacy inspector is an older, less
-									secure version. Only switch to it if the
-									inspector keeps failing to load.
-								</p>
 							</div>
 						) : (
 							<span>Connecting to inspector…</span>
