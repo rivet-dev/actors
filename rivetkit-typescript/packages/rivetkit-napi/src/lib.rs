@@ -97,6 +97,7 @@ fn anyhow_to_bridge_rivet_error_payload(error: anyhow::Error) -> serde_json::Val
 		"code": error.code(),
 		"message": error.message(),
 		"metadata": error.metadata(),
+		"rayId": bridge_context.and_then(|context| context.ray_id.as_deref()),
 		"public": public_,
 		"statusCode": status_code,
 		"actor": error.actor(),

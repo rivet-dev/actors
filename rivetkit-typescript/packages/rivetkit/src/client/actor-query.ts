@@ -67,6 +67,7 @@ export async function checkForSchedulingError(
 	actorId: string,
 	query: ActorQuery,
 	driver: EngineControlClient,
+	rayId?: string,
 ): Promise<ActorSchedulingError | null> {
 	const name = getActorNameFromQuery(query);
 
@@ -79,7 +80,13 @@ export async function checkForSchedulingError(
 				actorId,
 				error: actor.error,
 			});
-			return actorSchedulingError(group, code, actorId, actor.error);
+			return actorSchedulingError(
+				group,
+				code,
+				actorId,
+				actor.error,
+				rayId,
+			);
 		}
 	} catch (err) {
 		logger().warn({

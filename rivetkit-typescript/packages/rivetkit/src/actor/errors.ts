@@ -12,6 +12,8 @@ export interface RivetErrorOptions extends ErrorOptions {
 	public?: boolean;
 	/** Metadata associated with this error. */
 	metadata?: unknown;
+	/** Request identifier used to correlate this error with engine logs. */
+	rayId?: string;
 	/** Explicit HTTP status override for router responses. */
 	statusCode?: number;
 	/** Actor context associated with this error. */
@@ -31,6 +33,7 @@ export interface RivetErrorLike {
 	code: string;
 	message: string;
 	metadata?: unknown;
+	rayId?: string;
 	public?: boolean;
 	statusCode?: number;
 	actor?: ActorSpecifier;
@@ -59,6 +62,7 @@ function looksLikeRivetErrorOptions(
 		value !== null &&
 		("public" in value ||
 			"metadata" in value ||
+			"rayId" in value ||
 			"statusCode" in value ||
 			"actor" in value ||
 			"cause" in value)
@@ -94,6 +98,9 @@ export function isRivetErrorLike(
 		typeof error.code === "string" &&
 		"message" in error &&
 		typeof error.message === "string" &&
+		(!("rayId" in error) ||
+			error.rayId === undefined ||
+			typeof error.rayId === "string") &&
 		(!("__type" in error) || isTypedErrorTag(error.__type))
 	);
 }
@@ -128,6 +135,7 @@ export class RivetError extends Error {
 
 	public public: boolean;
 	public metadata?: unknown;
+	public readonly rayId?: string;
 	public statusCode: number;
 	public actor?: ActorSpecifier;
 	public readonly group: string;
@@ -161,6 +169,7 @@ export class RivetError extends Error {
 		this.code = code;
 		this.public = normalized.public ?? false;
 		this.metadata = normalized.metadata;
+		this.rayId = normalized.rayId;
 		this.statusCode = normalized.statusCode ?? (this.public ? 400 : 500);
 		this.actor = normalized.actor;
 	}
@@ -205,6 +214,7 @@ export function toRivetError(
 			public: error.public,
 			statusCode: error.statusCode,
 			metadata: error.metadata,
+			rayId: error.rayId,
 			actor: error.actor,
 			cause: error instanceof Error ? error.cause : undefined,
 		});
@@ -218,6 +228,7 @@ export function toRivetError(
 			public: fallback?.public,
 			statusCode: fallback?.statusCode,
 			metadata: fallback?.metadata,
+			rayId: fallback?.rayId,
 			actor: fallback?.actor,
 			cause: error instanceof Error ? error : undefined,
 		},
@@ -230,6 +241,7 @@ export function encodeBridgeRivetError(error: RivetErrorLike): string {
 		code: error.code,
 		message: error.message,
 		metadata: error.metadata,
+		rayId: error.rayId,
 		public: error.public,
 		statusCode: error.statusCode,
 		actor: error.actor,
@@ -272,6 +284,7 @@ export function decodeBridgeRivetError(value: string): RivetError | undefined {
 
 	return new RivetError(payload.group, payload.code, payload.message, {
 		metadata: payload.metadata,
+		rayId: payload.rayId,
 		public: payload.public,
 		statusCode: payload.statusCode,
 		actor: payload.actor ?? undefined,
@@ -303,6 +316,7 @@ export function internalError(
 			public: options?.public,
 			statusCode: options?.statusCode,
 			metadata: options?.metadata,
+			rayId: options?.rayId,
 			actor: options?.actor,
 			cause: options?.cause,
 		},
