@@ -1,0 +1,135 @@
+---
+title: "Actions"
+description: "Actions are how your backend, frontend, or other actors can communicate with actors."
+skill: true
+---
+
+Actions are very lightweight. They can be called thousands of times per second safely. Actions are executed via HTTP requests or via WebSockets if [using `.connect()`](/actors/docs/connections).
+
+For advanced use cases that require direct access to HTTP requests or WebSocket connections, see [raw HTTP and WebSocket handling](/actors/docs/fetch-and-websocket-handler).
+
+By default, actions run in parallel. If you need advanced control over concurrency, use [queues](/actors/docs/queues).
+
+## Writing Actions
+
+Actions are defined in the `actions` object when creating an actor:
+
+<CodeSnippet file="examples/docs/actors-actions/writing-actions.ts" />
+
+Each action receives a context object (commonly named `c`) as its first parameter, which provides access to state, connections, and other utilities. Additional parameters follow after that.
+
+### Nested Actions
+
+Nest actions to group related behavior:
+
+<CodeSnippet file="examples/docs/actors-actions/nested-actions.ts" />
+
+Clients use the same path, such as `handle.users.add("Ada")`. Low-level APIs and the Inspector use the dot-separated action name `users.add`.
+
+## Calling Actions
+
+Actions can be called in different ways depending on your use case:
+
+<Tabs>
+<Tab title="Frontend (createClient)">
+
+<CodeSnippet file="examples/docs/actors-actions/calling-frontend.ts" title="frontend.ts" />
+
+Learn more about [communicating with actors from the frontend](/actors/docs/communicating-between-actors).
+
+</Tab>
+<Tab title="Backend (registry.handler)">
+
+<CodeSnippet file="examples/docs/actors-actions/calling-backend.ts" title="server.ts" />
+
+Learn more about [communicating with actors from the backend](/actors/docs/communicating-between-actors).
+
+</Tab>
+<Tab title="Actor-to-Actor (c.client())">
+
+<CodeSnippet file="examples/docs/actors-actions/calling-actor.ts" title="actor.ts" />
+
+Learn more about [communicating between actors](/actors/docs/communicating-between-actors).
+
+</Tab>
+</Tabs>
+
+<Note>
+Calling actions from the client are async and require an `await`, even if the action itself is not async.
+</Note>
+
+### Type Safety
+
+The actor client includes type safety out of the box. When you use `createClient<typeof registry>()`, TypeScript automatically infers action parameter and return types:
+
+<CodeGroup>
+
+<CodeSnippet file="examples/docs/actors-actions/type-safety-index.ts" title="index.ts" />
+
+<CodeSnippet file="examples/docs/actors-actions/type-safety-client.ts" title="client.ts" />
+
+</CodeGroup>
+
+## Error Handling
+
+Actors provide robust error handling out of the box for actions.
+
+### User Errors
+
+`UserError` can be used to return rich error data to the client. You can provide:
+
+-   A human-readable message
+-   A machine-readable code that's useful for matching errors in a try-catch (optional)
+-   A metadata object for providing richer error context (optional)
+
+For example:
+
+<CodeGroup>
+
+<CodeSnippet file="examples/docs/actors-actions/user-error-actor.ts" title="actor.ts" />
+
+<CodeSnippet file="examples/docs/actors-actions/user-error-client.ts" title="client.ts" />
+
+</CodeGroup>
+
+{/* Read the documentation for `UserError` [here](https://jsr.io/@rivet-gg/actor/doc/~/UserError). */}
+
+### Internal Errors
+
+All other errors will return an error with the code `internal_error` to the client. This helps keep your application secure, as errors can sometimes expose sensitive information.
+
+## Schema Validation
+
+If passing data to an actor from the frontend, use a library like [Zod](https://zod.dev/) to validate input data.
+
+For example, to validate action parameters:
+
+<CodeSnippet file="examples/docs/actors-actions/schema-validation.ts" title="actor.ts" />
+
+## Streaming Data
+
+Actions have a single return value. To stream realtime data in response to an action, use [events](/actors/docs/events).
+
+## Canceling Long-Running Actions
+
+For operations that should be cancelable on-demand, create your own `AbortController`. Chain it with `c.abortSignal` so actor shutdown also cancels the operation.
+
+<CodeSnippet file="examples/docs/actors-actions/canceling-actions.ts" />
+
+See [Actor Shutdown Abort Signal](/actors/docs/lifecycle#actor-shutdown-abort-signal) for automatically canceling operations when the actor stops.
+
+## Using `ActionContext` Externally
+
+When writing complex logic for actions, you may want to extract parts of your implementation into separate helper functions. When doing this, you'll need a way to properly type the context parameter.
+
+Rivet provides the `ActionContextOf` utility type for exactly this purpose:
+
+<CodeSnippet file="examples/docs/actors-actions/action-context.ts" />
+
+See [types](/actors/docs/types) for more details on using `ActionContextOf` and other utility types.
+
+## Debugging
+
+- `GET /inspector/rpcs` lists all available actions on an actor.
+- `POST /inspector/action/:name` executes an action with JSON args and returns output.
+- In non-dev mode, inspector endpoints require authorization.

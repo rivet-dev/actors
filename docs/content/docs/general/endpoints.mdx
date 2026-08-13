@@ -1,0 +1,117 @@
+---
+title: "Endpoints"
+description: "Configure how your backend connects to Rivet and how clients reach your actors."
+skill: true
+---
+
+export const imgEndpointEnvVars = { src: "https://assets.rivet.dev/website/actors/docs/general/endpoints/endpoint-env-vars.png", width: 1792, height: 1210, format: "png" };
+
+## Local Development
+
+No configuration is needed for local development. RivetKit runs entirely on your local machine without any extra configuration to run Rivet Actors.
+
+## Production Deployment
+
+When deploying to production, you need to configure endpoints so your backend can communicate with Rivet control plane and clients can reach your actors.
+
+<img src={imgEndpointEnvVars.src} alt="Diagram showing Client connecting to Rivet, which connects to Your Backend" />
+
+### Private Endpoint
+
+The private endpoint tells your backend where to find the Rivet control plane.
+
+<Tabs>
+
+<Tab title="Environment Variable">
+
+```bash
+RIVET_ENDPOINT=https://my-namespace:sk_xxxxx@api.rivet.dev
+```
+
+</Tab>
+
+<Tab title="Config">
+
+<CodeSnippet file="examples/docs/general-endpoints/private-endpoint.ts" />
+
+</Tab>
+
+</Tabs>
+
+### Public Endpoint
+
+The public endpoint tells clients where to connect to reach your actors.
+
+This endpoint and token will be exposed to the internet. Use a public token (`pk_`), not your secret token (`sk_`).
+
+The public endpoint is only required if using the [serverless runtime mode](/actors/docs/general/runtime-modes#serverless) and if you have a frontend using RivetKit.
+
+<Tabs>
+
+<Tab title="Environment Variable">
+
+```bash
+RIVET_PUBLIC_ENDPOINT=https://my-namespace:pk_xxxxx@api.rivet.dev
+```
+
+</Tab>
+
+<Tab title="Config">
+
+<CodeSnippet file="examples/docs/general-endpoints/public-endpoint.ts" />
+
+</Tab>
+
+</Tabs>
+
+## Advanced
+
+### URL Auth Syntax
+
+Endpoint URLs support embedding namespace and token directly in the URL:
+
+```
+https://namespace:token@host/path
+```
+
+This is the recommended approach for simplicity. Alternatively, you can use separate environment variables:
+
+```bash
+RIVET_ENDPOINT=https://api.rivet.dev
+RIVET_NAMESPACE=my-namespace
+RIVET_TOKEN=sk_xxxxx
+```
+
+### Security
+
+In serverless mode, the private endpoint is used to validate that requests to `GET /api/rivet/start` are coming from your trusted Rivet endpoint. If the private endpoint is not configured, anyone can run a self-hosted instance of Rivet and connect to your backend from any endpoint.
+
+### How Clients Connect
+
+This flow applies to [serverless runtime mode](/actors/docs/general/runtime-modes#serverless). For [runner runtime mode](/actors/docs/general/runtime-modes#runner) or [clients configured to connect directly to Rivet](/actors/docs/clients/javascript), clients connect directly to Rivet and this metadata flow is not needed.
+
+When a client connects to your serverless application, it follows this flow:
+
+1. Client makes a request to `https://my-app.example.com/api/rivet/metadata`
+2. Your app returns the public endpoint configuration:
+   ```json
+   {
+     "clientEndpoint": "https://api.rivet.dev",
+     "clientNamespace": "my-namespace",
+     "clientToken": "pk_xxxxx"
+   }
+   ```
+3. Client caches these values and uses them for subsequent requests
+4. Client connects to `https://api.rivet.dev/gateway/{actor}`, which routes requests to your actors
+
+This indirection exists because Rivet acts as a gateway between clients and your actors. This is because Rivet handles routing, load balancing, and actor lifecycle management of actors.
+
+## Reference
+
+| Environment Variable | Config Option | Description |
+|---------------------|---------------|-------------|
+| `RIVET_ENDPOINT` | `endpoint` | Rivet control plane URL for your backend |
+| `RIVET_NAMESPACE` | `namespace` | Namespace for actor isolation |
+| `RIVET_TOKEN` | `token` | Authentication token for engine connection |
+| `RIVET_PUBLIC_ENDPOINT` | `serverless.publicEndpoint` | Client-facing endpoint |
+| `RIVET_PUBLIC_TOKEN` | `serverless.publicToken` | Client-facing token |

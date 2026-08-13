@@ -1,0 +1,29 @@
+name: Sync docs
+
+# Docs live here; rivet.dev publishes them. On merge to main this copies the
+# docs/ bundle into the website's vendor/actors and opens a PR there, which is also
+# what triggers the site rebuild.
+on:
+  push:
+    branches: [main]
+    paths: ["docs/**"]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rivet-dev/rivet-website/.github/actions/sync-docs@main
+        with:
+          product: actors
+          token: ${{ secrets.RIVET_WEBSITE_TOKEN }}
+          extra-paths: >-
+            examples/docs
+            examples/vercel-workflow
+            self-host/workers
+            self-host/control-plane
+            rivetkit-typescript/artifacts
+            rivetkit-typescript/packages/rivetkit/package.json
+            engine/artifacts/config-schema.json
+            rivetkit-openapi/openapi.json

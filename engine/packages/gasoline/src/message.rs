@@ -35,7 +35,7 @@ where
 		wrapper: PubsubMessageWrapper<'_>,
 	) -> WorkflowResult<Self> {
 		// Deserialize the body
-		let body = serde_json::from_str(wrapper.body.get())
+		let body = rivet_util::serde::json_from_str!(wrapper.body.get())
 			.map_err(WorkflowError::DeserializeMessageBody)?;
 
 		Ok(PubsubMessage {
@@ -51,7 +51,7 @@ where
 	pub(crate) fn deserialize_wrapper<'a>(
 		buf: &'a [u8],
 	) -> WorkflowResult<PubsubMessageWrapper<'a>> {
-		serde_json::from_slice(buf).map_err(WorkflowError::DeserializeMessage)
+		rivet_util::serde::json_from_slice!(buf).map_err(WorkflowError::DeserializeMessage)
 	}
 }
 

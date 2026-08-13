@@ -26,8 +26,12 @@ impl OwnedVersionedData for CommittedValue {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			2 => Ok(CommittedValue::V2(serde_bare::from_slice(payload)?)),
-			3 => Ok(CommittedValue::V3(serde_bare::from_slice(payload)?)),
+			2 => Ok(CommittedValue::V2(serde_bare::from_slice(
+				payload
+			)?)),
+			3 => Ok(CommittedValue::V3(serde_bare::from_slice(
+				payload
+			)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
@@ -89,8 +93,12 @@ impl OwnedVersionedData for CachedValue {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			2 => Ok(CachedValue::V2(serde_bare::from_slice(payload)?)),
-			3 => Ok(CachedValue::V3(serde_bare::from_slice(payload)?)),
+			2 => Ok(CachedValue::V2(serde_bare::from_slice(
+				payload
+			)?)),
+			3 => Ok(CachedValue::V3(serde_bare::from_slice(
+				payload
+			)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
@@ -153,8 +161,12 @@ impl OwnedVersionedData for AcceptedValue {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			2 => Ok(AcceptedValue::V2(serde_bare::from_slice(payload)?)),
-			3 => Ok(AcceptedValue::V3(serde_bare::from_slice(payload)?)),
+			2 => Ok(AcceptedValue::V2(serde_bare::from_slice(
+				payload
+			)?)),
+			3 => Ok(AcceptedValue::V3(serde_bare::from_slice(
+				payload
+			)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}

@@ -94,30 +94,6 @@ pub async fn setup(config: &Config, client_name: &str) -> Result<UpsPool> {
 
 			Arc::new(driver) as ups::PubSubDriverHandle
 		}
-		config::PubSub::PostgresNotify(pg) => {
-			tracing::debug!("creating postgres pubsub driver");
-
-			let (ssl_root_cert_path, ssl_client_cert_path, ssl_client_key_path) =
-				if let Some(ssl) = &pg.ssl {
-					(
-						ssl.root_cert_path.clone(),
-						ssl.client_cert_path.clone(),
-						ssl.client_key_path.clone(),
-					)
-				} else {
-					(None, None, None)
-				};
-
-			Arc::new(
-				ups::driver::postgres::PostgresDriver::connect(
-					pg.url.read().clone(),
-					ssl_root_cert_path,
-					ssl_client_cert_path,
-					ssl_client_key_path,
-				)
-				.await?,
-			) as ups::PubSubDriverHandle
-		}
 		config::PubSub::Memory(memory) => {
 			tracing::debug!(channel=%memory.channel, "creating memory pubsub driver");
 			Arc::new(ups::driver::memory::MemoryDriver::new(
@@ -128,7 +104,6 @@ pub async fn setup(config: &Config, client_name: &str) -> Result<UpsPool> {
 
 	let disable_memory_optimization = match config.pubsub() {
 		config::PubSub::Nats(nats) => nats.disable_memory_optimization,
-		config::PubSub::PostgresNotify(pg) => pg.disable_memory_optimization,
 		config::PubSub::Memory(memory) => memory.disable_memory_optimization,
 	};
 	Ok(ups::PubSub::new_with_memory_optimization(

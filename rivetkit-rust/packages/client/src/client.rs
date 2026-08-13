@@ -25,6 +25,8 @@ pub struct GetOrCreateOptions {
 	pub params: Option<JsonValue>,
 	pub create_in_region: Option<String>,
 	pub create_with_input: Option<JsonValue>,
+	/// Overrides the client's configured pool name for this actor if it is created.
+	pub pool_name: Option<String>,
 }
 
 #[derive(Default)]
@@ -32,6 +34,8 @@ pub struct CreateOptions {
 	pub params: Option<JsonValue>,
 	pub region: Option<String>,
 	pub input: Option<JsonValue>,
+	/// Overrides the client's configured pool name for this actor.
+	pub pool_name: Option<String>,
 }
 
 pub struct ClientConfig {
@@ -219,6 +223,7 @@ impl Client {
 				key: key,
 				input,
 				region,
+				pool_name: opts.pool_name,
 			},
 		};
 
@@ -236,7 +241,10 @@ impl Client {
 		let input = opts.input;
 		let _region = opts.region;
 
-		let actor_id = self.remote_manager.create_actor(name, &key, input).await?;
+		let actor_id = self
+			.remote_manager
+			.create_actor(name, &key, input, opts.pool_name)
+			.await?;
 
 		let get_query = ActorQuery::GetForId {
 			get_for_id: GetForIdRequest {

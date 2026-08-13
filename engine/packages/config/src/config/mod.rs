@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
 pub mod api_peer;
-pub mod api_public;
 pub mod auth;
 pub mod cache;
 pub mod clickhouse;
@@ -21,7 +20,6 @@ pub mod telemetry;
 pub mod topology;
 
 pub use api_peer::*;
-pub use api_public::*;
 pub use auth::*;
 pub use cache::*;
 pub use clickhouse::*;
@@ -75,9 +73,6 @@ pub struct Root {
 	pub guard: Option<Guard>,
 
 	#[serde(default)]
-	pub api_public: Option<ApiPublic>,
-
-	#[serde(default)]
 	pub api_peer: Option<ApiPeer>,
 
 	#[serde(default)]
@@ -122,7 +117,6 @@ impl Default for Root {
 		Root {
 			auth: None,
 			guard: None,
-			api_public: None,
 			api_peer: None,
 			pegboard: None,
 			logs: None,
@@ -144,11 +138,6 @@ impl Root {
 	pub fn guard(&self) -> &Guard {
 		static DEFAULT: LazyLock<Guard> = LazyLock::new(Guard::default);
 		self.guard.as_ref().unwrap_or(&DEFAULT)
-	}
-
-	pub fn api_public(&self) -> &ApiPublic {
-		static DEFAULT: LazyLock<ApiPublic> = LazyLock::new(ApiPublic::default);
-		self.api_public.as_ref().unwrap_or(&DEFAULT)
 	}
 
 	pub fn api_peer(&self) -> &ApiPeer {
@@ -196,17 +185,14 @@ impl Root {
 	}
 
 	pub fn validate_and_set_defaults(&mut self) -> Result<()> {
-		// Set default pubsub to Postgres if configured for database
-		if self.pubsub.is_none()
-			&& let Some(Database::Postgres(pg)) = &self.database
+		// When UDB runs on Postgres without an explicit NATS config, inherit the UPS NATS config if
+		// one is set. The presence of NATS is what selects UDB multi-node mode, so this lets a
+		// single `pubsub: nats` config drive both UPS and UDB across nodes.
+		if let Some(PubSub::Nats(nats)) = self.pubsub.clone()
+			&& let Some(Database::Postgres(pg)) = &mut self.database
+			&& pg.nats.is_none()
 		{
-			self.pubsub = Some(PubSub::PostgresNotify(pubsub::Postgres {
-				url: pg.url.clone(),
-				#[allow(deprecated)]
-				memory_optimization: None,
-				disable_memory_optimization: false,
-				ssl: pg.ssl.clone(),
-			}));
+			pg.nats = Some(nats);
 		}
 
 		self.pegboard().validate()?;

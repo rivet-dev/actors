@@ -1,0 +1,84 @@
+---
+title: "Environment Variables"
+description: "This page documents all environment variables that configure RivetKit behavior."
+skill: true
+---
+
+## Connection
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `RIVET_ENDPOINT` | Endpoint URL to connect to Rivet control plane. Supports [URL auth syntax](/actors/docs/general/endpoints#url-auth-syntax). |
+| `RIVET_TOKEN` | Authentication token for Rivet control plane |
+| `RIVET_NAMESPACE` | Namespace to use (default: "default") |
+
+## Public Endpoint
+
+These variables configure how clients connect to your actors.
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `RIVET_PUBLIC_ENDPOINT` | Public endpoint for client connections. Supports [URL auth syntax](/actors/docs/general/endpoints#url-auth-syntax). |
+| `RIVET_PUBLIC_TOKEN` | Public token for client authentication |
+
+## Runner Configuration
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `RIVET_POOL` | Pool name (default: "default") |
+| `RIVET_RUNNER_VERSION` | Version number for the runner. See [Versions & Upgrades](/actors/docs/versions). |
+| `RIVET_RUNNER_KIND` | Type of runner |
+| `RIVET_TOTAL_SLOTS` | Total actor slots available (default: 100000) |
+
+## Engine
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `RIVET_RUN_ENGINE` | Set to `1` to spawn the control plane process |
+| `RIVET_RUN_ENGINE_HOST` | Host to bind the spawned local engine process to. Defaults to `127.0.0.1`. |
+| `RIVET_RUN_ENGINE_PORT` | Port to bind the spawned local engine process to. Defaults to `6420`. |
+| `RIVET_RUN_ENGINE_VERSION` | Version of engine to download |
+
+## Inspector
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `RIVET_INSPECTOR_DISABLE` | Set to `1` to disable the inspector |
+
+## Metrics
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `_RIVET_METRICS_TOKEN` | Bearer token that gates the per-actor Prometheus `/metrics` endpoint. When unset, `/metrics` is disabled. |
+
+## Experimental
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `RIVET_EXPERIMENTAL_OTEL` | Set to `1` to enable experimental OTel tracing in Rivet Actors |
+
+## Storage
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `RIVETKIT_RUNTIME` | Runtime binding to use for RivetKit core: `auto`, `native`, or `wasm`. Defaults to `auto`. |
+| `RIVETKIT_STORAGE_PATH` | Overrides the default file-system storage path used by RivetKit when using the default driver. |
+
+## Lifecycle
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `RIVETKIT_RUNTIME_MODE` | Controls how `registry.start()` runs. Accepted values are `envoy` and `serverless`; any other explicit value errors. Defaults to `envoy`: opens a long-lived WebSocket to the control plane (Mode A). Set to `serverless` to bind an HTTP listener via `registry.listen()` (Mode B). |
+| `RIVETKIT_PUBLIC_DIR` | Directory of static assets to serve alongside the framework routes when calling `registry.listen()`. Used as a fallback when `opts.publicDir` is not passed. On auto-listen via `registry.start()`, defaults to `/public` when this env var is unset. |
+| `RIVET_PORT` | Port the listener binds when calling `registry.listen()` without an explicit `opts.port`. Must be an integer between 1 and 65535. Defaults to `3000`. |
+
+## Logging
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `RIVET_LOG_LEVEL` | Log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `silent` |
+| `RIVET_LOG_TARGET` | Set to `1` to include log target |
+| `RIVET_LOG_TIMESTAMP` | Set to `1` to include timestamps |
+| `RIVET_LOG_MESSAGE` | Set to `1` to include message formatting |
+| `RIVET_LOG_ERROR_STACK` | Set to `1` to include error stack traces |
+| `RIVET_LOG_HEADERS` | Set to `1` to log request headers |

@@ -59,14 +59,14 @@ impl OwnedVersionedData for VersionedPitrPolicy {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			1 => Ok(Self::V1(serde_bare::from_slice(payload)?)),
+			1 => Ok(Self::V1(rivet_util::serde::bare_from_slice!(payload)?)),
 			_ => bail!("invalid depot PitrPolicy version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			Self::V1(policy) => serde_bare::to_vec(&policy).map_err(Into::into),
+			Self::V1(policy) => rivet_util::serde::bare_to_vec!(&policy).map_err(Into::into),
 		}
 	}
 }
@@ -86,14 +86,14 @@ impl OwnedVersionedData for VersionedShardCachePolicy {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			1 => Ok(Self::V1(serde_bare::from_slice(payload)?)),
+			1 => Ok(Self::V1(rivet_util::serde::bare_from_slice!(payload)?)),
 			_ => bail!("invalid depot ShardCachePolicy version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			Self::V1(policy) => serde_bare::to_vec(&policy).map_err(Into::into),
+			Self::V1(policy) => rivet_util::serde::bare_to_vec!(&policy).map_err(Into::into),
 		}
 	}
 }

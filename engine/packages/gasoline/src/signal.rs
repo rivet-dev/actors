@@ -73,7 +73,7 @@ macro_rules! join_signal {
 					if name == <$types as gas::signal::Signal>::NAME {
 						std::result::Result::Ok(
 							Self::$names(
-								serde_json::from_str(body.get())
+								rivet_util::serde::json_from_str!(body.get())
 									.map_err(WorkflowError::DeserializeSignalBody)?
 							)
 						)

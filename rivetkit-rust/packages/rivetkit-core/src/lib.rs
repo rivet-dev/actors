@@ -12,6 +12,7 @@ pub mod inspector_bundle;
 pub mod metrics_endpoint;
 pub mod registry;
 pub mod runtime;
+pub(crate) mod serde_metrics;
 pub mod serverless;
 #[cfg(feature = "native-runtime")]
 pub mod serverless_http;
@@ -143,9 +144,7 @@ pub use actor::task::{
 	ActionDispatchResult, ActorTask, DispatchCommand, HttpDispatchResult, LifecycleCommand,
 	LifecycleEvent, LifecycleState,
 };
-pub use rivet_envoy_client::config::{
-	HTTP_BODY_STREAM_CHANNEL_CAPACITY, HttpRequestBodyStream, ResponseChunk,
-};
+pub use rivet_envoy_client::config::ResponseChunk;
 pub use actor::task_types::ShutdownKind;
 pub use actor::work_registry::{ActorWorkKind, ActorWorkPolicy};
 pub use error::ActorLifecycle;

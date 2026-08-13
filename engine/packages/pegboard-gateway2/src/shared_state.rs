@@ -160,11 +160,10 @@ pub struct SharedState(Arc<SharedStateInner>);
 
 impl SharedState {
 	pub fn new(config: &rivet_config::Config, ups: PubSub) -> Self {
-		metrics::prepopulate();
 		init_slow_ping_threshold_from_env();
 
 		let gateway_id = protocol::util::generate_gateway_id();
-		tracing::info!(gateway_id = %display_id(&gateway_id), "setting up shared state for gateway");
+		tracing::debug!(gateway_id = %display_id(&gateway_id), "setting up shared state for gateway");
 		let receiver_subject = GatewayReceiverSubject::new(gateway_id);
 
 		let pegboard_config = config.pegboard();
@@ -195,25 +194,7 @@ impl SharedState {
 		let self_clone = self.clone();
 		tokio::spawn(async move { self_clone.gc().await });
 
-		let self_clone = self.clone();
-		tokio::spawn(async move { self_clone.shutdown_watcher().await });
-
 		Ok(())
-	}
-
-	#[tracing::instrument(skip_all)]
-	async fn shutdown_watcher(&self) {
-		let mut term_signal = __rivet_runtime::TermSignal::get();
-		term_signal.recv().await;
-
-		let in_flight_aborted = self.in_flight_requests.len();
-		if in_flight_aborted > 0 {
-			metrics::SHUTDOWN_IN_FLIGHT_ABORTED_TOTAL.inc_by(in_flight_aborted as u64);
-		}
-		tracing::info!(
-			in_flight_aborted,
-			"gateway shutdown in-flight requests abandoned without close"
-		);
 	}
 
 	#[tracing::instrument(skip_all)]
@@ -661,7 +642,7 @@ impl InFlightRequestHandle {
 		// Cap retries so a permanently-gone receiver fails fast instead of pinning the
 		// request forever. Worst-case backoff total is ~19s, which stays under the default
 		// tunnel ping timeout (30s) so the ping path can take over if the receiver is truly lost.
-		let mut backoff = rivet_util::backoff::Backoff::new(6, Some(8), 100, 5);
+		let mut backoff = rivet_util::throttle::Backoff::new(6, Some(8), 100, 5);
 		let first_attempt_at = Instant::now();
 		let mut attempt = 0;
 		loop {

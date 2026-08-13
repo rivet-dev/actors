@@ -1,0 +1,252 @@
+---
+title: "Custom Inspector Tabs"
+description: "Ship your own UI tabs alongside a Rivet Actor — embedded directly in the dashboard inspector."
+skill: true
+---
+
+Custom inspector tabs let you embed your own UI directly in the Rivet
+dashboard, next to the built-in tabs. Declare a tab on your actor, point
+it at a folder of static files, and the dashboard picks it up
+automatically.
+
+Common uses:
+
+- Domain-specific debugging panels (queue depth, connection maps, log
+  filters).
+- Operational tools (admin buttons, drain controls, snapshot uploaders).
+- Any author-defined view that ships with your actor.
+
+A runnable example lives at
+[`examples/inspector-tabs`](https://github.com/rivet-dev/rivet/tree/main/examples/inspector-tabs).
+
+## Quickstart
+
+Declare a tab on your actor:
+
+<CodeSnippet file="examples/docs/actors-inspector-tabs/counter.ts" />
+
+Drop an `index.html` in the `source` directory:
+
+```html
+<!-- ./inspector-tabs/counter/index.html -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <link rel="stylesheet" href="../../tab.css" />
+  </head>
+  <body>
+    <h1>Counter: <span id="value">…</span></h1>
+    <script>
+      const SHELL_ORIGIN = (() => {
+        const raw =
+          new URLSearchParams(location.search).get("shellOrigin") ??
+          location.origin;
+        try {
+          return new URL(raw).origin;
+        } catch {
+          return location.origin;
+        }
+      })();
+      let token = null;
+
+      window.addEventListener("message", async (e) => {
+        if (e.origin !== SHELL_ORIGIN) return;
+        if (e.data?.type !== "init" || e.data?.v !== 1) return;
+        token = e.data.authToken;
+        const r = await fetch("../../state", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const { state } = await r.json();
+        document.getElementById("value").textContent = state.value;
+        document.documentElement.classList.toggle(
+          "dark",
+          (e.data.theme ?? "dark") === "dark",
+        );
+      });
+
+      window.parent.postMessage({ type: "ready", v: 1 }, SHELL_ORIGIN);
+    </script>
+  </body>
+</html>
+```
+
+Open the dashboard and the "Counter" tab appears alongside the built-ins.
+
+## Configuration
+
+Each entry in `inspector.tabs[]` is either a **custom tab** or a
+**hide modifier** for a built-in.
+
+### Custom tab
+
+```ts @nocheck
+{
+  id: string,         // URL-safe id: /^[A-Za-z0-9_-]+$/
+  label: string,      // Shown in the tab strip
+  source: string,     // Directory of static assets
+  icon?: string,      // Optional icon id
+}
+```
+
+- **`id`** — used as the URL segment and tab-strip key. Cannot collide
+  with a built-in id (`workflow`, `database`, `state`, `queue`,
+  `connections`, `console`).
+- **`source`** — directory of static files. The bytes you put there are
+  the bytes the browser sees. Point it at a Vite/webpack `dist/` and
+  any framework works (React, Vue, Svelte, vanilla — all fine).
+- **`icon`** — one of `workflow`, `database`, `state`, `queue`, `plug`,
+  `terminal`, `tag`, `logs`. Anything else falls back to a neutral icon.
+
+### Hide a built-in tab
+
+```ts @nocheck
+{
+  id: "workflow" | "database" | "state" | "queue" | "connections" | "console",
+  hidden: true,
+}
+```
+
+Use this to clean up the strip when the actor doesn't use a given
+subsystem — e.g. a counter actor with no queues:
+
+```ts
+inspector: { tabs: [{ id: "queue", hidden: true }] }
+```
+
+Misconfigurations (missing directory, duplicate id, invalid characters,
+empty label) throw at registry construction, so problems show up
+immediately.
+
+## Talking to the dashboard
+
+The tab loads in an iframe and communicates with the dashboard via
+`postMessage`. The contract is small.
+
+### From the dashboard
+
+The dashboard sends an `init` message on load and again whenever the
+inspector token rotates. Always overwrite the cached token when it
+arrives.
+
+```ts @nocheck
+{
+  type: "init",
+  v: 1,
+  actorId: string,
+  authToken: string,         // Per-actor inspector bearer token
+  theme?: "light" | "dark",
+  activeTab?: string,        // For multi-view tabs
+}
+```
+
+Multi-view tabs can read the optional `activeTab` field on `init` to
+seed their initial sub-view. The dashboard does not send a separate
+message when the user switches custom tabs — it navigates the iframe
+`src` instead, so the tab reloads and receives a fresh `init`.
+
+### From the tab
+
+Send `ready` once your message listener is registered:
+
+```ts @nocheck
+{ type: "ready", v: 1 }
+```
+
+If a fetch returns 401, the token has rotated. Ask the dashboard for a
+fresh one and wait for the next `init` — don't retry with the stale
+token:
+
+```ts @nocheck
+{ type: "token-refresh-needed", v: 1 }
+```
+
+### Security check
+
+Always reject messages whose `event.origin` doesn't match the
+`?shellOrigin=` URL parameter. Without this check, any page that frames
+your tab could forge an `init` and feed you a fake token.
+
+### TypeScript types
+
+If you build the tab with TypeScript, the message and response types
+are exported as types-only:
+
+<CodeSnippet file="examples/docs/actors-inspector-tabs/inspector-tab-types.ts" region="types" />
+
+## Reading state and calling actions
+
+The tab can hit any inspector endpoint with the supplied bearer token.
+Use relative paths so the tab doesn't need to know the control plane origin or
+actor id:
+
+```js
+fetch("../../state",            { headers: { Authorization: `Bearer ${token}` } });
+fetch("../../action/increment", { method: "POST", headers: { ... }, body: ... });
+fetch("../../rpcs",             { headers: { Authorization: `Bearer ${token}` } });
+fetch("../../connections",      { headers: { Authorization: `Bearer ${token}` } });
+fetch("../../queue",            { headers: { Authorization: `Bearer ${token}` } });
+```
+
+The action body shape is `{ args: [...] }` — the array is passed as
+positional arguments to the action.
+
+Full endpoint reference:
+[Debugging → Inspector Endpoints](/actors/docs/debugging#inspector-endpoints).
+
+For high-frequency UIs, prefer the inspector WebSocket
+(`/inspector/connect`) over polling.
+
+## Styling
+
+A shared stylesheet matching the dashboard's design tokens is served at
+`../../tab.css`:
+
+```html
+<link rel="stylesheet" href="../../tab.css" />
+```
+
+It defines `--rivet-*` tokens for colors, spacing, radius, and
+typography, plus sensible defaults so a bare tab looks at home without
+custom CSS:
+
+```css
+.my-card {
+  background:    var(--rivet-card);
+  color:         var(--rivet-foreground);
+  border:        1px solid var(--rivet-border);
+  border-radius: var(--rivet-radius-md);
+  padding:       var(--rivet-space-4);
+}
+```
+
+Toggle dark mode by adding the `dark` class to `<html>` — the dashboard
+sends the active theme in the `init` message.
+
+Color tokens come in both pre-wrapped (`--rivet-card`) and raw HSL
+(`--rivet-card-raw`) forms, so you can compose with alpha:
+
+```css
+.overlay { background: hsl(var(--rivet-background-raw) / 0.6); }
+```
+
+You're free to skip the stylesheet entirely and bring your own.
+
+## Security
+
+The tab runs in an iframe at the control plane origin and can call any
+inspector endpoint with the supplied token. Treat the bundle like any
+author code that ships with your actor:
+
+- **Don't inline secrets.** The bundle is fetchable by anyone who can
+  reach the actor.
+- **Always validate `event.origin`.** Reject inbound messages from
+  anywhere other than the dashboard origin.
+- **Never retry silently on 401.** Post `token-refresh-needed` and wait
+  for a fresh `init`.
+
+## See also
+
+- [Debugging](/actors/docs/debugging) — full inspector HTTP API
+- [Actions](/actors/docs/actions) — actions your tab can invoke
+- [State](/actors/docs/state) — state your tab can read
+- [`examples/inspector-tabs`](https://github.com/rivet-dev/rivet/tree/main/examples/inspector-tabs) — runnable example

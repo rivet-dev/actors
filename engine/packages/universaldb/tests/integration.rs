@@ -137,11 +137,9 @@ async fn test_database_options(db: &Database) {
 	use std::sync::Arc;
 	use std::sync::atomic::{AtomicU32, Ordering};
 	use universaldb::error::DatabaseError;
-	use universaldb::options::DatabaseOption;
 
 	// Test setting transaction retry limit
-	db.set_option(DatabaseOption::TransactionRetryLimit(5))
-		.unwrap();
+	db.txn_retry_limit(5).unwrap();
 
 	// Test that retry limit is respected by forcing conflicts
 	let conflict_counter = Arc::new(AtomicU32::new(0));
@@ -172,8 +170,7 @@ async fn test_database_options(db: &Database) {
 	assert_eq!(final_attempts, 3, "Should have taken 3 attempts");
 
 	// Now set a very low retry limit and verify it fails
-	db.set_option(DatabaseOption::TransactionRetryLimit(1))
-		.unwrap();
+	db.txn_retry_limit(1).unwrap();
 
 	let conflict_counter2 = Arc::new(AtomicU32::new(0));
 	let counter_clone2 = conflict_counter2.clone();
@@ -204,8 +201,7 @@ async fn test_database_options(db: &Database) {
 	assert!(attempts <= 2, "Should not retry more than limit + 1");
 
 	// Reset to a reasonable retry limit
-	db.set_option(DatabaseOption::TransactionRetryLimit(100))
-		.unwrap();
+	db.txn_retry_limit(100).unwrap();
 }
 
 async fn clear_test_namespace(db: &Database) -> Result<()> {

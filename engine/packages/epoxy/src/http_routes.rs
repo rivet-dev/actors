@@ -91,5 +91,5 @@ async fn handle_request(ctx: ApiCtx, request: protocol::Request) -> Result<Vec<u
 	metrics::record_request_result(kind_label, result_label);
 	perf_finish!(measure, fields: { result = %result_label });
 
-	serde_bare::to_vec(&res?).map_err(Into::into)
+	rivet_util::serde::bare_to_vec!(&res?).map_err(Into::into)
 }

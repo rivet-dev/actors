@@ -1,0 +1,209 @@
+---
+title: "Design Patterns"
+description: "Common patterns and anti-patterns for building scalable actor systems."
+skill: true
+---
+
+## How Actors Scale
+
+Actors are inherently scalable because of how they're designed:
+
+- **Isolated state:** Each actor manages its own private data. No shared state means no conflicts and no locks, so actors run concurrently without coordination.
+- **Actor-to-actor communication:** Actors interact through [actions](/actors/docs/actions) and [events](/actors/docs/events), so they don't need to coordinate access to shared data. This makes it easy to distribute them across machines.
+- **Small, focused units:** Each actor handles a limited scope (a single user, document, or chat room), so load naturally spreads across many actors rather than concentrating in one place.
+- **Horizontal scaling:** Adding more machines automatically distributes actors across them.
+
+These properties form the foundation for the patterns described below.
+
+## Actor Per Entity
+
+The core pattern is creating one actor per entity in your system. Each actor represents a single user, document, chat room, or other distinct object. This keeps actors small, independent, and easy to scale.
+
+**Good examples**
+
+- `User`: Manages user profile, preferences, and authentication
+- `Document`: Handles document content, metadata, and versioning
+- `ChatRoom`: Manages participants and message history
+
+**Bad examples**
+
+- `Application`: Too broad, handles everything
+- `DocumentWordCount`: Too granular, should be part of Document actor
+
+## Coordinator & Data Actors
+
+Actors scale by splitting state into isolated entities. However, it's common to need to track and coordinate actors in a central place. This is where coordinator actors come in.
+
+**Data actors** handle the main logic in your application. Examples: chat rooms, user sessions, game lobbies.
+
+**Coordinator actors** track other actors. Think of them as an index of data actors. Examples: a list of chat rooms, a list of active users, a list of game lobbies.
+
+**Example: Chat Room Coordinator**
+
+<Tabs>
+<Tab title="Actor">
+
+<CodeSnippet file="examples/docs/actors-design-patterns/coordinator-actor.ts" />
+
+</Tab>
+<Tab title="Client">
+
+<CodeSnippet file="examples/docs/actors-design-patterns/coordinator-client.ts" />
+
+</Tab>
+</Tabs>
+
+## Sharding
+
+Sharding splits a single actor's workload across multiple actors based on a key. Use this when one actor can't handle all the load or data for an entity.
+
+**How it works:**
+- Partition data using a shard key (user ID, region, time bucket, or random)
+- Requests are routed to shards based on the key
+- Shards operate independently without coordination
+
+**Example: Sharding by Time**
+
+<Tabs>
+<Tab title="Actor">
+
+<CodeSnippet file="examples/docs/actors-design-patterns/sharding-time-actor.ts" />
+
+</Tab>
+<Tab title="Client">
+
+<CodeSnippet file="examples/docs/actors-design-patterns/sharding-time-client.ts" />
+
+</Tab>
+</Tabs>
+
+**Example: Random Sharding**
+
+<Tabs>
+<Tab title="Actor">
+
+<CodeSnippet file="examples/docs/actors-design-patterns/random-sharding-actor.ts" />
+
+</Tab>
+<Tab title="Client">
+
+<CodeSnippet file="examples/docs/actors-design-patterns/random-sharding-client.ts" />
+
+</Tab>
+</Tabs>
+
+Choose shard keys that distribute load evenly. Note that cross-shard queries require coordination.
+
+## Fan-In & Fan-Out
+
+Fan-in and fan-out are patterns for distributing work and aggregating results.
+
+**Fan-Out**: One actor spawns work across multiple actors. Use for parallel processing or broadcasting updates.
+
+**Fan-In**: Multiple actors send results to one aggregator. Use for collecting results or reducing data.
+
+**Example: Map-Reduce**
+
+<Tabs>
+<Tab title="Actor">
+
+<CodeSnippet file="examples/docs/actors-design-patterns/map-reduce-actor.ts" />
+
+</Tab>
+<Tab title="Client">
+
+<CodeSnippet file="examples/docs/actors-design-patterns/map-reduce-client.ts" />
+
+</Tab>
+</Tabs>
+
+## Integrating With External Databases & APIs
+
+Actors can integrate with external resources like databases or external APIs.
+
+### Loading State
+
+Load external data during actor initialization using `createVars`. This keeps your actor's persisted state clean while caching expensive lookups.
+
+Use this when:
+
+- Fetching user profiles, configs, or permissions from a database
+- Loading data that changes externally and shouldn't be persisted
+- Caching expensive API calls or computations
+
+**Example: Loading User Profile**
+
+<Tabs>
+<Tab title="Actor">
+
+<CodeSnippet file="examples/docs/actors-design-patterns/loading-state-actor.ts" />
+
+</Tab>
+<Tab title="Client">
+
+<CodeSnippet file="examples/docs/actors-design-patterns/loading-state-client.ts" />
+
+</Tab>
+</Tabs>
+
+### Syncing State Changes
+
+Use `onStateChange` to automatically sync actor state changes to external resources. This hook runs after state changes are flushed, which is coalesced to once per event loop tick rather than once per individual field mutation.
+
+Use this when:
+
+- You need to mirror actor state in an external database
+- Triggering external side effects when state changes
+- Keeping external systems in sync with actor state
+
+**Example: Syncing to Database**
+
+<Tabs>
+<Tab title="Actor">
+
+<CodeSnippet file="examples/docs/actors-design-patterns/syncing-state-actor.ts" />
+
+</Tab>
+<Tab title="Client">
+
+<CodeSnippet file="examples/docs/actors-design-patterns/syncing-state-client.ts" />
+
+</Tab>
+</Tabs>
+
+`onStateChange` is called once per flush with the final coalesced state, ensuring external resources stay in sync. In the `updateEmail` example above, the two synchronous assignments produce a single `onStateChange` call.
+
+Do not mutate `c.state` inside `onStateChange`; re-entrant state mutation is rejected.
+
+## Anti-Patterns
+
+### "God" Actor
+
+Avoid creating a single actor that handles everything. This defeats the purpose of the actor model and creates a bottleneck.
+
+**Problem:**
+```ts
+import { actor } from "rivetkit";
+
+// Bad: one actor doing everything
+const app = actor({
+  state: { users: {}, orders: {}, inventory: {}, analytics: {} },
+  actions: {
+    createUser: (c, user) => { /* ... */ },
+    processOrder: (c, order) => { /* ... */ },
+    updateInventory: (c, item) => { /* ... */ },
+    trackEvent: (c, event) => { /* ... */ },
+  },
+});
+```
+
+**Solution:** Split into focused actors per entity (User, Order, Inventory, Analytics).
+
+### Actor-Per-Request
+
+Actors are designed to maintain state across multiple requests. Creating a new actor for each request wastes resources and loses the benefits of persistent state.
+
+**Problem:**
+<CodeSnippet file="examples/docs/actors-design-patterns/actor-per-request.ts" />
+
+**Solution:** Use actors for entities that persist (users, sessions, documents), not for one-off operations. For stateless request handling, use regular functions.

@@ -7,7 +7,10 @@ import {
 } from "@/components/deployment-logs";
 import { features } from "@/lib/features";
 import { ActorConfigTab } from "./actor-config-tab";
-import { useCloudNamespaceDataProvider } from "./data-provider";
+import {
+	useCloudNamespaceDataProvider,
+	useDataProvider,
+} from "./data-provider";
 import type { InspectorTabDescriptor } from "./inspector-tab-registry";
 import type { ActorId } from "./queries";
 
@@ -62,14 +65,13 @@ export function useHasManagedPool(): boolean {
  */
 function DeploymentLogsTab({ actorId }: { actorId: ActorId }) {
 	const provider = useCloudNamespaceDataProvider();
-	const logsRef = useRef<Rivet.LogStreamEvent.Log[]>([]);
 	const { data: actor } = useQuery(
-		provider.actorGeneralQueryOptions(actorId),
+		useDataProvider().actorQueryOptions(actorId),
 	);
-	const inactiveSince = actor?.destroyTs ?? actor?.sleepTs;
-	const before = inactiveSince
-		? new Date(inactiveSince.getTime() + 5_000).toISOString()
-		: undefined;
+	const logsRef = useRef<Rivet.LogStreamEvent.Log[]>([]);
+	// The actor's pool is its runner name selector; fall back to the default
+	// pool until the actor loads or when it has no explicit selector.
+	const pool = actor?.runnerNameSelector || "default";
 	return (
 		<div className="flex flex-col h-full">
 			<div className="flex items-center justify-end border-b shrink-0 px-2 py-1">
@@ -83,9 +85,8 @@ function DeploymentLogsTab({ actorId }: { actorId: ActorId }) {
 				<DeploymentLogs
 					project={provider.project}
 					namespace={provider.cloudNamespace}
-					pool="default"
+					pool={pool}
 					filter={`actor_id=${actorId}`}
-					before={before}
 					logsRef={logsRef}
 				/>
 			</div>

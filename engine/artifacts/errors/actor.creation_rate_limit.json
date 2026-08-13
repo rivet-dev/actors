@@ -1,0 +1,5 @@
+{
+  "code": "creation_rate_limit",
+  "group": "actor",
+  "message": "Too many actors created at once. Try again later."
+}

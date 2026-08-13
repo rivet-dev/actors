@@ -46,6 +46,7 @@ website/**/*.tsx linguist-generated=true
 website/**/*.js linguist-generated=true
 website/**/*.jsx linguist-generated=true
 examples/**/* linguist-generated=true
+container-runner/examples/unity-demo/**/*.cs linguist-generated=true
 
 frontend/**/*.ts linguist-generated=true
 frontend/**/*.tsx linguist-generated=true

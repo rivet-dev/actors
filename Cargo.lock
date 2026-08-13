@@ -1731,7 +1731,6 @@ name = "epoxy-protocol"
 version = "2.3.7"
 dependencies = [
  "anyhow",
- "rivet-util",
  "rivet-vbare-compiler",
  "serde",
  "serde_bare",
@@ -3938,6 +3937,7 @@ dependencies = [
  "futures-util",
  "gasoline",
  "lazy_static",
+ "moka",
  "namespace",
  "nix 0.30.1",
  "portpicker",
@@ -4010,6 +4010,7 @@ dependencies = [
  "rivet-pools",
  "rivet-runtime",
  "rivet-types",
+ "rivet-util",
  "rusqlite",
  "scc",
  "serde",
@@ -4147,6 +4148,7 @@ dependencies = [
  "rivet-runner-protocol",
  "rivet-runtime",
  "rivet-types",
+ "rivet-util",
  "scc",
  "serde",
  "serde_bare",
@@ -5337,7 +5339,6 @@ dependencies = [
  "anyhow",
  "gasoline",
  "rivet-runner-protocol",
- "rivet-util",
  "rivet-vbare-compiler",
  "serde",
  "serde_bare",
@@ -5516,7 +5517,6 @@ dependencies = [
  "anyhow",
  "hex",
  "rand 0.8.5",
- "rivet-util-serde",
  "rivet-vbare-compiler",
  "serde",
  "serde_bare",
@@ -5944,6 +5944,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rivet-universaldb-commit"
+version = "2.3.7"
+dependencies = [
+ "anyhow",
+ "rivet-vbare-compiler",
+ "serde",
+ "serde_bare",
+ "vbare",
+]
+
+[[package]]
 name = "rivet-ups-broadcast"
 version = "0.1.0"
 dependencies = [
@@ -5968,7 +5979,6 @@ version = "2.3.7"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "rivet-util",
  "rivet-vbare-compiler",
  "serde",
  "serde_bare",
@@ -8251,12 +8261,14 @@ version = "2.3.7"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "deadpool-postgres",
  "foundationdb-tuple",
  "futures-util",
  "hex",
  "lazy_static",
  "rand 0.8.5",
+ "rivet-async-nats",
  "rivet-config",
  "rivet-env",
  "rivet-metrics",
@@ -8264,17 +8276,21 @@ dependencies = [
  "rivet-postgres-util",
  "rivet-test-deps-docker",
  "rivet-tracing-utils",
+ "rivet-universaldb-commit",
  "rocksdb",
+ "scc",
  "serde",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "url",
  "uuid",
+ "vbare",
 ]
 
 [[package]]
@@ -8283,8 +8299,6 @@ version = "2.3.7"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
- "deadpool-postgres",
  "futures-util",
  "lazy_static",
  "rand 0.8.5",
@@ -8294,19 +8308,15 @@ dependencies = [
  "rivet-error",
  "rivet-metrics",
  "rivet-perf",
- "rivet-postgres-util",
  "rivet-test-deps-docker",
  "rivet-ups-protocol",
  "rivet-util",
  "scc",
  "serde",
  "serde_json",
- "sha2",
  "tabled",
  "tempfile",
  "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
  "tokio-util",
  "tracing",
  "tracing-subscriber",

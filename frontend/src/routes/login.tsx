@@ -42,17 +42,6 @@ function RouteComponent() {
 			<div className="flex flex-col items-center gap-6 w-full">
 				<Logo className="h-10 mb-4" />
 				<Login />
-				<p className="max-w-md text-center text-xs text-muted-foreground">
-					Looking for Rivet Enterprise Cloud? Visit{" "}
-					<a
-						href="https://hub.rivet.gg"
-						className="underline"
-						target="_blank"
-						rel="noreferrer"
-					>
-						hub.rivet.gg
-					</a>
-				</p>
 			</div>
 		</div>
 	);

@@ -31,6 +31,7 @@ export const CreateRequestSchema = z.object({
 	key: ActorKeySchema,
 	input: z.unknown().optional(),
 	region: z.string().optional(),
+	poolName: z.string().optional(),
 });
 
 export const GetForKeyRequestSchema = z.object({
@@ -43,6 +44,7 @@ export const GetOrCreateRequestSchema = z.object({
 	key: ActorKeySchema,
 	input: z.unknown().optional(),
 	region: z.string().optional(),
+	poolName: z.string().optional(),
 });
 
 export const ActorQuerySchema = z.union([

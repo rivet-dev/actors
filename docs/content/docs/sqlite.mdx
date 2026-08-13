@@ -1,0 +1,135 @@
+---
+title: "SQLite"
+description: "Use embedded SQLite in Rivet Actors with raw SQL queries."
+skill: true
+---
+
+For a high-level overview of where to store actor data, including when to use `c.state` versus SQLite, see [State & Storage](/actors/docs/state).
+
+## What is SQLite?
+
+- **Database per actor**: each actor instance has its own SQLite database, scoped to that actor.
+- **High performance**: Rivet Actors keep compute and storage together, so queries avoid network round trips to an external database.
+- **Larger-than-memory storage**: SQLite stores data on disk, so you can work with datasets that do not fit in actor memory.
+- **Embedded relational database**: use tables, indexes, and SQL queries directly inside actor logic.
+
+### SQLite features
+
+- **Indexes**: speed up lookups on frequently queried fields.
+- **Search and filtering**: use `WHERE`, `LIKE`, and `ORDER BY` instead of manual in-memory loops.
+- **Relationships**: use multiple tables and `JOIN` queries for connected data.
+- **Constraints**: use primary keys, unique constraints, and foreign keys for data integrity.
+- **Transactions**: apply multiple writes atomically when changes must stay consistent.
+
+## Raw SQL vs ORM (Drizzle)
+
+Rivet supports both raw SQL and [Drizzle](https://orm.drizzle.team/) for actor-local SQLite.
+
+Use **raw SQL** when you want direct query control and minimal abstraction.
+
+```ts @nocheck
+await c.db.execute("INSERT INTO todos (title) VALUES (?)", title);
+const rows = await c.db.execute("SELECT id, title FROM todos ORDER BY id DESC");
+```
+
+Use **Drizzle** when you want typed schema and typed query APIs.
+
+```ts @nocheck
+await c.vars.drizzle.insert(todos).values({ title });
+const rows = await c.vars.drizzle.select().from(todos).orderBy(desc(todos.id));
+```
+
+You can mix both in the same actor.
+
+For Drizzle setup, see [SQLite + Drizzle](/actors/docs/sqlite-drizzle).
+
+## Basic setup
+
+Define `db: db({ onMigrate })` on your actor, create your schema in `onMigrate`, and execute SQL with `c.db.execute(...)`.
+
+RivetKit wraps `onMigrate` in a SQLite savepoint, so migration steps are atomic. If `onMigrate` throws, all SQL run by that hook is rolled back before the actor starts.
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-sqlite/basic/index.ts" title="index.ts" />
+<CodeSnippet file="examples/docs/actors-sqlite/basic/client.ts" title="client.ts" />
+</CodeGroup>
+
+## Queries
+
+`c.db.execute(...)` returns an array of row objects for `SELECT` queries.
+
+```ts @nocheck
+const rows = await c.db.execute(
+  "SELECT id, title FROM todos WHERE title LIKE ?",
+  `%${query}%`,
+);
+```
+
+### Parameterized queries
+
+Use `?` placeholders for dynamic values and pass parameters in order after the SQL string.
+
+```ts @nocheck
+await c.db.execute("INSERT INTO todos (title) VALUES (?)", title);
+```
+
+You can also use named SQLite bindings by passing a single properties object.
+
+```ts @nocheck
+const rows = await c.db.execute(
+  "SELECT id, title FROM todos WHERE title = :title",
+  { title: "Write SQLite docs" },
+);
+```
+
+### Transactions
+
+Use transactions when multiple writes must succeed or fail together.
+
+```ts @nocheck
+await c.db.transaction(async (tx) => {
+  await tx.execute("INSERT INTO todos (title) VALUES (?)", title);
+  await tx.execute(
+    "INSERT INTO comments (todo_id, body) VALUES (last_insert_rowid(), ?)",
+    body,
+  );
+});
+```
+
+RivetKit commits when the callback resolves and rolls back when it throws. Other transactions and ordinary actor SQL queue in FIFO order until the callback finishes. Transactions have a 60-second safety timeout by default; increase it for legitimately long work with `{ timeout: 120_000 }`.
+
+Always use the callback's `tx` value inside the transaction. Starting another transaction or using the outer `c.db` from the callback waits behind the active transaction and eventually reaches the safety timeout; the resulting error points to this possible deadlock.
+
+Manual `BEGIN`/`COMMIT` calls remain supported for compatibility, but cannot protect against interleaving callers. RivetKit logs a warning recommending `db.transaction()`. Set `warnOnManualTransactions: false` in `db(...)` to disable the warning; the warning itself mentions this flag.
+
+## Queues
+
+It's recommended to use queues for mutations and actions for read-only queries. This is the same code structure as the basic setup, but mutation writes are routed through queues.
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-sqlite/queues/index.ts" title="index.ts" />
+<CodeSnippet file="examples/docs/actors-sqlite/queues/client.ts" title="client.ts" />
+</CodeGroup>
+
+## Debugging
+
+- `GET /inspector/summary` includes `isDatabaseEnabled` so you can confirm SQLite is configured.
+- `GET /inspector/database/schema` returns the tables and views discovered in the actor's SQLite database.
+- `GET /inspector/database/rows?table=...&limit=100&offset=0` returns paged rows for a specific table or view.
+- `POST /inspector/database/execute` lets you run ad-hoc SQL for debugging and data fixes with positional `args` or named `properties`.
+- Keep a small read-only action for quick query verification while debugging.
+- In non-dev mode, inspector endpoints require authorization.
+
+## Recommendations
+
+- Keep schema creation and migration steps in `onMigrate`; RivetKit runs them atomically inside a SQLite savepoint.
+- Use `?` placeholders for dynamic values.
+- Prefer queue-driven writes for ordered or background work.
+- Use transactions for related multi-step mutations when atomicity matters.
+
+## Read more
+
+- For raw SQL schemas, use `migrations` from `rivetkit/unstable/migrations` to apply numbered migrations and track them in a dedicated schema-version table. See [upgrading actor state](/actors/docs/versions#sqlite-recommended-for-complex-schemas).
+- [SQLite + Drizzle in Rivet Actors](/actors/docs/sqlite-drizzle)
+- [SQLite docs](https://sqlite.org/docs.html)
+- [SQLite SQL language reference](https://sqlite.org/lang.html)

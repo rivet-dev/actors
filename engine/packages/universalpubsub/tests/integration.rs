@@ -1,7 +1,7 @@
 use anyhow::Result;
 use futures_util::StreamExt;
 use rivet_error::RivetError;
-use rivet_test_deps_docker::{TestDatabase, TestPubSub};
+use rivet_test_deps_docker::TestPubSub;
 use std::{
 	sync::Arc,
 	time::{Duration, Instant},
@@ -120,29 +120,6 @@ async fn test_nats_no_responders() {
 }
 
 #[tokio::test]
-async fn test_postgres_no_responders() {
-	setup_logging();
-
-	let test_id = Uuid::new_v4();
-	let (db_config, docker_config) = TestDatabase::Postgres.config(test_id, 1).await.unwrap();
-	let mut docker = docker_config.unwrap();
-	docker.start().await.unwrap();
-	tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-	let rivet_config::config::Database::Postgres(pg) = db_config else {
-		unreachable!();
-	};
-	let url = pg.url.read().clone();
-
-	let driver = universalpubsub::driver::postgres::PostgresDriver::connect(url, None, None, None)
-		.await
-		.unwrap();
-	let pubsub = PubSub::new_with_memory_optimization(Arc::new(driver), false);
-
-	test_no_responders(&pubsub).await.unwrap();
-}
-
-#[tokio::test]
 async fn test_memory_no_responders() {
 	setup_logging();
 
@@ -156,52 +133,6 @@ async fn test_memory_no_responders() {
 	let pubsub = PubSub::new(Arc::new(driver));
 
 	test_no_responders(&pubsub).await.unwrap();
-}
-
-#[tokio::test]
-async fn test_postgres_driver_with_memory() {
-	setup_logging();
-
-	let test_id = Uuid::new_v4();
-	let (db_config, docker_config) = TestDatabase::Postgres.config(test_id, 1).await.unwrap();
-	let mut docker = docker_config.unwrap();
-	docker.start().await.unwrap();
-	tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-	let rivet_config::config::Database::Postgres(pg) = db_config else {
-		unreachable!();
-	};
-	let url = pg.url.read().clone();
-
-	let driver = universalpubsub::driver::postgres::PostgresDriver::connect(url, None, None, None)
-		.await
-		.unwrap();
-	let pubsub = PubSub::new_with_memory_optimization(Arc::new(driver), true);
-
-	test_inner(&pubsub).await;
-}
-
-#[tokio::test]
-async fn test_postgres_driver_without_memory() {
-	setup_logging();
-
-	let test_id = Uuid::new_v4();
-	let (db_config, docker_config) = TestDatabase::Postgres.config(test_id, 1).await.unwrap();
-	let mut docker = docker_config.unwrap();
-	docker.start().await.unwrap();
-	tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-	let rivet_config::config::Database::Postgres(pg) = db_config else {
-		unreachable!();
-	};
-	let url = pg.url.read().clone();
-
-	let driver = universalpubsub::driver::postgres::PostgresDriver::connect(url, None, None, None)
-		.await
-		.unwrap();
-	let pubsub = PubSub::new_with_memory_optimization(Arc::new(driver), false);
-
-	test_inner(&pubsub).await;
 }
 
 #[tokio::test]

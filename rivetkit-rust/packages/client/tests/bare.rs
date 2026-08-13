@@ -25,8 +25,8 @@ use reqwest::{
 	Method, Url,
 };
 use rivetkit_client::{
-	Client, ClientConfig, ConnectionStatus, EncodingKind, GetOptions, GetOrCreateOptions,
-	QueueSendStatus, SendAndWaitOpts, SendOpts,
+	Client, ClientConfig, ConnectionStatus, CreateOptions, EncodingKind, GetOptions,
+	GetOrCreateOptions, QueueSendStatus, SendAndWaitOpts, SendOpts,
 };
 use rivetkit_client_protocol as wire;
 use serde::{Deserialize, Serialize};
@@ -93,6 +93,43 @@ struct Actor {
 struct ActorResponse {
 	actor: Actor,
 	created: bool,
+}
+
+#[derive(Deserialize)]
+struct RunnerSelectorRequest {
+	name: String,
+	key: String,
+	runner_name_selector: String,
+}
+
+#[derive(Clone, Default)]
+struct RunnerSelectorState {
+	seen: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl RunnerSelectorState {
+	fn take(&self) -> Vec<String> {
+		std::mem::take(&mut self.seen.lock().unwrap())
+	}
+}
+
+async fn capture_runner_selector(
+	State(state): State<RunnerSelectorState>,
+	Json(request): Json<RunnerSelectorRequest>,
+) -> impl IntoResponse {
+	state
+		.seen
+		.lock()
+		.unwrap()
+		.push(request.runner_name_selector);
+	Json(ActorResponse {
+		actor: Actor {
+			actor_id: "actor-1",
+			name: request.name,
+			key: request.key,
+		},
+		created: true,
+	})
 }
 
 #[tokio::test]
@@ -609,6 +646,167 @@ fn gateway_url_uses_query_backed_get_or_create_target() {
 	assert!(params
 		.get("rvt-input")
 		.is_some_and(|value| !value.is_empty()));
+}
+
+#[tokio::test]
+async fn create_sends_per_call_pool_name_as_runner_name_selector() {
+	let state = RunnerSelectorState::default();
+	let app = Router::new()
+		.route("/actors", post(capture_runner_selector))
+		.with_state(state.clone());
+
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let addr = listener.local_addr().unwrap();
+	let server = tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	});
+
+	let client = Client::new(
+		ClientConfig::new(endpoint(addr))
+			.namespace("ns")
+			.pool_name("config-pool")
+			.disable_metadata_lookup(true),
+	);
+	client
+		.create(
+			"counter",
+			vec!["k".to_owned()],
+			CreateOptions {
+				pool_name: Some("call-pool".to_owned()),
+				..Default::default()
+			},
+		)
+		.await
+		.unwrap();
+
+	assert_eq!(state.take(), vec!["call-pool".to_owned()]);
+
+	server.abort();
+}
+
+#[tokio::test]
+async fn create_falls_back_to_config_pool_name() {
+	let state = RunnerSelectorState::default();
+	let app = Router::new()
+		.route("/actors", post(capture_runner_selector))
+		.with_state(state.clone());
+
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let addr = listener.local_addr().unwrap();
+	let server = tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	});
+
+	let client = Client::new(
+		ClientConfig::new(endpoint(addr))
+			.namespace("ns")
+			.pool_name("config-pool")
+			.disable_metadata_lookup(true),
+	);
+	client
+		.create("counter", vec!["k".to_owned()], CreateOptions::default())
+		.await
+		.unwrap();
+
+	assert_eq!(state.take(), vec!["config-pool".to_owned()]);
+
+	server.abort();
+}
+
+#[tokio::test]
+async fn get_or_create_sends_per_call_pool_name_as_runner_name_selector() {
+	let state = RunnerSelectorState::default();
+	let app = Router::new()
+		.route("/actors", put(capture_runner_selector))
+		.with_state(state.clone());
+
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let addr = listener.local_addr().unwrap();
+	let server = tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	});
+
+	let client = Client::new(
+		ClientConfig::new(endpoint(addr))
+			.namespace("ns")
+			.pool_name("config-pool")
+			.disable_metadata_lookup(true),
+	);
+	let actor = client
+		.get_or_create(
+			"counter",
+			vec!["k".to_owned()],
+			GetOrCreateOptions {
+				pool_name: Some("call-pool".to_owned()),
+				..Default::default()
+			},
+		)
+		.unwrap();
+	// Resolving the handle to an actor ID triggers the PUT /actors request
+	// that carries runner_name_selector.
+	actor.resolve().await.unwrap();
+
+	assert_eq!(state.take(), vec!["call-pool".to_owned()]);
+
+	server.abort();
+}
+
+#[tokio::test]
+async fn get_or_create_falls_back_to_config_pool_name() {
+	let state = RunnerSelectorState::default();
+	let app = Router::new()
+		.route("/actors", put(capture_runner_selector))
+		.with_state(state.clone());
+
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let addr = listener.local_addr().unwrap();
+	let server = tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	});
+
+	let client = Client::new(
+		ClientConfig::new(endpoint(addr))
+			.namespace("ns")
+			.pool_name("config-pool")
+			.disable_metadata_lookup(true),
+	);
+	let actor = client
+		.get_or_create("counter", vec!["k".to_owned()], GetOrCreateOptions::default())
+		.unwrap();
+	// Resolving the handle to an actor ID triggers the PUT /actors request
+	// that carries runner_name_selector.
+	actor.resolve().await.unwrap();
+
+	assert_eq!(state.take(), vec!["config-pool".to_owned()]);
+
+	server.abort();
+}
+
+#[test]
+fn gateway_url_get_or_create_uses_per_call_pool_name() {
+	let client = Client::new(
+		ClientConfig::new("http://127.0.0.1:6420")
+			.namespace("ns")
+			.pool_name("config-pool")
+			.disable_metadata_lookup(true),
+	);
+	let actor = client
+		.get_or_create(
+			"chat room",
+			vec!["tenant".to_owned()],
+			GetOrCreateOptions {
+				pool_name: Some("call-pool".to_owned()),
+				..Default::default()
+			},
+		)
+		.unwrap();
+
+	let url = Url::parse(&actor.gateway_url().unwrap()).unwrap();
+	let params = query_params(&url);
+	assert_eq!(
+		params.get("rvt-runner").map(String::as_str),
+		Some("call-pool")
+	);
 }
 
 #[tokio::test]

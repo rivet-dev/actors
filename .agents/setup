@@ -2,6 +2,7 @@
 set -euo pipefail
 
 node_version=22.17.1
+rust_toolchain=1.91.1
 
 if ! command -v node >/dev/null || ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)'; then
 	echo "Installing Node.js v${node_version}..."
@@ -19,7 +20,18 @@ if ! command -v node >/dev/null || ! node -e 'process.exit(Number(process.versio
 	rm -f "/tmp/${archive}"
 fi
 
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+
+if ! command -v rustup >/dev/null; then
+	echo "Installing Rust toolchain ${rust_toolchain}..."
+	curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+		https://sh.rustup.rs \
+		| sh -s -- -y --profile minimal --default-toolchain "$rust_toolchain"
+else
+	echo "Ensuring Rust toolchain ${rust_toolchain} is installed..."
+	rustup toolchain install "$rust_toolchain" --profile minimal
+	rustup default "$rust_toolchain"
+fi
 
 echo "Enabling the repository's pinned pnpm version..."
 corepack enable --install-directory "$HOME/.local/bin"

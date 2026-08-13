@@ -28,18 +28,24 @@ impl OwnedVersionedData for ToClientMk2 {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			4 => Ok(ToClientMk2::V4(serde_bare::from_slice(payload)?)),
-			5 => Ok(ToClientMk2::V5(serde_bare::from_slice(payload)?)),
-			6 | 7 => Ok(ToClientMk2::V7(serde_bare::from_slice(payload)?)),
+			4 => Ok(ToClientMk2::V4(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
+			5 => Ok(ToClientMk2::V5(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
+			6 | 7 => Ok(ToClientMk2::V7(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			ToClientMk2::V4(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			ToClientMk2::V5(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			ToClientMk2::V7(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			ToClientMk2::V4(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			ToClientMk2::V5(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			ToClientMk2::V7(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 
@@ -421,19 +427,25 @@ impl OwnedVersionedData for ToServerMk2 {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			4 => Ok(ToServerMk2::V4(serde_bare::from_slice(payload)?)),
+			4 => Ok(ToServerMk2::V4(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
 			// v5 and v6 have the same ToServer binary format
-			5 | 6 => Ok(ToServerMk2::V6(serde_bare::from_slice(payload)?)),
-			7 => Ok(ToServerMk2::V7(serde_bare::from_slice(payload)?)),
+			5 | 6 => Ok(ToServerMk2::V6(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
+			7 => Ok(ToServerMk2::V7(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			ToServerMk2::V4(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			ToServerMk2::V6(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			ToServerMk2::V7(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			ToServerMk2::V4(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			ToServerMk2::V6(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			ToServerMk2::V7(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 
@@ -1008,16 +1020,20 @@ impl OwnedVersionedData for ToRunnerMk2 {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			4 => Ok(ToRunnerMk2::V4(serde_bare::from_slice(payload)?)),
-			5 | 6 | 7 => Ok(ToRunnerMk2::V7(serde_bare::from_slice(payload)?)),
+			4 => Ok(ToRunnerMk2::V4(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
+			5 | 6 | 7 => Ok(ToRunnerMk2::V7(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			ToRunnerMk2::V4(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			ToRunnerMk2::V7(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			ToRunnerMk2::V4(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			ToRunnerMk2::V7(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 
@@ -1211,18 +1227,18 @@ impl OwnedVersionedData for ToClient {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			1 => Ok(ToClient::V1(serde_bare::from_slice(payload)?)),
-			2 => Ok(ToClient::V2(serde_bare::from_slice(payload)?)),
-			3 => Ok(ToClient::V3(serde_bare::from_slice(payload)?)),
+			1 => Ok(ToClient::V1(rivet_util::serde::bare_from_slice!(payload)?)),
+			2 => Ok(ToClient::V2(rivet_util::serde::bare_from_slice!(payload)?)),
+			3 => Ok(ToClient::V3(rivet_util::serde::bare_from_slice!(payload)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			ToClient::V1(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			ToClient::V2(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			ToClient::V3(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			ToClient::V1(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			ToClient::V2(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			ToClient::V3(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 
@@ -1561,18 +1577,18 @@ impl OwnedVersionedData for ToServer {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			1 => Ok(ToServer::V1(serde_bare::from_slice(payload)?)),
-			2 => Ok(ToServer::V2(serde_bare::from_slice(payload)?)),
-			3 => Ok(ToServer::V3(serde_bare::from_slice(payload)?)),
+			1 => Ok(ToServer::V1(rivet_util::serde::bare_from_slice!(payload)?)),
+			2 => Ok(ToServer::V2(rivet_util::serde::bare_from_slice!(payload)?)),
+			3 => Ok(ToServer::V3(rivet_util::serde::bare_from_slice!(payload)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			ToServer::V1(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			ToServer::V2(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			ToServer::V3(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			ToServer::V1(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			ToServer::V2(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			ToServer::V3(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 
@@ -1894,14 +1910,14 @@ impl OwnedVersionedData for ToRunner {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			1 | 2 | 3 => Ok(ToRunner::V3(serde_bare::from_slice(payload)?)),
+			1 | 2 | 3 => Ok(ToRunner::V3(rivet_util::serde::bare_from_slice!(payload)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			ToRunner::V3(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			ToRunner::V3(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 
@@ -1939,16 +1955,16 @@ impl OwnedVersionedData for ToGateway {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			1 | 2 | 3 => Ok(ToGateway::V3(serde_bare::from_slice(payload)?)),
-			4 | 5 | 6 | 7 => Ok(ToGateway::V7(serde_bare::from_slice(payload)?)),
+			1 | 2 | 3 => Ok(ToGateway::V3(rivet_util::serde::bare_from_slice!(payload)?)),
+			4 | 5 | 6 | 7 => Ok(ToGateway::V7(rivet_util::serde::bare_from_slice!(payload)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			ToGateway::V3(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			ToGateway::V7(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			ToGateway::V3(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
+			ToGateway::V7(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 
@@ -2044,16 +2060,24 @@ impl OwnedVersionedData for ToServerlessServer {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			1 | 2 | 3 => Ok(ToServerlessServer::V3(serde_bare::from_slice(payload)?)),
-			4 | 5 | 6 | 7 => Ok(ToServerlessServer::V7(serde_bare::from_slice(payload)?)),
+			1 | 2 | 3 => Ok(ToServerlessServer::V3(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
+			4 | 5 | 6 | 7 => Ok(ToServerlessServer::V7(rivet_util::serde::bare_from_slice!(
+				payload
+			)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			ToServerlessServer::V3(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			ToServerlessServer::V7(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			ToServerlessServer::V3(data) => {
+				rivet_util::serde::bare_to_vec!(&data).map_err(Into::into)
+			}
+			ToServerlessServer::V7(data) => {
+				rivet_util::serde::bare_to_vec!(&data).map_err(Into::into)
+			}
 		}
 	}
 
@@ -2123,16 +2147,24 @@ impl OwnedVersionedData for ActorCommandKeyData {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			4 => Ok(ActorCommandKeyData::V4(serde_bare::from_slice(payload)?)),
-			5 | 6 | 7 => Ok(ActorCommandKeyData::V7(serde_bare::from_slice(payload)?)),
+			4 => Ok(ActorCommandKeyData::V4(
+				rivet_util::serde::bare_from_slice!(payload)?,
+			)),
+			5 | 6 | 7 => Ok(ActorCommandKeyData::V7(
+				rivet_util::serde::bare_from_slice!(payload)?,
+			)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			ActorCommandKeyData::V4(data) => serde_bare::to_vec(&data).map_err(Into::into),
-			ActorCommandKeyData::V7(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			ActorCommandKeyData::V4(data) => {
+				rivet_util::serde::bare_to_vec!(&data).map_err(Into::into)
+			}
+			ActorCommandKeyData::V7(data) => {
+				rivet_util::serde::bare_to_vec!(&data).map_err(Into::into)
+			}
 		}
 	}
 

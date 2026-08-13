@@ -1,11 +1,13 @@
 use anyhow::Result;
 use futures_util::TryStreamExt;
+use gas::prelude::*;
 use rivet_envoy_protocol as protocol;
 use rivet_guard_core::websocket_handle::WebSocketReceiver;
 use std::sync::{
 	Arc,
 	atomic::{AtomicU64, Ordering},
 };
+use std::time::Duration;
 use tokio::sync::{Mutex, watch};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -14,6 +16,7 @@ use crate::shared_state::{InFlightRequestHandle, display_id};
 
 #[tracing::instrument(name = "ws_to_tunnel_task", skip_all)]
 pub async fn task(
+	ctx: StandaloneCtx,
 	in_flight_req: InFlightRequestHandle,
 	ws_rx: Arc<Mutex<WebSocketReceiver>>,
 	ingress_bytes: Arc<AtomicU64>,
@@ -21,9 +24,27 @@ pub async fn task(
 ) -> Result<LifecycleResult> {
 	let mut ws_rx = ws_rx.lock().await;
 
+	// Leaky bucket rate limit on consuming ws messages
+	let mut rate_limit = rivet_util::throttle::RateLimiter::new(
+		rivet_util::throttle::RateLimitMethod::LeakyBucket {
+			requests: ctx
+				.config()
+				.pegboard()
+				.gateway_websocket_rate_limit_requests(),
+			drip_rate: Duration::from_millis(
+				ctx.config()
+					.pegboard()
+					.gateway_websocket_rate_limit_drip_rate_ms(),
+			),
+		},
+	);
+
 	loop {
 		tokio::select! {
-			res = ws_rx.try_next() => {
+			res = async {
+				rate_limit.acquire().await;
+				ws_rx.try_next().await
+			} => {
 				if let Some(msg) = res? {
 					ingress_bytes.fetch_add(msg.len() as u64, Ordering::AcqRel);
 

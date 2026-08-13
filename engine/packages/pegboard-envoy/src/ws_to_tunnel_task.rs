@@ -45,6 +45,13 @@ use crate::{
 
 const MAX_REMOTE_SQL_BIND_BYTES: usize = 128 * 1024;
 
+/// Max number of pages a single `get_pages` request may ask for. Each requested page number is ~4
+/// bytes on the wire but forces the engine to fetch and materialize up to a full 4 KiB page inside
+/// one UDB transaction, so an uncapped list is a large cost-asymmetry amplifier from an untrusted
+/// runner. Sized well above observed production read batches (max ~1024 pages); the commit path has
+/// its own lower cap (`MAX_COMMIT_DIRTY_PAGES`) since writes batch smaller than reads.
+const MAX_GET_PAGES_PER_REQUEST: usize = 8192;
+
 /// Wall-clock threshold above which a single handle_message invocation is logged as a head-of-line
 /// blocking risk. The ws_to_tunnel_task loop is strictly serial per envoy, so any handler that
 /// spends longer than this delays every subsequent WS message from the same envoy (including
@@ -461,9 +468,30 @@ pub async fn task_inner(
 	let mut term_signal = rivet_runtime::TermSignal::get();
 	let mut task_manager = TaskManager::new(ctx.clone(), conn.clone());
 
+	// Leaky bucket rate limit on consuming envoy ws messages. The envoy connection multiplexes
+	// every actor on a runner, so this bounds the rate at which a single untrusted runner can drive
+	// engine work (task spawns, KV/SQLite ops). Reads are paused while empty, applying TCP
+	// backpressure to the runner rather than dropping protocol messages.
+	let mut rate_limit = rivet_util::throttle::RateLimiter::new(
+		rivet_util::throttle::RateLimitMethod::LeakyBucket {
+			requests: ctx
+				.config()
+				.pegboard()
+				.envoy_websocket_rate_limit_requests(),
+			drip_rate: Duration::from_micros(
+				ctx.config()
+					.pegboard()
+					.envoy_websocket_rate_limit_drip_rate_us(),
+			),
+		},
+	);
+
 	loop {
 		tokio::select! {
-			recv = recv_msg(&mut ws_rx, &mut ws_to_tunnel_abort_rx, &mut term_signal) => {
+			recv = async {
+				rate_limit.acquire().await;
+				recv_msg(&mut ws_rx, &mut ws_to_tunnel_abort_rx, &mut term_signal).await
+			} => {
 				let branch_start = Instant::now();
 				let branch_result: Result<Option<LifecycleResult>> = async {
 					match recv? {
@@ -1461,6 +1489,16 @@ async fn handle_sqlite_get_pages(
 	conn: &Conn,
 	request: protocol::SqliteGetPagesRequest,
 ) -> Result<protocol::SqliteGetPagesResponse> {
+	if request.pgnos.len() > MAX_GET_PAGES_PER_REQUEST {
+		return Ok(protocol::SqliteGetPagesResponse::SqliteErrorResponse(
+			sqlite_protocol_error_response(&format!(
+				"sqlite get_pages requested {} pages, exceeding limit {}",
+				request.pgnos.len(),
+				MAX_GET_PAGES_PER_REQUEST,
+			)),
+		));
+	}
+
 	validate_sqlite_actor_for_request(ctx, conn, &request.actor_id, request.expected_generation)
 		.await?;
 

@@ -929,21 +929,23 @@ impl SubCommand {
 										// A v2 entry roundtrips byte-identically through the v2
 										// schema. v3 entries either fail to deserialize as v2 or
 										// re-serialize to different bytes, so they are ignored.
-										let v2_entry: proto_v2::ChangelogEntry =
-											match serde_bare::from_slice(entry.value()) {
-												Ok(v) => v,
-												Err(_) => {
-													v3_count += 1;
-													continue;
-												}
-											};
-										let reserialized = match serde_bare::to_vec(&v2_entry) {
-											Ok(b) => b,
+										let v2_entry: proto_v2::ChangelogEntry = match rivet_util::serde::bare_from_slice!(
+											entry.value()
+										) {
+											Ok(v) => v,
 											Err(_) => {
 												v3_count += 1;
 												continue;
 											}
 										};
+										let reserialized =
+											match rivet_util::serde::bare_to_vec!(&v2_entry) {
+												Ok(b) => b,
+												Err(_) => {
+													v3_count += 1;
+													continue;
+												}
+											};
 										if reserialized != entry.value() {
 											v3_count += 1;
 											continue;

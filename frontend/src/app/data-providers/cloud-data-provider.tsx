@@ -180,7 +180,11 @@ export const createGlobalContext = () => {
 							org: opts.organization,
 						},
 					);
-					return response.managedPools;
+					// Hide tearing-down pools from switchers and resolution,
+					// matching `rivet pool list`.
+					return response.managedPools.filter(
+						(pool) => pool.status !== "destroying",
+					);
 				},
 				...no404Retry(),
 			});
@@ -1186,6 +1190,25 @@ export const createProjectContext = ({
 				},
 			});
 		},
+		deleteCurrentProjectManagedPoolMutationOptions() {
+			return mutationOptions({
+				mutationKey: [organization, project, "managed-pool", "delete"],
+				mutationFn: async ({
+					namespace,
+					pool,
+				}: {
+					namespace: string;
+					pool: string;
+				}) => {
+					return await client.managedPools.delete(
+						project,
+						namespace,
+						pool,
+						{ org: organization },
+					);
+				},
+			});
+		},
 	};
 };
 
@@ -1404,6 +1427,22 @@ export const createNamespaceContext = ({
 						namespace,
 						pool,
 						{ ...request, org: parent.organization },
+					);
+				},
+			});
+		},
+
+		deleteCurrentNamespaceManagedPoolMutationOptions() {
+			return mutationOptions({
+				mutationKey:
+					parent.deleteCurrentProjectManagedPoolMutationOptions()
+						.mutationKey,
+				mutationFn: async ({ pool }: { pool: string }) => {
+					return await parent.client.managedPools.delete(
+						parent.project,
+						namespace,
+						pool,
+						{ org: parent.organization },
 					);
 				},
 			});

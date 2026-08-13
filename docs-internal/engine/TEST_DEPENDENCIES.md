@@ -13,7 +13,6 @@ Configure backends via environment variables:
 
 - `RIVET_TEST_PUBSUB`: Choose pub/sub backend
   - `nats` - Runs NATS in Docker
-  - `postgres_notify` - PostgreSQL in Docker
   - `memory` - In-memory channels (default)
 
 - `RUST_LOG`: Enable debug logs to see container lifecycle details

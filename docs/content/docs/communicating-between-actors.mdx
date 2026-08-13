@@ -1,0 +1,47 @@
+---
+title: "Communicating Between Actors"
+description: "Learn how actors can call other actors and share data"
+skill: true
+---
+
+Actors can communicate with each other using the server-side actor client, enabling complex workflows and data sharing between different actor instances.
+
+<Note>
+We recommend reading the [clients documentation](/actors/docs/clients) first. This guide focuses specifically on communication between actors.
+</Note>
+
+## Using the Server-Side Actor Client
+
+The server-side actor client allows actors to call other actors within the same registry. Access it via `c.client()` in your actor context:
+
+<Note>
+If two actors call each other and their return types are inferred from the other actor's response, you may hit circular type errors (`TS2322`, `TS2722`, or `c.state` becoming `unknown`). Fix this by writing explicit return types on those actions.
+</Note>
+
+<CodeSnippet file="examples/docs/actors-communicating-between-actors/server-side-client.ts" />
+
+## Use Cases and Patterns
+
+### Actor Orchestration
+
+Use a coordinator actor to manage complex workflows:
+
+<CodeSnippet file="examples/docs/actors-communicating-between-actors/actor-orchestration.ts" />
+
+### Data Aggregation
+
+Collect data from multiple actors:
+
+<CodeSnippet file="examples/docs/actors-communicating-between-actors/data-aggregation.ts" />
+
+### Event-Driven Architecture
+
+Use connections to listen for events from other actors:
+
+<CodeSnippet file="examples/docs/actors-communicating-between-actors/event-driven.ts" />
+
+### Batch Operations
+
+Process multiple items in parallel:
+
+<CodeSnippet file="examples/docs/actors-communicating-between-actors/batch-operations.ts" />

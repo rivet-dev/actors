@@ -72,7 +72,7 @@ impl<'a, S: Serialize + DeserializeOwned> LoopBuilder<'a, S> {
 
 				(loop_event.iteration, state, output, None)
 			} else {
-				let state_val = serde_json::value::to_raw_value(&state)
+				let state_val = rivet_util::serde::json_to_raw_value!(&state)
 					.map_err(WorkflowError::SerializeLoopOutput)?;
 
 				// Clone data to move into future
@@ -219,7 +219,7 @@ impl<'a, S: Serialize + DeserializeOwned> LoopBuilder<'a, S> {
 							if iteration % commit_interval.unwrap_or(DEFAULT_LOOP_COMMIT_INTERVAL)
 								== 0
 							{
-								let state_val = serde_json::value::to_raw_value(&state)
+								let state_val = rivet_util::serde::json_to_raw_value!(&state)
 									.map_err(WorkflowError::SerializeLoopOutput)?;
 
 								// Clone data to move into future
@@ -251,9 +251,9 @@ impl<'a, S: Serialize + DeserializeOwned> LoopBuilder<'a, S> {
 						Loop::Break(res) => {
 							iteration += 1;
 
-							let state_val = serde_json::value::to_raw_value(&state)
+							let state_val = rivet_util::serde::json_to_raw_value!(&state)
 								.map_err(WorkflowError::SerializeLoopOutput)?;
-							let output_val = serde_json::value::to_raw_value(&res)
+							let output_val = rivet_util::serde::json_to_raw_value!(&res)
 								.map_err(WorkflowError::SerializeLoopOutput)?;
 
 							// Commit loop output and final state to db. Note that we don't defer this because

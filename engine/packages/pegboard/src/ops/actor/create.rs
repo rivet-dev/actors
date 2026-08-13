@@ -1,7 +1,15 @@
 use anyhow::{Context, Result};
 use gas::prelude::*;
+use moka::future::Cache;
 use rivet_api_util::{Method, request_remote_datacenter};
 use rivet_types::actors::{Actor, CrashPolicy};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+use tokio::sync::Mutex;
+
+const RATE_LIMITER_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+static RATE_LIMITERS: OnceLock<Cache<Id, Arc<Mutex<rivet_util::throttle::RateLimiter>>>> =
+	OnceLock::new();
 
 #[derive(Debug)]
 pub struct Input {
@@ -29,6 +37,32 @@ pub struct Output {
 
 #[operation]
 pub async fn pegboard_actor_create(ctx: &OperationCtx, input: &Input) -> Result<Output> {
+	let rate_limit = RATE_LIMITERS
+		.get_or_init(|| {
+			Cache::builder()
+				.max_capacity(10_000)
+				.time_to_idle(RATE_LIMITER_CACHE_TTL)
+				.build()
+		})
+		.entry(input.namespace_id)
+		.or_insert_with(async {
+			let pegboard_config = ctx.config().pegboard();
+			Arc::new(Mutex::new(rivet_util::throttle::RateLimiter::new(
+				rivet_util::throttle::RateLimitMethod::LeakyBucket {
+					requests: pegboard_config.actor_create_rate_limit_requests(),
+					drip_rate: Duration::from_millis(
+						pegboard_config.actor_create_rate_limit_drip_rate_ms(),
+					),
+				},
+			)))
+		})
+		.await;
+
+	// Limit actor creation per namespace id
+	if !rate_limit.value().lock().await.try_acquire() {
+		return Err(crate::errors::Actor::CreationRateLimit.build());
+	}
+
 	// Set up subscriptions before dispatching workflow
 	let (
 		mut create_sub,

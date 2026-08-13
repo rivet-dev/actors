@@ -1,0 +1,157 @@
+---
+title: "Queues & Run Loops"
+description: "Use actor-local durable queues for serial run loops and request/response workflows."
+skill: true
+---
+
+## What are queues?
+
+- **Realtime**: messages are delivered to a live actor as soon as possible.
+- **Durable**: messages are persisted and survive actor sleep/restart.
+- **Request/response**: clients can wait for a queue completion response.
+- **Scalable**: queues absorb large bursts and handle heavy backpressure safely.
+- **Local per actor**: each actor instance has its own queue storage (scoped by actor key/id).
+
+Queues are commonly referred to as "mailboxes" in other actor frameworks.
+
+## What are queues good for?
+
+- Great for any task that changes actor state.
+- Helps avoid race conditions by handling work in order.
+- Makes complex behavior easier to organize.
+
+## Basic queue
+
+This is the default pattern. Define queue names in `queues`, process them in `run`, and publish from the client with `handle.send(...)`.
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-queues/basic/index.ts" title="index.ts" />
+<CodeSnippet file="examples/docs/actors-queues/basic/client.ts" title="client.ts" />
+</CodeGroup>
+
+## Completable messages
+
+Use this when you want explicit completion/ack semantics but do not need to return data.
+
+- `message.complete()` resolves a sender waiting on `wait: true` (or `enqueueAndWait`). It does not change durability: messages are removed from queue storage when they are received, not when they are completed.
+- If processing fails before `message.complete()`, the message is not redelivered, and any waiting sender times out instead of receiving a completion.
+- `status: "timedOut"` means sender timeout elapsed before `message.complete(...)`.
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-queues/completable/index.ts" title="index.ts" />
+<CodeSnippet file="examples/docs/actors-queues/completable/client.ts" title="client.ts" />
+</CodeGroup>
+
+## Request/reply pattern
+
+Use this when the sender needs data back from queued work.
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-queues/request-reply/index.ts" title="index.ts" />
+<CodeSnippet file="examples/docs/actors-queues/request-reply/client.ts" title="client.ts" />
+</CodeGroup>
+
+## Queue messages from within an actor
+
+Queueing is useful from inside actor logic too, not just from clients.
+
+- Use actions as entrypoints, then enqueue into the run loop to keep mutations serialized.
+- You can also call `c.queue.send(...)` from other parts of `run` when needed.
+- `c.queue.send(...)` confirms durable enqueue. It does not wait for processing to finish.
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-queues/from-actor/index.ts" title="index.ts" />
+<CodeSnippet file="examples/docs/actors-queues/from-actor/client.ts" title="client.ts" />
+</CodeGroup>
+
+## Defining queue schemas
+
+You can define queue types with `queue<TMessage, TComplete>()` or with schema objects. Schema objects support [Standard Schema](https://standardschema.dev/) validators, including [Zod](https://zod.dev/).
+
+<CodeSnippet file="examples/docs/actors-queues/schemas.ts" title="index.ts" />
+
+## Pull messages with `next` and `nextBatch`
+
+Use `next` when you want to wait for one queue message.
+Use `nextBatch` when you want to wait for multiple queue messages.
+
+- Waits until messages are available unless timeout is hit.
+- Omit `timeout` to wait indefinitely.
+
+<CodeSnippet file="examples/docs/actors-queues/next-batch.ts" title="index.ts" />
+
+## Poll messages
+
+Use `tryNext` when you need one non-blocking read.
+Use `tryNextBatch` for non-blocking batch reads.
+
+- Returns immediately and never waits.
+
+<CodeSnippet file="examples/docs/actors-queues/poll.ts" title="index.ts" />
+
+## Abort signals
+
+Use `signal` when your receive loop needs external cancellation semantics in addition to actor shutdown behavior.
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-queues/abort-signals/index.ts" title="index.ts" />
+<CodeSnippet file="examples/docs/actors-queues/abort-signals/client.ts" title="client.ts" />
+</CodeGroup>
+
+## Multiple queues
+
+Multiple queues let you separate message flows by purpose. By default, receive calls race across all queues when `names` is not specified. In this pattern, prompt messages run through a streaming loop while stop messages act as control signals on a separate receive path.
+
+Use `iter({ names: ["prompt"] })` as the main stream and `next({ names: ["stop"] })` as a stop signal.
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-queues/multiple-queues/index.ts" title="index.ts" />
+<CodeSnippet file="examples/docs/actors-queues/multiple-queues/client.ts" title="client.ts" />
+</CodeGroup>
+
+## Sleeping behavior
+
+If an actor has a `run` handler, it does not sleep while that handler is actively doing work. It only can sleep when the run loop is blocked waiting for queue entries (for example inside `iter(...)` or `next(...)`).
+
+This means you can run normal code in `run` without worrying about sleep interrupting it mid-call.
+
+## Debugging
+
+- `GET /inspector/queue?limit=50` returns queue size and pending message metadata.
+- `GET /inspector/summary` includes `queueSize` for quick queue health checks.
+- `POST /queue/:name` with `wait: true` is useful to verify completable/request-response behavior.
+- In non-dev mode, inspector endpoints require authorization.
+
+## Recommendations
+
+- Actions are for getting data, queue entries are for mutating data.
+- Implement connection auth in `onBeforeConnect`. See [Authentication](/actors/docs/authentication).
+- Route most state changes through one queue loop so ordering stays predictable.
+- If you need more complex multi-step run loops, consider using workflows.
+- Use `c.aborted` and `c.abortSignal` for actor shutdown. Use your own `AbortController` for earlier loop cancellation.
+- Add `timeout` when callers need bounded wait behavior.
+- Use `wait: true` only when the caller actually needs a response.
+
+## Pitfalls
+
+### Avoid `wait: true` between actors
+
+`wait: true` blocks the sender's run loop until the receiver finishes. Between actors, this adds unnecessary overhead and risks deadlocks, especially if the target actor needs to communicate back. If an actor sends a `wait: true` message to *itself*, it is a guaranteed deadlock because the run loop is already busy processing the current message.
+
+Reserve `wait: true` for external callers (HTTP handlers, CLI tools, client apps). For actor-to-actor communication, send a queue message to the other actor without `wait: true`, then have that actor send a queue message back when the work is done.
+
+## Tips
+
+### Message TTL
+
+Every queue message includes a `createdAt` timestamp. Use this to skip or discard stale messages in your run loop:
+
+<CodeSnippet file="examples/docs/actors-queues/message-ttl.ts" title="index.ts" />
+
+### Delayed delivery
+
+Use [`c.schedule`](/actors/docs/schedule) to enqueue messages at a future time instead of processing them immediately:
+
+<CodeSnippet file="examples/docs/actors-queues/delayed-delivery.ts" title="index.ts" />
+
+See [Schedule](/actors/docs/schedule) for the full scheduling API.

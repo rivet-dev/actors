@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::secret::Secret;
 
+use super::super::pubsub::Nats;
+
 #[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PostgresSsl {
@@ -47,6 +49,15 @@ pub struct Postgres {
 	/// SSL configuration options
 	#[serde(default)]
 	pub ssl: Option<PostgresSsl>,
+
+	/// NATS configuration for UniversalDB multi-node mode.
+	///
+	/// When set, UniversalDB runs in multi-node mode and uses NATS for follower-to-leader commit
+	/// transport instead of an in-process resolver. When absent, UniversalDB runs single-node.
+	/// If unset but the UPS pubsub is configured for NATS, this is inherited from that config at
+	/// startup (see `Root::validate_and_set_defaults`).
+	#[serde(default)]
+	pub nats: Option<Nats>,
 }
 
 impl Default for Postgres {
@@ -54,6 +65,7 @@ impl Default for Postgres {
 		Self {
 			url: Secret::new("postgresql://postgres:postgres@127.0.0.1:5432/postgres".into()),
 			ssl: None,
+			nats: None,
 		}
 	}
 }

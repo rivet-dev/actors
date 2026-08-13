@@ -1,0 +1,23 @@
+name: Rivet Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+concurrency:
+  group: rivet-preview-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rivet-preview:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: rivet-dev/preview-namespace-action@v1
+        with:
+          platform: vercel
+          rivet-token: ${{ secrets.RIVET_CLOUD_TOKEN }}
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}

@@ -25,13 +25,6 @@ lazy_static::lazy_static! {
 		"Number of subject entries in the memory driver.",
 		*REGISTRY
 	).unwrap();
-	// Postgres driver metrics
-	pub static ref POSTGRES_SUBSCRIPTION_COUNT: IntGauge = register_int_gauge_with_registry!(
-		"ups_postgres_subscription_count",
-		"Number of subscription entries in the postgres driver.",
-		*REGISTRY
-	).unwrap();
-
 	// Message metrics
 	pub static ref MESSAGE_RECV_COUNT: IntCounterVec = register_int_counter_vec_with_registry!(
 		"ups_message_recv_count",

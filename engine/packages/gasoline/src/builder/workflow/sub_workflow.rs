@@ -155,7 +155,7 @@ where
 			}
 
 			// Serialize input
-			let input_val = serde_json::value::to_raw_value(input)
+			let input_val = rivet_util::serde::json_to_raw_value!(input)
 				.map_err(WorkflowError::SerializeWorkflowOutput)?;
 
 			let actual_sub_workflow_id = ctx
@@ -228,7 +228,7 @@ where
 		// Err for version mismatch
 		self.ctx.compare_version("sub workflow", self.version)?;
 
-		let input_val = serde_json::value::to_raw_value(&input)
+		let input_val = rivet_util::serde::json_to_raw_value!(&input)
 			.map_err(WorkflowError::SerializeWorkflowInput)?;
 		let mut branch = self
 			.ctx

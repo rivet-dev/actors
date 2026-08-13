@@ -95,7 +95,7 @@ impl Drop for PerfMeasure {
 
 		let elapsed = self.start.elapsed();
 		let _guard = self.span.enter();
-		tracing::warn!(
+		tracing::debug!(
 			name = self.name,
 			elapsed_ms = PerfMeasure::__elapsed_ms(elapsed),
 			"PerfMeasure dropped without finish() - measurement discarded",

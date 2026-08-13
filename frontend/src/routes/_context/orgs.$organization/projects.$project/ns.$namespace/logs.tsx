@@ -1,10 +1,20 @@
 import type { Rivet } from "@rivet-gg/cloud";
 import { faPause, faPlay, Icon } from "@rivet-gg/icons";
 import { useInfiniteQuery, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link, redirect } from "@tanstack/react-router";
+import {
+	createFileRoute,
+	Link,
+	redirect,
+	useNavigate,
+} from "@tanstack/react-router";
 import { startTransition, useRef, useState } from "react";
 import { z } from "zod";
 import { Content } from "@/app/layout";
+import {
+	PoolSwitcher,
+	poolHeaderText,
+	resolvePoolName,
+} from "@/app/pool-switcher";
 import { Button, H1, Skeleton } from "@/components";
 import {
 	useCloudNamespaceDataProvider,
@@ -22,6 +32,7 @@ export const Route = createFileRoute(
 )({
 	validateSearch: z.object({
 		search: z.string().optional(),
+		pool: z.string().optional(),
 	}),
 	component: RouteComponent,
 	beforeLoad: ({ params }) => {
@@ -32,11 +43,17 @@ export const Route = createFileRoute(
 			});
 		}
 	},
-	loader: async ({ context }) => {
+	loaderDeps: ({ search }) => ({ pool: search.pool }),
+	loader: async ({ context, deps }) => {
 		const dataProvider = context.dataProvider;
+		// Prefetch the pool resolved from `?pool=` so a deep link to a non-default
+		// pool doesn't refetch client-side after the loader settles.
+		const pools = await context.queryClient.ensureQueryData(
+			dataProvider.currentNamespaceManagedPoolsQueryOptions(),
+		);
 		await context.queryClient.prefetchQuery(
 			dataProvider.currentNamespaceManagedPoolQueryOptions({
-				pool: "default",
+				pool: resolvePoolName(pools, deps.pool),
 				safe: true,
 			}),
 		);
@@ -45,12 +62,20 @@ export const Route = createFileRoute(
 });
 
 function RouteComponent() {
-	const { namespace, project } = Route.useParams();
+	const params = Route.useParams();
+	const { namespace, project } = params;
 	const dataProvider = useCloudNamespaceDataProvider();
+	const navigate = useNavigate();
+
+	const { data: pools = [] } = useSuspenseQuery(
+		dataProvider.currentNamespaceManagedPoolsQueryOptions(),
+	);
+	const { pool: poolParam, search: initialSearch } = Route.useSearch();
+	const selectedPool = resolvePoolName(pools, poolParam);
 
 	const { data: pool } = useSuspenseQuery(
 		dataProvider.currentNamespaceManagedPoolQueryOptions({
-			pool: "default",
+			pool: selectedPool,
 			safe: true,
 		}),
 	);
@@ -65,7 +90,6 @@ function RouteComponent() {
 		0,
 	);
 
-	const { search: initialSearch } = Route.useSearch();
 	const [search, setSearch] = useState(initialSearch ?? "");
 	const [isPaused, setIsPaused] = useState(false);
 	const [region, setRegion] = useState<string>("all");
@@ -81,7 +105,7 @@ function RouteComponent() {
 					</p>
 					<Link
 						to="/orgs/$organization/projects/$project/ns/$namespace"
-						params={Route.useParams()}
+						params={params}
 					>
 						<Button variant="outline" size="sm">
 							Go back
@@ -97,7 +121,24 @@ function RouteComponent() {
 			<div className="flex flex-col h-full">
 				<div className="pt-2 px-6 mx-auto w-full">
 					<div className="flex justify-between items-center px-0 py-4">
-						<H1>Logs</H1>
+						<div className="flex items-center gap-1.5">
+							<H1>{poolHeaderText(pools, "Logs", "Logs")}</H1>
+							{pools.length > 1 ? (
+								<PoolSwitcher
+									pools={pools}
+									value={selectedPool}
+									onChange={(name) =>
+										navigate({
+											to: ".",
+											search: (old) => ({
+												...old,
+												pool: name,
+											}),
+										})
+									}
+								/>
+							) : null}
+						</div>
 					</div>
 
 					<p className="mb-6 text-muted-foreground">
@@ -149,7 +190,7 @@ function RouteComponent() {
 							<DeploymentLogs
 								project={project}
 								namespace={namespace}
-								pool="default"
+								pool={selectedPool}
 								filter={search || undefined}
 								region={region === "all" ? undefined : region}
 								paused={isPaused}

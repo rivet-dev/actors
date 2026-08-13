@@ -7,7 +7,7 @@ use hyper::header::HeaderName;
 use rivet_api_builder::{ErrorResponse, RawErrorResponse};
 use rivet_error::{INTERNAL_ERROR, RivetError};
 use rivet_util::Id;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
 use url::Url;
 
@@ -19,7 +19,7 @@ const X_RIVET_TARGET: HeaderName = HeaderName::from_static("x-rivet-target");
 const X_RIVET_ACTOR: HeaderName = HeaderName::from_static("x-rivet-actor");
 const X_RIVET_TOKEN: HeaderName = HeaderName::from_static("x-rivet-token");
 
-// In-flight requests counter
+// In-flight requests counter (semaphore)
 pub(crate) struct InFlightCounter {
 	count: usize,
 	max: usize,
@@ -41,43 +41,6 @@ impl InFlightCounter {
 
 	pub(crate) fn release(&mut self) {
 		self.count = self.count.saturating_sub(1);
-	}
-}
-
-// Rate limiter
-pub(crate) struct RateLimiter {
-	requests_remaining: u64,
-	reset_time: Instant,
-	requests_limit: u64,
-	period: Duration,
-}
-
-impl RateLimiter {
-	pub(crate) fn new(requests: u64, period_seconds: u64) -> Self {
-		Self {
-			requests_remaining: requests,
-			reset_time: Instant::now() + Duration::from_secs(period_seconds),
-			requests_limit: requests,
-			period: Duration::from_secs(period_seconds),
-		}
-	}
-
-	pub(crate) fn try_acquire(&mut self) -> bool {
-		let now = Instant::now();
-
-		// Check if we need to reset the counter
-		if now >= self.reset_time {
-			self.requests_remaining = self.requests_limit;
-			self.reset_time = now + self.period;
-		}
-
-		// Try to consume a request
-		if self.requests_remaining > 0 {
-			self.requests_remaining -= 1;
-			true
-		} else {
-			false
-		}
 	}
 }
 
@@ -177,7 +140,6 @@ pub(crate) fn err_into_response(err: anyhow::Error) -> Result<Response<ResponseB
 				("guard", "routing_error") => StatusCode::BAD_GATEWAY,
 				("guard", "request_timeout") => StatusCode::GATEWAY_TIMEOUT,
 				("guard", "retry_attempts_exceeded") => StatusCode::BAD_GATEWAY,
-				("actor", "not_found") => StatusCode::NOT_FOUND,
 				("guard", "service_unavailable") => StatusCode::SERVICE_UNAVAILABLE,
 				("guard", "actor_stopped_while_waiting") => StatusCode::SERVICE_UNAVAILABLE,
 				("guard", "tunnel_request_aborted") => StatusCode::SERVICE_UNAVAILABLE,
@@ -188,6 +150,8 @@ pub(crate) fn err_into_response(err: anyhow::Error) -> Result<Response<ResponseB
 				("guard", "no_route") => StatusCode::NOT_FOUND,
 				("guard", "invalid_request_body") => StatusCode::PAYLOAD_TOO_LARGE,
 				("guard", "invalid_response_body") => StatusCode::BAD_GATEWAY,
+				("actor", "creation_rate_limit") => StatusCode::TOO_MANY_REQUESTS,
+				("actor", "not_found") => StatusCode::NOT_FOUND,
 				_ => StatusCode::BAD_REQUEST,
 			};
 

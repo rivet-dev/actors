@@ -27,6 +27,11 @@ import {
 } from "@/components/actors/data-provider";
 import { features } from "@/lib/features";
 import { BillingUsageGauge } from "./billing/billing-usage-gauge";
+import {
+	PoolSwitcher,
+	poolHeaderText,
+	resolvePoolName,
+} from "./pool-switcher";
 import { BillingPanel } from "./settings-pages/billing-panel";
 import { NamespaceComputeContent } from "./settings-pages/namespace-compute";
 import {
@@ -166,6 +171,8 @@ export function SettingsDrawer({
 	const titleNode: ReactNode =
 		activeTab === "settings" && onNamespace ? (
 			<NamespaceSettingsTitle fallback={meta.title} />
+		) : activeTab === "compute" && onNamespace ? (
+			<ComputeSettingsTitle fallback={meta.title} />
 		) : activeTab === "billing" && onProject ? (
 			<ProjectBillingTitle fallback={meta.title} />
 		) : (
@@ -419,6 +426,56 @@ function NamespaceSettingsTitleInner({ fallback }: { fallback: string }) {
 	const { data } = useQuery(dataProvider.currentNamespaceQueryOptions());
 	const displayName = data?.displayName;
 	return <>{displayName ? `${displayName} settings` : fallback}</>;
+}
+
+function ComputeSettingsTitle({ fallback }: { fallback: string }) {
+	// Same mid-transition guard as NamespaceSettingsTitle: the drawer can render
+	// this title while the namespace match tree is still resolving. The
+	// `dataProvider` check lives here (not in the inner component) so the inner
+	// component's hooks stay unconditional across namespace switches, matching
+	// the NamespaceComputeContent outer/inner split.
+	const match = useMatch({
+		from: "/_context/orgs/$organization/projects/$project/ns/$namespace",
+		shouldThrow: false,
+	});
+	const dataProvider = useCloudNamespaceDataProvider();
+	if (!match || !match.loaderData || !dataProvider) {
+		return <>{fallback}</>;
+	}
+	return <ComputeSettingsTitleInner fallback={fallback} />;
+}
+
+function ComputeSettingsTitleInner({ fallback }: { fallback: string }) {
+	const dataProvider = useCloudNamespaceDataProvider();
+	const navigate = useNavigate();
+	const { pool: poolParam } = useSearch({ strict: false });
+	const { data: pools = [] } = useQuery(
+		dataProvider.currentNamespaceManagedPoolsQueryOptions(),
+	);
+	const selectedPool = resolvePoolName(pools, poolParam);
+
+	if (pools.length <= 1) {
+		return <>{fallback}</>;
+	}
+
+	return (
+		<span className="inline-flex items-center gap-1.5">
+			{poolHeaderText(pools, "Config", fallback)}
+			<PoolSwitcher
+				pools={pools}
+				value={selectedPool}
+				onChange={(name) =>
+					navigate({
+						to: ".",
+						search: (old) => ({
+							...(old as Record<string, unknown>),
+							pool: name,
+						}),
+					})
+				}
+			/>
+		</span>
+	);
 }
 
 function ProjectBillingTitle({ fallback }: { fallback: string }) {

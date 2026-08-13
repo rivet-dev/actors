@@ -1,0 +1,124 @@
+---
+title: "Authentication"
+description: "Secure your actors with authentication and authorization."
+skill: true
+---
+
+## Do You Need Authentication?
+
+<Tabs>
+<Tab title="Rivet Cloud">
+	Actors are private by default on Rivet Cloud. Only requests with the publishable token can interact with actors.
+
+	- **Backend-only actors**: If your publishable token is only included in your backend, then authentication is not necessary.
+	- **Frontend-accessible actors**: If your publishable token is included in your frontend, then implementing authentication is recommended.
+</Tab>
+<Tab title="Self-Hosted">
+	Actors are public by default on self-hosted Rivet. Anyone can access them without a token.
+
+	- **Only accessible within private network**: If Rivet is only accessible within your private network, then authentication is not necessary.
+	- **Rivet exposed to the public internet**: If Rivet is configured to accept traffic from the public internet, then implementing authentication is recommended.
+</Tab>
+</Tabs>
+
+## Authentication Connections
+
+Authentication is configured through either:
+
+- `onBeforeConnect` for simple pass/fail validation
+- `createConnState` when you need to access user data in your actions via `c.conn.state`
+
+## Access Control
+
+After a connection is authenticated, use [Access Control](/actors/docs/access-control) to enforce authorization:
+
+- Check permissions in action handlers.
+- Use `queues.<name>.canPublish` to gate inbound queue publishes.
+- Use `events.<name>.canSubscribe` to gate event subscriptions.
+
+### `onBeforeConnect`
+
+The `onBeforeConnect` hook validates credentials before allowing a connection. Throw an error to reject the connection.
+
+<CodeSnippet file="examples/docs/actors-authentication/on-before-connect.ts" />
+
+### `createConnState`
+
+Use `createConnState` to extract user data from credentials and store it in connection state. This data is accessible in actions via `c.conn.state`. Like `onBeforeConnect`, throwing an error will reject the connection. See [connections](/actors/docs/connections) for more details.
+
+<CodeSnippet file="examples/docs/actors-authentication/create-conn-state.ts" />
+
+## Available Auth Data
+
+Authentication hooks have access to several properties:
+
+| Property | Description |
+|----------|-------------|
+| `params` | Custom data passed by the client when connecting (see [connection params](/actors/docs/connections#extracting-data-from-connection-params)) |
+| `c.request` | The underlying HTTP request object |
+| `c.request.headers` | Request headers for tokens, API keys (does not work for `.connect()`) |
+| `c.state` | Actor state for authorization decisions (see [state](/actors/docs/state)) |
+| `c.key` | The actor's key (see [keys](/actors/docs/keys)) |
+
+It's recommended to use `params` instead of `c.request.headers` whenever possible since it works for both HTTP & WebSocket connections.
+
+## Client Usage
+
+### Passing Credentials
+
+Pass authentication data when connecting. Use `getParams` when you need a fresh JWT for every connection or reconnect:
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-authentication/passing-credentials-connection.ts" title="Connection" />
+<CodeSnippet file="examples/docs/actors-authentication/passing-credentials-stateless.ts" title="Stateless-Action" />
+<CodeSnippet file="examples/docs/actors-authentication/passing-credentials-headers.ts" title="HTTP-Headers" />
+</CodeGroup>
+
+### Handling Errors
+
+Authentication errors use the same system as regular errors. See [errors](/actors/docs/errors) for more details.
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-authentication/handling-errors-connection.ts" title="Connection" />
+<CodeSnippet file="examples/docs/actors-authentication/handling-errors-stateless.ts" title="Stateless-Action" />
+</CodeGroup>
+
+## Examples
+
+### JWT
+
+Validate JSON Web Tokens and extract user claims:
+
+<CodeSnippet file="examples/docs/actors-authentication/jwt.ts" />
+
+### External Auth Provider
+
+Validate credentials against an external authentication service:
+
+<CodeSnippet file="examples/docs/actors-authentication/external-auth-provider.ts" />
+
+### Using `c.state` In Authorization
+
+Access actor state via `c.state` and the actor's key via `c.key` to make authorization decisions:
+
+<CodeSnippet file="examples/docs/actors-authentication/using-state.ts" />
+
+### Role-Based Access Control
+
+Create helper functions for common authorization patterns:
+
+<CodeSnippet file="examples/docs/actors-authentication/role-based-access-control.ts" />
+
+### Rate Limiting
+
+Use `c.vars` to track connection attempts and rate limit by user:
+
+<CodeSnippet file="examples/docs/actors-authentication/rate-limiting.ts" />
+
+The limits in this example are [ephemeral](/actors/docs/state#ephemeral-variables). If you wish to persist rate limits, you can optionally replace `vars` with `state`.
+
+### Caching Tokens
+
+Cache validated tokens in `c.vars` to avoid redundant validation on repeated connections. See [ephemeral variables](/actors/docs/state#ephemeral-variables) for more details.
+
+<CodeSnippet file="examples/docs/actors-authentication/caching-tokens.ts" />

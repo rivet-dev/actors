@@ -17,6 +17,7 @@ foundationdb-tuple.workspace = true
 futures-util.workspace = true
 gas.workspace = true
 lazy_static.workspace = true
+moka.workspace = true
 namespace.workspace = true
 nix.workspace = true
 rand.workspace = true

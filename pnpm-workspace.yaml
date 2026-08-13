@@ -20,8 +20,6 @@ packages:
   - scripts/tests
   - scripts/vercel-examples
   - shared/typescript/*
-  - website
-
 ignoredBuiltDependencies:
   - '@parcel/watcher'
   - '@sentry/cli'

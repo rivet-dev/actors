@@ -14,6 +14,12 @@ pub enum Actor {
 	NamespaceNotFound,
 
 	#[error(
+		"creation_rate_limit",
+		"Too many actors created at once. Try again later."
+	)]
+	CreationRateLimit,
+
+	#[error(
 		"input_too_large",
 		"Actor input too large.",
 		"Input too large (max {max_size})."

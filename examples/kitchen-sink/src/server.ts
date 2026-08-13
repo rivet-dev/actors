@@ -1,6 +1,9 @@
+import { existsSync, readFileSync } from "node:fs";
 import type { Server as HttpServer } from "node:http";
+import { resolve } from "node:path";
 import * as v8 from "node:v8";
 import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { registry } from "./index.ts";
 import { resolveMode } from "./mode.ts";
@@ -162,6 +165,23 @@ if (mode === "serverful") {
 } else {
 	app.all("/api/rivet/*", (c) => registry.handler(c.req.raw));
 	app.all("/api/rivet", (c) => registry.handler(c.req.raw));
+}
+
+// Serve the built frontend when it is present. The Vite build emits `dist/`,
+// which only exists in production images, so dev runs skip this branch.
+const distDir = "dist";
+const indexPath = resolve(process.cwd(), distDir, "index.html");
+if (existsSync(indexPath)) {
+	app.use("/*", serveStatic({ root: distDir }));
+	const indexHtml = readFileSync(indexPath, "utf8");
+	app.get("/*", (c) => {
+		const path = new URL(c.req.url).pathname;
+		const last = path.slice(path.lastIndexOf("/") + 1);
+		// Fall through to 404 for asset-like paths so missing files do not
+		// resolve to the SPA shell.
+		if (last.includes(".")) return c.notFound();
+		return c.html(indexHtml);
+	});
 }
 
 const server = serve({ fetch: app.fetch, port }, () => {

@@ -53,55 +53,10 @@ lazy_static::lazy_static! {
 		&["namespace_id", "pool_name", "protocol", "reason"],
 		*REGISTRY
 	).unwrap();
-	pub static ref SHUTDOWN_IN_FLIGHT_ABORTED_TOTAL: IntCounter =
-		register_int_counter_with_registry!(
-			"gateway2_shutdown_in_flight_aborted_total",
-			"In-flight gateway requests abandoned on pod shutdown without sending close.",
-			*REGISTRY
-		).unwrap();
 	pub static ref MSG_SENT_TOTAL: IntCounterVec = register_int_counter_vec_with_registry!(
 		"gateway2_msg_sent_total",
 		"Count of total of tunnel messages sent.",
 		&["namespace_id", "pool_name", "kind"],
 		*REGISTRY
 	).unwrap();
-}
-
-pub fn prepopulate() {
-	const RESULTS: &[&str] = &[
-		"success",
-		"client_disconnect",
-		"actor_ready_timeout",
-		"request_timeout",
-		"envoy_error",
-	];
-
-	for protocol in ["http", "websocket"] {
-		IN_FLIGHT.with_label_values(&["", "", protocol]).set(0);
-		IN_FLIGHT_DROPPED_TOTAL
-			.with_label_values(&["", "", protocol, "client_disconnect"])
-			.inc_by(0);
-		TUNNEL_PING_DURATION.with_label_values(&["", "", protocol]);
-		LAST_PONG_AGE_SECONDS.with_label_values(&["", "", protocol]);
-		REQUEST_RETRIES_TOTAL.with_label_values(&["", "", protocol, "1"]);
-
-		for result in RESULTS {
-			REQUEST_DURATION_SECONDS.with_label_values(&["", "", protocol, result]);
-		}
-
-		for reason in [
-			"server_close",
-			"client_close",
-			"abort",
-			"gc_timeout",
-			"shutdown",
-		] {
-			CLOSE_SENT_TOTAL
-				.with_label_values(&["", "", protocol, reason])
-				.inc_by(0);
-		}
-	}
-	for result in ["ok", "error", "timeout"] {
-		WEBSOCKET_OPEN_WAIT_SECONDS.with_label_values(&["", "", result]);
-	}
 }

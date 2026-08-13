@@ -37,7 +37,7 @@ export interface SandboxProviderEntry {
 	verified?: boolean;
 }
 
-// Coding agents. Pi, Claude Code, Codex, Amp, and OpenCode all run in agentOS.
+// Coding agents. Pi, Claude Code, Codex, and OpenCode all run in agentOS.
 export const AGENTS: AgentEntry[] = [
 	{
 		slug: "pi",
@@ -64,15 +64,6 @@ export const AGENTS: AgentEntry[] = [
 		// Note the `-agent` suffix; the bare `@rivet-dev/agent-os-codex` is the
 		// Codex CLI software package, not the agent.
 		package: "@rivet-dev/agent-os-codex-agent",
-	},
-	{
-		slug: "amp",
-		title: "Amp",
-		description: "Sourcegraph's Amp coding agent.",
-		status: "available",
-		// Package not yet documented (docs page says "coming soon"); follows the
-		// agent-os-<slug> naming style. Verify before relying on the install.
-		package: "@rivet-dev/agent-os-amp",
 	},
 	{
 		slug: "opencode",
