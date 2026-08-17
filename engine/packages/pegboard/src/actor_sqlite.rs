@@ -48,6 +48,67 @@ pub fn clear_v2_storage_for_destroy(tx: &universaldb::Transaction, actor_id: Id)
 	}
 }
 
+pub async fn clear_branch_storage_for_destroy(
+	db: &universaldb::Database,
+	namespace_id: Id,
+	actor_id: Id,
+) -> Result<()> {
+	let bucket = BucketId::from_gas_id(namespace_id);
+	let database_name = actor_id.to_string();
+
+	let branch_id = match resolve_branch_for_destroy(db, bucket, &database_name).await? {
+		Some(id) => id,
+		None => return Ok(()),
+	};
+
+	match depot_branch::delete_database(db, bucket, branch_id).await {
+		Ok(()) => Ok(()),
+		Err(err) if is_database_not_found(&err) => {
+			tracing::debug!(?branch_id, %database_name, "branch already deleted on destroy");
+			Ok(())
+		}
+		Err(err) => Err(err),
+	}
+}
+
+async fn resolve_branch_for_destroy(
+	db: &universaldb::Database,
+	bucket: BucketId,
+	database_name: &str,
+) -> Result<Option<depot::conveyer::types::DatabaseBranchId>> {
+	let database_name_owned = database_name.to_string();
+	let database_name_for_txn = database_name_owned.clone();
+	let res = db
+		.txn("pegboard_actor_sqlite_resolve_branch", move |tx| {
+			let database_name = database_name_for_txn.clone();
+			async move {
+				depot_branch::resolve_database_branch(
+					&tx,
+					bucket,
+					&database_name,
+					universaldb::utils::IsolationLevel::Snapshot,
+				)
+				.await
+			}
+		})
+		.await;
+
+	match res {
+		Ok(branch) => Ok(branch),
+		Err(err) if is_database_not_found(&err) => {
+			tracing::debug!(%database_name_owned, "database not found while resolving branch for destroy");
+			Ok(None)
+		}
+		Err(err) => Err(err),
+	}
+}
+
+fn is_database_not_found(err: &anyhow::Error) -> bool {
+	err.chain()
+		.find_map(|c| c.downcast_ref::<depot::conveyer::error::SqliteStorageError>())
+		.is_some_and(|e| matches!(e, depot::conveyer::error::SqliteStorageError::DatabaseNotFound))
+}
+
 fn prefix_range(prefix: &[u8]) -> (Vec<u8>, Vec<u8>) {
 	universaldb::tuple::Subspace::from_bytes(prefix.to_vec()).range()
 }
