@@ -8,7 +8,7 @@ const port = Number(process.env.PORT ?? 7332);
 const mountPath = process.env.MCP_PATH ?? "/mcp";
 
 async function main() {
-	const { server } = createDocsMcpServer();
+	const { server } = await createDocsMcpServer();
 
 	const httpServer = http.createServer(async (req, res) => {
 		if (!req.url) {

@@ -50,33 +50,53 @@ type ResolvedResource = {
 
 let sharedWebTransport: WebStandardStreamableHTTPServerTransport | null = null;
 
-function loadDocsMetadata(): DocsMetadata {
-	// Check for a custom metadata path (for Docker/production deployments)
-	const customPath = process.env.DOCS_METADATA_PATH;
-	if (customPath) {
-		const absolutePath = path.isAbsolute(customPath)
-			? customPath
-			: path.resolve(process.cwd(), customPath);
-		const content = fs.readFileSync(absolutePath, "utf-8");
-		return JSON.parse(content) as DocsMetadata;
+const DEFAULT_DOCS_METADATA_URL = "https://rivet.dev/metadata/docs.json";
+
+async function loadDocsMetadata(): Promise<DocsMetadata> {
+	const metadataPath = process.env.DOCS_METADATA_PATH;
+	if (metadataPath) {
+		const absolutePath = path.isAbsolute(metadataPath)
+			? metadataPath
+			: path.resolve(process.cwd(), metadataPath);
+
+		try {
+			return JSON.parse(
+				await fs.promises.readFile(absolutePath, "utf-8"),
+			) as DocsMetadata;
+		} catch (error) {
+			throw new Error(
+				`Could not load docs metadata from ${absolutePath}.`,
+				{ cause: error },
+			);
+		}
 	}
 
-	// Fallback to dynamic import for workspace development
+	const metadataUrl =
+		process.env.DOCS_METADATA_URL ?? DEFAULT_DOCS_METADATA_URL;
+	let response: Response;
 	try {
-		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		return require("rivet-website/dist/metadata/docs.json") as DocsMetadata;
-	} catch {
+		response = await fetch(metadataUrl);
+	} catch (error) {
 		throw new Error(
-			"Could not load docs metadata. Either set DOCS_METADATA_PATH environment variable " +
-				"to point to a docs.json file, or ensure rivet-website is built (run 'pnpm build' in website directory).",
+			`Could not fetch docs metadata from ${metadataUrl}. Set DOCS_METADATA_PATH to load it from a local file instead.`,
+			{ cause: error },
 		);
 	}
+	if (!response.ok) {
+		throw new Error(
+			`Could not fetch docs metadata from ${metadataUrl}: ${response.status} ${response.statusText}.`,
+		);
+	}
+	return (await response.json()) as DocsMetadata;
 }
 
-let cachedDocsMetadata: DocsMetadata | null = null;
-function getDocsMetadata(): DocsMetadata {
+let cachedDocsMetadata: Promise<DocsMetadata> | null = null;
+function getDocsMetadata(): Promise<DocsMetadata> {
 	if (!cachedDocsMetadata) {
-		cachedDocsMetadata = loadDocsMetadata();
+		cachedDocsMetadata = loadDocsMetadata().catch((error) => {
+			cachedDocsMetadata = null;
+			throw error;
+		});
 	}
 	return cachedDocsMetadata;
 }
@@ -116,11 +136,13 @@ const listToolSchema = z.object({
 	prefix: z.string().optional(),
 });
 
-export function createDocsMcpServer(options: DocsServerOptions = {}): {
+export async function createDocsMcpServer(
+	options: DocsServerOptions = {},
+): Promise<{
 	server: McpServer;
 	metadata: DocsMetadata;
-} {
-	const metadata = options.metadata ?? getDocsMetadata();
+}> {
+	const metadata = options.metadata ?? (await getDocsMetadata());
 	const instructions = options.instructions ?? DEFAULT_INSTRUCTIONS;
 	const server = new McpServer(
 		{
@@ -364,7 +386,12 @@ function registerResources(
 		);
 	}
 
+	const registeredSections = new Set<string>();
 	for (const section of metadata.sections) {
+		// Repeated headings inside one page collapse to the same anchor URI.
+		if (registeredSections.has(section.resource_uri)) continue;
+		registeredSections.add(section.resource_uri);
+
 		const parent = pageMap.get(section.parent_uri);
 		const sectionTitle = parent
 			? `${parent.title} › ${section.title}`

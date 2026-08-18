@@ -13,9 +13,6 @@ COPY rivetkit-typescript/packages/mcp-hub/tsconfig.docker.json ./tsconfig.json
 # Copy source
 COPY rivetkit-typescript/packages/mcp-hub/src ./src
 
-# Copy docs metadata
-COPY rivetkit-typescript/packages/mcp-hub/data/docs.json ./data/docs.json
-
 # Install all dependencies (including dev for build)
 RUN npm install
 
@@ -30,14 +27,12 @@ WORKDIR /app
 # Copy built artifacts
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/data ./data
 
 # Install production dependencies only
 RUN npm install --omit=dev
 
 # Default port
 ENV PORT=7332
-ENV DOCS_METADATA_PATH=/app/data/docs.json
 EXPOSE 7332
 
 # Health check
