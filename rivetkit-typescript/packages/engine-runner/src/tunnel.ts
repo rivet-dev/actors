@@ -677,9 +677,34 @@ export class Tunnel {
 		const actor = await this.#runner.getAndWaitForActor(req.actorId);
 		if (!actor) {
 			this.log?.warn({
-				msg: "actor does not exist in handleRequestStart, request will leak",
+				msg: "ignoring request for unknown actor",
 				actorId: req.actorId,
 				requestId: requestIdStr,
+			});
+
+			const body = new TextEncoder().encode("Actor not found");
+
+			this.#runner.__sendToServer({
+				tag: "ToServerTunnelMessage",
+				val: {
+					messageId: {
+						gatewayId,
+						requestId,
+						messageIndex: 0,
+					},
+					messageKind: {
+						tag: "ToServerResponseStart",
+						val: {
+							status: 503,
+							headers: new Map([
+								["x-rivet-error", "runner.actor_not_found"],
+								["content-length", String(body.byteLength)],
+							]),
+							body: body.buffer,
+							stream: false,
+						},
+					},
+				},
 			});
 			return;
 		}
