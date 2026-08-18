@@ -42,7 +42,14 @@ export const useWebSocket = (
 			}
 		}
 
-		const ws = new ReconnectingWebSocket(url, protocols, {
+		const finalProtocols = Array.isArray(protocols) 
+			? protocols 
+			: (protocols ? [protocols] : []);
+		if (!finalProtocols.includes("rivet")) {
+			finalProtocols.unshift("rivet");
+		}
+
+		const ws = new ReconnectingWebSocket(url, finalProtocols, {
 			binaryType: "arraybuffer",
 		});
 		wsRef.current = ws;
