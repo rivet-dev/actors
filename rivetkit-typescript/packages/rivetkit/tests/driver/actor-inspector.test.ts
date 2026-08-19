@@ -840,6 +840,33 @@ describeDriverMatrix("Actor Inspector", (driverTestConfig) => {
 				ws.close();
 			}
 
+			// `Init` carries history from the same bridge call, so assert it too.
+			// It arrives once per connection, hence a second socket: history is
+			// only guaranteed to be recorded now that the request above saw it.
+			const initWs = new WebSocket(
+				buildInspectorWebSocketUrl(gatewayUrl),
+				["rivet", "rivet_inspector_token.token"],
+			);
+			initWs.binaryType = "arraybuffer";
+
+			try {
+				await waitForInspectorOpen(initWs);
+				const init = await waitForInspectorMessageWithTag(
+					initWs,
+					"Init",
+				);
+				expect(init.body.val.isWorkflowEnabled).toBe(true);
+				expect(init.body.val.workflowHistory).not.toBeNull();
+				// Throws if the bytes were CBOR-wrapped instead of BARE.
+				const initDecoded = decodeWorkflowHistoryTransport(
+					init.body.val.workflowHistory as ArrayBuffer,
+				);
+				expect(initDecoded.nameRegistry.length).toBeGreaterThan(0);
+				expect(initDecoded.entries.length).toBeGreaterThan(0);
+			} finally {
+				initWs.close();
+			}
+
 			await handle.release();
 			// Poll until the released workflow finishes because release() only unblocks the run handler.
 			await vi.waitFor(

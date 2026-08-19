@@ -393,12 +393,7 @@ impl RegistryDispatcher {
 	) -> Result<(bool, Option<JsonValue>)> {
 		self.inspector_workflow_history_bytes(instance).await.map(
 			|(workflow_supported, history)| {
-				(
-					workflow_supported,
-					history
-						.map(|payload| decode_cbor_json_or_null(&payload))
-						.filter(|value| !value.is_null()),
-				)
+				(workflow_supported, warn_and_omit_workflow_history(history))
 			},
 		)
 	}
@@ -411,12 +406,7 @@ impl RegistryDispatcher {
 		self.inspector_workflow_replay_bytes(instance, entry_id)
 			.await
 			.map(|(workflow_supported, history)| {
-				(
-					workflow_supported,
-					history
-						.map(|payload| decode_cbor_json_or_null(&payload))
-						.filter(|value| !value.is_null()),
-				)
+				(workflow_supported, warn_and_omit_workflow_history(history))
 			})
 	}
 
@@ -831,6 +821,21 @@ pub(super) fn inspector_error_status(group: &str, code: &str) -> StatusCode {
 		}
 		_ => StatusCode::INTERNAL_SERVER_ERROR,
 	}
+}
+
+// These JSON routes document `history` as decoded workflow JSON, but the bytes are BARE and the
+// only codec lives in the TypeScript workflow engine, which serves these routes itself. Runtimes
+// that fall through to core have no workflow engine, so history is expected to be absent. Decoding
+// the bytes as CBOR here yields a garbage value rather than an error, so refuse instead.
+fn warn_and_omit_workflow_history(history: Option<Vec<u8>>) -> Option<JsonValue> {
+	if let Some(history) = history {
+		tracing::warn!(
+			byte_len = history.len(),
+			"omitting workflow history from json inspector response, BARE decoding is not available in core",
+		);
+	}
+
+	None
 }
 
 pub(super) fn parse_json_body<T>(request: &Request) -> std::result::Result<T, HttpResponse>

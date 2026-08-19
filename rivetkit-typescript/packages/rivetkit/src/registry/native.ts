@@ -682,6 +682,10 @@ function decodeValue<T>(value?: RuntimeBytes | null): T {
 
 // Rejects `WorkflowHistoryBytes`: the compat layer rewrites an ArrayBuffer as
 // `["$ArrayBuffer", "<base64>"]`, and the inspector wire field carries raw BARE.
+// The conditional distributes, so it catches the branded type on its own but
+// only strips it from a union that also has other members. A non-distributive
+// `[T] extends [...]` resolves to `never` for the `any` arguments this takes
+// elsewhere, so the union case stays uncovered.
 function encodeValue<T>(
 	value: T extends WorkflowHistoryBytes ? never : T,
 ): RuntimeBytes {
