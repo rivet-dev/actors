@@ -36,6 +36,65 @@ interface PackageJson {
 	devDependencies?: Record<string, string>;
 	peerDependencies?: Record<string, string>;
 	optionalDependencies?: Record<string, string>;
+	publishConfig?: Record<string, unknown>;
+	[key: string]: unknown;
+}
+
+/**
+ * Manifest-shape fields that `publishConfig` is allowed to override. These
+ * describe what the package exposes (entry points, types) rather than how the
+ * publish is performed, so they must be folded into the top-level manifest
+ * before packing. Mirrors the set pnpm relocates from `publishConfig`.
+ *
+ * npm-native publish controls (`access`, `registry`, `tag`, `provenance`,
+ * `directory`, ...) are intentionally NOT in this list: npm reads those from
+ * `publishConfig` directly, so they stay put.
+ */
+const PUBLISH_CONFIG_MANIFEST_FIELDS = [
+	"bin",
+	"main",
+	"module",
+	"exports",
+	"types",
+	"typings",
+	"browser",
+	"esnext",
+	"es2015",
+	"unpkg",
+	"umd:main",
+	"typesVersions",
+] as const;
+
+/**
+ * Fold manifest-shape `publishConfig` overrides into the top-level manifest.
+ *
+ * `publishConfig.exports` (and friends) are a pnpm feature: pnpm rewrites the
+ * manifest when it packs the tarball. Plain `npm publish` ignores them, so a
+ * package that ships dev source via `exports` and swaps to `dist` via
+ * `publishConfig.exports` would publish the dev entry instead. Because CI
+ * publishes with `npm publish`, we reproduce pnpm's behavior here at
+ * publish time so the dist swap actually lands in the tarball.
+ *
+ * Returns the list of folded field names (empty if there was nothing to do).
+ */
+function applyPublishConfigOverrides(pkgJson: PackageJson): string[] {
+	const publishConfig = pkgJson.publishConfig;
+	if (!publishConfig) return [];
+
+	const folded: string[] = [];
+	for (const field of PUBLISH_CONFIG_MANIFEST_FIELDS) {
+		if (!Object.hasOwn(publishConfig, field)) continue;
+		pkgJson[field] = publishConfig[field];
+		delete publishConfig[field];
+		folded.push(field);
+	}
+
+	// Drop an emptied publishConfig so the published manifest stays clean.
+	if (Object.keys(publishConfig).length === 0) {
+		delete pkgJson.publishConfig;
+	}
+
+	return folded;
 }
 
 const DEP_FIELDS = [
@@ -119,6 +178,16 @@ export async function bumpPackageJsons(
 		pkgJson.version = version;
 
 		if (!versionOnly) {
+			// Fold manifest-shape publishConfig overrides (e.g. exports -> dist)
+			// into the top-level manifest. npm publish ignores publishConfig
+			// manifest fields, so without this the dev source entry would ship.
+			const folded = applyPublishConfigOverrides(pkgJson);
+			if (folded.length > 0) {
+				log.info(
+					`folded publishConfig into ${pkg.name}: ${folded.join(", ")}`,
+				);
+			}
+
 			// Inject optionalDependencies on meta packages so end users get the
 			// correct platform-specific binary via npm's os/cpu/libc resolution.
 			const platformPkgs = metaPlatformMap.get(pkg.name);
