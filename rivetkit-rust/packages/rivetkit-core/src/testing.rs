@@ -29,6 +29,8 @@ use crate::actor::kv::LegacyActorKv;
 use crate::sqlite::SqliteDb;
 use crate::types::ActorKey;
 
+pub mod workflow_fixture;
+
 /// Reusable in-memory SQLite store for constructing fully configured contexts.
 /// Contexts created from the same harness observe the same database.
 #[derive(Clone)]

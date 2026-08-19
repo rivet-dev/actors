@@ -124,6 +124,7 @@ pub use actor::config::{
 pub use actor::connection::ConnHandle;
 pub use actor::context::{
 	ActorContext, ActorKv, ActorWorkRegion, KeepAwakeRegion, WebSocketCallbackRegion,
+	WorkflowStorage,
 };
 pub use actor::factory::{ActorEntryFn, ActorFactory};
 pub use actor::lifecycle_hooks::{ActorEvents, ActorStart, Reply};
@@ -144,12 +145,12 @@ pub use actor::task::{
 	ActionDispatchResult, ActorTask, DispatchCommand, HttpDispatchResult, LifecycleCommand,
 	LifecycleEvent, LifecycleState,
 };
-pub use rivet_envoy_client::config::ResponseChunk;
 pub use actor::task_types::ShutdownKind;
 pub use actor::work_registry::{ActorWorkKind, ActorWorkPolicy};
 pub use error::ActorLifecycle;
 pub use inspector::{Inspector, InspectorSnapshot};
 pub use registry::{CoreRegistry, EngineSpawnMode, ServeConfig};
+pub use rivet_envoy_client::config::ResponseChunk;
 pub use runtime::{RuntimeBoxFuture, RuntimeSpawner, boxed_runtime_future};
 pub use serverless::{CoreServerlessRuntime, ServerlessRequest, ServerlessResponse};
 pub use types::{

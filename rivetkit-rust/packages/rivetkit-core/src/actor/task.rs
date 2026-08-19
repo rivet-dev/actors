@@ -317,6 +317,7 @@ struct SleepGraceState {
 struct PersistedStartup {
 	actor: PersistedActor,
 	last_pushed_alarm: Option<i64>,
+	run_wake_at: Option<i64>,
 }
 
 struct PendingLifecycleReply {
@@ -1178,6 +1179,7 @@ impl ActorTask {
 		let core_init_result: Result<()> = async {
 			self.ctx.load_persisted_actor(persisted.actor);
 			self.ctx.load_last_pushed_alarm(persisted.last_pushed_alarm);
+			self.ctx.load_run_wake_at(persisted.run_wake_at);
 			// New manual-startup runtimes must not persist initialization until the
 			// runtime startup_ready handshake completes. The runtime preamble owns
 			// initial state creation.
@@ -1277,6 +1279,7 @@ impl ActorTask {
 			return Ok(PersistedStartup {
 				actor: snapshot.actor,
 				last_pushed_alarm: snapshot.last_pushed_alarm,
+				run_wake_at: snapshot.run_wake_at,
 			});
 		}
 		Ok(PersistedStartup {
@@ -1285,6 +1288,7 @@ impl ActorTask {
 				..PersistedActor::default()
 			},
 			last_pushed_alarm: None,
+			run_wake_at: None,
 		})
 	}
 
@@ -1410,7 +1414,38 @@ impl ActorTask {
 			return Ok(());
 		}
 
-		self.ctx.drain_overdue_scheduled_events().await
+		let due_run_wake = self.ctx.consume_due_run_wake().await?;
+		if let Err(error) = self.ctx.drain_overdue_scheduled_events().await {
+			if self.lifecycle != LifecycleState::DestroyGrace
+				&& let Some(wake_at) = due_run_wake
+				&& let Err(restore_error) = self.ctx.set_run_wake_at(Some(wake_at)).await
+			{
+				tracing::error!(
+					?restore_error,
+					wake_at,
+					"failed to restore run wake after schedule alarm dispatch failed",
+				);
+			}
+			return Err(error);
+		}
+		// Destroy is terminal. Consume the logical deadline so it cannot keep a
+		// past physical alarm armed, but never restart the foreign run handler
+		// after its destroy cleanup has started.
+		if self.lifecycle == LifecycleState::DestroyGrace {
+			return Ok(());
+		}
+		if let Some(wake_at) = due_run_wake
+			&& let Err(error) = self
+				.ctx
+				.try_send_actor_event(ActorEvent::RunWake, "run_wake")
+		{
+			// The workflow history remains idempotent, so retaining the logical
+			// deadline for a later retry is safer than losing a wake whose runtime
+			// inbox was temporarily unavailable.
+			self.ctx.set_run_wake_at(Some(wake_at)).await?;
+			return Err(error).context("dispatch due run wake");
+		}
+		Ok(())
 	}
 
 	fn handle_run_handle_outcome(

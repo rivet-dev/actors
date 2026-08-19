@@ -399,6 +399,17 @@ export class WasmCoreRuntime implements CoreRuntime {
 		);
 	}
 
+	async actorSetRunWakeAt(
+		ctx: ActorContextHandle,
+		timestampMs?: number | undefined | null,
+	): Promise<void> {
+		await callHandleAsync(
+			asWasmActorContext(ctx),
+			"setRunWakeAt",
+			optionalWasmNumber(timestampMs),
+		);
+	}
+
 	actorRequestSave(
 		ctx: ActorContextHandle,
 		opts?: RuntimeRequestSaveOpts | undefined | null,
@@ -496,6 +507,61 @@ export class WasmCoreRuntime implements CoreRuntime {
 			"saveStateAndWorkflowBatch",
 			writes,
 		);
+	}
+
+	async actorWorkflowStorageGet(ctx: ActorContextHandle, key: RuntimeBytes) {
+		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
+		return optionalBytes(await callHandleAsync(storage, "get", key));
+	}
+
+	async actorWorkflowStorageSet(
+		ctx: ActorContextHandle,
+		key: RuntimeBytes,
+		value: RuntimeBytes,
+	): Promise<void> {
+		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
+		await callHandleAsync(storage, "set", key, value);
+	}
+
+	async actorWorkflowStorageDelete(
+		ctx: ActorContextHandle,
+		key: RuntimeBytes,
+	): Promise<void> {
+		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
+		await callHandleAsync(storage, "delete", key);
+	}
+
+	async actorWorkflowStorageDeletePrefix(
+		ctx: ActorContextHandle,
+		prefix: RuntimeBytes,
+	): Promise<void> {
+		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
+		await callHandleAsync(storage, "deletePrefix", prefix);
+	}
+
+	async actorWorkflowStorageDeleteRange(
+		ctx: ActorContextHandle,
+		start: RuntimeBytes,
+		end: RuntimeBytes,
+	): Promise<void> {
+		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
+		await callHandleAsync(storage, "deleteRange", start, end);
+	}
+
+	async actorWorkflowStorageList(
+		ctx: ActorContextHandle,
+		prefix: RuntimeBytes,
+	): Promise<RuntimeWorkflowKvWrite[]> {
+		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
+		return await callHandleAsync(storage, "list", prefix);
+	}
+
+	async actorWorkflowStorageBatch(
+		ctx: ActorContextHandle,
+		writes: RuntimeWorkflowKvWrite[],
+	): Promise<void> {
+		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
+		await callHandleAsync(storage, "batch", writes);
 	}
 
 	actorId(ctx: ActorContextHandle): string {
@@ -909,6 +975,36 @@ export class WasmCoreRuntime implements CoreRuntime {
 			names,
 			options,
 			signal,
+		);
+	}
+
+	async actorQueueCompletePersisted(
+		ctx: ActorContextHandle,
+		messageId: bigint,
+		expectedName: string,
+		response?: RuntimeBytes | undefined | null,
+	): Promise<boolean> {
+		const queue = childHandle(asWasmActorContext(ctx), "queue");
+		return await callHandleAsync(
+			queue,
+			"completePersisted",
+			messageId,
+			expectedName,
+			response,
+		);
+	}
+
+	async actorQueueVerifyPersistedIdentity(
+		ctx: ActorContextHandle,
+		messageId: bigint,
+		expectedName: string,
+	): Promise<string | null> {
+		const queue = childHandle(asWasmActorContext(ctx), "queue");
+		return await callHandleAsync(
+			queue,
+			"verifyPersistedIdentity",
+			messageId,
+			expectedName,
 		);
 	}
 

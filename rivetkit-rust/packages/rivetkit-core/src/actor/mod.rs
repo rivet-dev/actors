@@ -34,7 +34,9 @@ pub use action::ActionDispatchError;
 pub use actor_runtime_socket::ActorRuntimeSocketEndpointInfo;
 pub use config::{ActionDefinition, ActorConfig, ActorConfigOverrides, CanHibernateWebSocket};
 pub use connection::ConnHandle;
-pub use context::{ActorContext, ActorWorkRegion, KeepAwakeRegion, WebSocketCallbackRegion};
+pub use context::{
+	ActorContext, ActorWorkRegion, KeepAwakeRegion, WebSocketCallbackRegion, WorkflowStorage,
+};
 pub use factory::{ActorEntryFn, ActorFactory};
 pub use lifecycle_hooks::{ActorEvents, ActorStart, Reply};
 pub use messages::{

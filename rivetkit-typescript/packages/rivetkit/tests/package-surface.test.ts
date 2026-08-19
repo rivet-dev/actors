@@ -34,6 +34,11 @@ import {
 	TO_SERVER_VERSIONED,
 	type TransportWorkflowHistory,
 } from "rivetkit/inspector/client";
+import {
+	decodeWorkflowHistoryTransport as decodePublicWorkflowHistory,
+	encodeWorkflowHistoryTransport as encodePublicWorkflowHistory,
+	WorkflowEntryStatus,
+} from "rivetkit/inspector/workflow";
 import { setupTest } from "rivetkit/test";
 import { jsonParseCompat, jsonStringifyCompat } from "rivetkit/utils";
 import { describe, expect, test } from "vitest";
@@ -48,7 +53,10 @@ const contextTypeSmokeActor = rivetkit.actor({
 		userId: params.userId,
 	}),
 	actions: {
-		increment: (ctx, amount: number) => (ctx.state.count += amount),
+		increment: (ctx, amount: number) => {
+			ctx.state.count += amount;
+			return ctx.state.count;
+		},
 	},
 	run: async (ctx) => {
 		ctx.state.count += 1;
@@ -88,6 +96,8 @@ describe("package surface", () => {
 	test("restores supported package entrypoints", () => {
 		expect(packageJson.exports).toHaveProperty("./test");
 		expect(packageJson.exports).toHaveProperty("./inspector");
+		expect(packageJson.exports).toHaveProperty("./inspector/workflow");
+		expect(packageJson.exports).toHaveProperty("./storage");
 		expect(packageJson.exports).toHaveProperty("./inspector/client");
 		expect(packageJson.exports).toHaveProperty("./db");
 		expect(packageJson.exports).toHaveProperty("./db/drizzle");
@@ -96,6 +106,9 @@ describe("package surface", () => {
 	test("restored package entrypoints resolve", () => {
 		expect(setupTest).toBeTypeOf("function");
 		expect(decodeWorkflowHistoryTransport).toBeTypeOf("function");
+		expect(decodePublicWorkflowHistory).toBeTypeOf("function");
+		expect(encodePublicWorkflowHistory).toBeTypeOf("function");
+		expect(WorkflowEntryStatus.COMPLETED).toBe("COMPLETED");
 		expect(rawDb).toBeTypeOf("function");
 		expect(drizzleDb).toBeTypeOf("function");
 		expect(defineConfig).toBeTypeOf("function");

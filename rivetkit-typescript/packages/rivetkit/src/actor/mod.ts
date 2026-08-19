@@ -14,6 +14,7 @@ export type {
 	UniversalWebSocket,
 } from "@/common/websocket-interface";
 export type * from "./config";
+export { defineRunHandler } from "./config";
 export type {
 	ActionContextOf,
 	BeforeActionResponseContextOf,
@@ -57,4 +58,12 @@ export {
 	UserError,
 	type UserErrorOptions,
 } from "./errors";
-export { event, queue, type Type } from "./schema";
+export {
+	event,
+	type EventSchemaConfig,
+	type InferEventArgs,
+	type InferSchemaMap,
+	queue,
+	type QueueSchemaConfig,
+	type Type,
+} from "./schema";

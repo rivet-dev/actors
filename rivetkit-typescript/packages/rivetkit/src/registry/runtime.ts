@@ -479,6 +479,10 @@ export interface CoreRuntime {
 		ctx: ActorContextHandle,
 		timestampMs?: number | undefined | null,
 	): void;
+	actorSetRunWakeAt(
+		ctx: ActorContextHandle,
+		timestampMs?: number | undefined | null,
+	): Promise<void>;
 	actorRequestSave(
 		ctx: ActorContextHandle,
 		opts?: RuntimeRequestSaveOpts | undefined | null,
@@ -510,6 +514,36 @@ export interface CoreRuntime {
 		payload: RuntimeStateDeltaPayload,
 	): Promise<void>;
 	actorSaveStateAndWorkflowBatch(
+		ctx: ActorContextHandle,
+		writes: RuntimeWorkflowKvWrite[],
+	): Promise<void>;
+	actorWorkflowStorageGet(
+		ctx: ActorContextHandle,
+		key: RuntimeBytes,
+	): Promise<RuntimeBytes | null>;
+	actorWorkflowStorageSet(
+		ctx: ActorContextHandle,
+		key: RuntimeBytes,
+		value: RuntimeBytes,
+	): Promise<void>;
+	actorWorkflowStorageDelete(
+		ctx: ActorContextHandle,
+		key: RuntimeBytes,
+	): Promise<void>;
+	actorWorkflowStorageDeletePrefix(
+		ctx: ActorContextHandle,
+		prefix: RuntimeBytes,
+	): Promise<void>;
+	actorWorkflowStorageDeleteRange(
+		ctx: ActorContextHandle,
+		start: RuntimeBytes,
+		end: RuntimeBytes,
+	): Promise<void>;
+	actorWorkflowStorageList(
+		ctx: ActorContextHandle,
+		prefix: RuntimeBytes,
+	): Promise<RuntimeWorkflowKvWrite[]>;
+	actorWorkflowStorageBatch(
 		ctx: ActorContextHandle,
 		writes: RuntimeWorkflowKvWrite[],
 	): Promise<void>;
@@ -656,6 +690,17 @@ export interface CoreRuntime {
 		options?: RuntimeQueueWaitOptions | undefined | null,
 		signal?: CancellationTokenHandle | undefined | null,
 	): Promise<void>;
+	actorQueueVerifyPersistedIdentity(
+		ctx: ActorContextHandle,
+		messageId: bigint,
+		expectedName: string,
+	): Promise<string | null>;
+	actorQueueCompletePersisted(
+		ctx: ActorContextHandle,
+		messageId: bigint,
+		expectedName: string,
+		response?: RuntimeBytes | undefined | null,
+	): Promise<boolean>;
 	actorQueueEnqueueAndWait(
 		ctx: ActorContextHandle,
 		name: string,

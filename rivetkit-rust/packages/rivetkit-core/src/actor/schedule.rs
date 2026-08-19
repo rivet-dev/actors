@@ -38,6 +38,14 @@ pub(crate) const GLOBAL_HISTORY_PRUNE_INTERVAL: usize = 100;
 pub(crate) const GLOBAL_HISTORY_RETAINED_ROWS: i64 =
 	MAX_ACTOR_HISTORY - GLOBAL_HISTORY_PRUNE_INTERVAL as i64;
 
+fn min_deadline(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+	match (left, right) {
+		(Some(left), Some(right)) => Some(left.min(right)),
+		(Some(value), None) | (None, Some(value)) => Some(value),
+		(None, None) => None,
+	}
+}
+
 pub(super) type InternalKeepAwakeCallback =
 	Arc<dyn Fn(BoxFuture<'static, Result<()>>) -> BoxFuture<'static, Result<()>> + Send + Sync>;
 pub(super) type LocalAlarmCallback = Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
@@ -807,6 +815,29 @@ impl ActorContext {
 			.store(true, Ordering::SeqCst);
 	}
 
+	/// Sets the durable logical deadline that should restart the foreign run
+	/// handler. This deadline shares one physical alarm with scheduled actions,
+	/// but remains independently addressable and clearable.
+	pub async fn set_run_wake_at(&self, wake_at: Option<i64>) -> Result<()> {
+		let _mutation = self.0.schedule_mutation_lock.lock().await;
+		self.persist_run_wake_at(wake_at).await?;
+		self.mark_schedule_dirty();
+		self.sync_alarm().await
+	}
+
+	pub(crate) async fn consume_due_run_wake(&self) -> Result<Option<i64>> {
+		let _mutation = self.0.schedule_mutation_lock.lock().await;
+		let Some(wake_at) = self.run_wake_at() else {
+			return Ok(None);
+		};
+		if wake_at > self.schedule_now_timestamp_ms() {
+			return Ok(None);
+		}
+		self.persist_run_wake_at(None).await?;
+		self.mark_schedule_dirty();
+		Ok(Some(wake_at))
+	}
+
 	async fn next_schedule_timestamp(&self, future_only: bool) -> Result<Option<i64>> {
 		let (sql, params) = if future_only {
 			(
@@ -840,12 +871,18 @@ impl ActorContext {
 		{
 			anyhow::bail!("injected schedule alarm sync failure");
 		}
-		let next_alarm = self.next_schedule_timestamp(false).await?;
+		let next_alarm = min_deadline(
+			self.next_schedule_timestamp(false).await?,
+			self.run_wake_at(),
+		);
 		self.sync_alarm_timestamp(next_alarm)
 	}
 
 	async fn sync_future_alarm(&self) -> Result<()> {
-		let next_alarm = self.next_schedule_timestamp(true).await?;
+		let next_alarm = min_deadline(
+			self.next_schedule_timestamp(true).await?,
+			self.run_wake_at(),
+		);
 		self.sync_alarm_timestamp(next_alarm)
 	}
 
@@ -967,6 +1004,11 @@ impl ActorContext {
 		timestamp_ms: Option<i64>,
 		generation: Option<u32>,
 	) {
+		let push_epoch = self
+			.0
+			.schedule_alarm_push_epoch
+			.fetch_add(1, Ordering::SeqCst)
+			.wrapping_add(1);
 		let (ack_tx, ack_rx) = oneshot::channel();
 		envoy_handle.set_alarm_with_ack(
 			self.actor_id().to_owned(),
@@ -981,7 +1023,11 @@ impl ActorContext {
 			handle.spawn(
 				async move {
 					let _ = ack_rx.await;
-					if let Err(error) = state_ctx.persist_last_pushed_alarm(timestamp_ms).await {
+					let is_current = state_ctx.0.schedule_alarm_push_epoch.load(Ordering::SeqCst)
+						== push_epoch && state_ctx.last_pushed_alarm() == timestamp_ms;
+					if is_current
+						&& let Err(error) = state_ctx.persist_last_pushed_alarm(timestamp_ms).await
+					{
 						tracing::error!(
 							?error,
 							?timestamp_ms,

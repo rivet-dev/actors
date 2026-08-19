@@ -274,6 +274,7 @@ fn query_catalog() -> Vec<QueryCase> {
 	let all_schedules = &["_rivet_schedule_events"];
 	let all_history = &["_rivet_schedule_history"];
 	let all_user_kv = &["_rivet_user_kv"];
+	let all_workflow_kv = &["_rivet_wf_kv"];
 	vec![
 		QueryCase {
 			id: "actor.snapshot",
@@ -353,6 +354,12 @@ fn query_catalog() -> Vec<QueryCase> {
 			id: "queue.filter_metadata_page",
 			sql: internal_storage::LOAD_QUEUE_MESSAGE_METADATA_PAGE_SQL.into(),
 			params: vec![0_i64.into(), 128_i64.into()],
+			expectation: indexed(None, &["_rivet_queue"]),
+		},
+		QueryCase {
+			id: "queue.load_name",
+			sql: internal_storage::LOAD_QUEUE_MESSAGE_NAME_SQL.into(),
+			params: vec![1_i64.into()],
 			expectation: indexed(None, &["_rivet_queue"]),
 		},
 		QueryCase {
@@ -448,6 +455,42 @@ fn query_catalog() -> Vec<QueryCase> {
 			}]),
 		},
 		QueryCase {
+			id: "workflow_kv.get",
+			sql: internal_storage::LOAD_WORKFLOW_KV_SQL.into(),
+			params: vec![Value::Blob(b"00000001".to_vec())],
+			expectation: indexed(None, all_workflow_kv),
+		},
+		QueryCase {
+			id: "workflow_kv.delete",
+			sql: internal_storage::DELETE_WORKFLOW_KV_SQL.into(),
+			params: vec![Value::Blob(b"00000001".to_vec())],
+			expectation: indexed(None, all_workflow_kv),
+		},
+		QueryCase {
+			id: "workflow_kv.delete_range",
+			sql: internal_storage::DELETE_WORKFLOW_KV_RANGE_SQL.into(),
+			params: vec![
+				Value::Blob(b"00000010".to_vec()),
+				Value::Blob(b"00000020".to_vec()),
+			],
+			expectation: indexed(None, all_workflow_kv),
+		},
+		QueryCase {
+			id: "workflow_kv.list_range",
+			sql: internal_storage::LIST_WORKFLOW_KV_RANGE_SQL.into(),
+			params: vec![
+				Value::Blob(b"00000010".to_vec()),
+				Value::Blob(b"00000100".to_vec()),
+			],
+			expectation: indexed(None, all_workflow_kv),
+		},
+		QueryCase {
+			id: "workflow_kv.list_from",
+			sql: internal_storage::LIST_WORKFLOW_KV_FROM_SQL.into(),
+			params: vec![Value::Blob(b"00009900".to_vec())],
+			expectation: indexed(None, all_workflow_kv),
+		},
+		QueryCase {
 			id: "connection.delete_state",
 			sql: internal_storage::DELETE_CONN_STATE_SQL.into(),
 			params: vec![text("00000001")],
@@ -464,6 +507,12 @@ fn query_catalog() -> Vec<QueryCase> {
 			sql: internal_storage::LOAD_LAST_PUSHED_ALARM_SQL.into(),
 			params: vec![],
 			expectation: indexed(None, &["_rivet_runtime"]),
+		},
+		QueryCase {
+			id: "runtime.run_wake",
+			sql: internal_storage::LOAD_RUN_WAKE_AT_SQL.into(),
+			params: vec![text(internal_storage::RUN_WAKE_AT_META_KEY)],
+			expectation: indexed(None, &["_rivet_meta"]),
 		},
 		QueryCase {
 			id: "runtime.inspector_token",

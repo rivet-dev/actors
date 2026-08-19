@@ -277,12 +277,17 @@ export interface JsKvEntry {
   key: Buffer
   value: Buffer
 }
+export interface WorkflowStorageEntry {
+  key: Buffer
+  value: Buffer
+}
 /** N-API wrapper around `rivetkit-core::ActorContext`. */
 export declare class ActorContext {
   state(): Buffer
   beginOnStateChange(): void
   endOnStateChange(): void
   kv(): Kv
+  workflowStorage(): WorkflowStorage
   sql(): JsNativeDatabase
   provisionActorRuntimeSocket(): Promise<JsActorRuntimeSocketEndpointInfo>
   schedule(): Schedule
@@ -313,6 +318,7 @@ export declare class ActorContext {
   aborted(): boolean
   runHandlerActive(): boolean
   restartRunHandler(): void
+  setRunWakeAt(timestampMs?: number | undefined | null): Promise<void>
   beginKeepAwake(): number
   endKeepAwake(regionId: number): void
   keepAwake(promise: Promise<any>): void
@@ -383,6 +389,8 @@ export declare class Queue {
   nextBatch(options?: JsQueueNextBatchOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<Array<QueueMessage>>
   waitForNames(names: Array<string>, options?: JsQueueWaitOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<QueueMessage>
   waitForNamesAvailable(names: Array<string>, options?: JsQueueWaitOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<void>
+  verifyPersistedIdentity(messageId: bigint, expectedName: string): Promise<string | null>
+  completePersisted(messageId: bigint, expectedName: string, response?: Buffer | undefined | null): Promise<boolean>
   enqueueAndWait(name: string, body: Buffer, options?: JsQueueEnqueueAndWaitOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<Buffer | null>
   tryNext(options?: JsQueueTryNextOptions | undefined | null): QueueMessage | null
   tryNextBatch(options?: JsQueueTryNextBatchOptions | undefined | null): Array<QueueMessage>
@@ -442,4 +450,18 @@ export declare class WebSocket {
   send(data: Buffer, binary: boolean): void
   close(code?: number | undefined | null, reason?: string | undefined | null): Promise<void>
   setEventCallback(callback: (...args: any[]) => any): void
+}
+/**
+ * N-API binding for RivetKit's closed workflow-storage capability. It exposes
+ * byte operations only; physical table and namespace details stay in core.
+ */
+export declare class WorkflowStorage {
+  get(key: Buffer): Promise<Buffer | null>
+  set(key: Buffer, value: Buffer): Promise<void>
+  delete(key: Buffer): Promise<void>
+  deletePrefix(prefix: Buffer): Promise<void>
+  deleteRange(start: Buffer, end: Buffer): Promise<void>
+  list(prefix: Buffer): Promise<Array<WorkflowStorageEntry>>
+  batch(entries: Array<WorkflowStorageEntry>): Promise<void>
+  flushWithState(writes: Array<WorkflowKvWritePayload>): Promise<void>
 }

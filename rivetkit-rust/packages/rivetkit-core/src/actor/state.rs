@@ -598,6 +598,22 @@ impl ActorContext {
 		Ok(())
 	}
 
+	pub(crate) fn load_run_wake_at(&self, wake_at: Option<i64>) {
+		*self.0.run_wake_at.write() = wake_at;
+	}
+
+	pub fn run_wake_at(&self) -> Option<i64> {
+		*self.0.run_wake_at.read()
+	}
+
+	pub(crate) async fn persist_run_wake_at(&self, wake_at: Option<i64>) -> Result<()> {
+		internal_storage::persist_run_wake_at(self.sql(), wake_at)
+			.await
+			.context("persist run wake deadline to sqlite")?;
+		self.load_run_wake_at(wake_at);
+		Ok(())
+	}
+
 	pub(crate) fn set_initial_state(&self, state: Vec<u8>) {
 		*self.0.current_state.write() = state.clone();
 		self.0.persisted.write().state = state;

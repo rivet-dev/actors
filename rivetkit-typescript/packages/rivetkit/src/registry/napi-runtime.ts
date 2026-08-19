@@ -420,6 +420,13 @@ export class NapiCoreRuntime implements CoreRuntime {
 		asNativeActorContext(ctx).setAlarm(timestampMs);
 	}
 
+	async actorSetRunWakeAt(
+		ctx: ActorContextHandle,
+		timestampMs?: number | undefined | null,
+	): Promise<void> {
+		await asNativeActorContext(ctx).setRunWakeAt(timestampMs);
+	}
+
 	actorRequestSave(
 		ctx: ActorContextHandle,
 		opts?: RuntimeRequestSaveOpts | undefined | null,
@@ -503,6 +510,73 @@ export class NapiCoreRuntime implements CoreRuntime {
 				value: toNapiBuffer(write.value),
 			})),
 		);
+	}
+
+	async actorWorkflowStorageGet(ctx: ActorContextHandle, key: RuntimeBytes) {
+		return await asNativeActorContext(ctx)
+			.workflowStorage()
+			.get(toNapiBuffer(key));
+	}
+
+	async actorWorkflowStorageSet(
+		ctx: ActorContextHandle,
+		key: RuntimeBytes,
+		value: RuntimeBytes,
+	): Promise<void> {
+		await asNativeActorContext(ctx)
+			.workflowStorage()
+			.set(toNapiBuffer(key), toNapiBuffer(value));
+	}
+
+	async actorWorkflowStorageDelete(
+		ctx: ActorContextHandle,
+		key: RuntimeBytes,
+	): Promise<void> {
+		await asNativeActorContext(ctx)
+			.workflowStorage()
+			.delete(toNapiBuffer(key));
+	}
+
+	async actorWorkflowStorageDeletePrefix(
+		ctx: ActorContextHandle,
+		prefix: RuntimeBytes,
+	): Promise<void> {
+		await asNativeActorContext(ctx)
+			.workflowStorage()
+			.deletePrefix(toNapiBuffer(prefix));
+	}
+
+	async actorWorkflowStorageDeleteRange(
+		ctx: ActorContextHandle,
+		start: RuntimeBytes,
+		end: RuntimeBytes,
+	): Promise<void> {
+		await asNativeActorContext(ctx)
+			.workflowStorage()
+			.deleteRange(toNapiBuffer(start), toNapiBuffer(end));
+	}
+
+	async actorWorkflowStorageList(
+		ctx: ActorContextHandle,
+		prefix: RuntimeBytes,
+	): Promise<RuntimeWorkflowKvWrite[]> {
+		return await asNativeActorContext(ctx)
+			.workflowStorage()
+			.list(toNapiBuffer(prefix));
+	}
+
+	async actorWorkflowStorageBatch(
+		ctx: ActorContextHandle,
+		writes: RuntimeWorkflowKvWrite[],
+	): Promise<void> {
+		await asNativeActorContext(ctx)
+			.workflowStorage()
+			.batch(
+				writes.map(({ key, value }) => ({
+					key: toNapiBuffer(key),
+					value: toNapiBuffer(value),
+				})),
+			);
 	}
 
 	actorId(ctx: ActorContextHandle): string {
@@ -860,6 +934,31 @@ export class NapiCoreRuntime implements CoreRuntime {
 				options,
 				signal ? asNativeCancellationToken(signal) : signal,
 			);
+	}
+
+	async actorQueueCompletePersisted(
+		ctx: ActorContextHandle,
+		messageId: bigint,
+		expectedName: string,
+		response?: RuntimeBytes | undefined | null,
+	): Promise<boolean> {
+		return await asNativeActorContext(ctx)
+			.queue()
+			.completePersisted(
+				messageId,
+				expectedName,
+				response == null ? response : toNapiBuffer(response),
+			);
+	}
+
+	async actorQueueVerifyPersistedIdentity(
+		ctx: ActorContextHandle,
+		messageId: bigint,
+		expectedName: string,
+	): Promise<string | null> {
+		return await asNativeActorContext(ctx)
+			.queue()
+			.verifyPersistedIdentity(messageId, expectedName);
 	}
 
 	async actorQueueEnqueueAndWait(

@@ -801,6 +801,7 @@ async fn dispatch_event(callbacks: &WasmCallbacks, ctx: &WasmActorContext, event
 			}
 			reply.send(result);
 		}
+		ActorEvent::RunWake => start_run_handler(callbacks, ctx),
 		ActorEvent::HttpRequest { request, reply } => {
 			let callback = callbacks.on_request.clone();
 			let ctx = ctx.clone();
@@ -1207,6 +1208,13 @@ impl WasmActorContext {
 		}
 	}
 
+	#[wasm_bindgen(js_name = workflowStorage)]
+	pub fn workflow_storage(&self) -> WasmWorkflowStorage {
+		WasmWorkflowStorage {
+			inner: self.inner.clone(),
+		}
+	}
+
 	#[wasm_bindgen(js_name = actorId)]
 	pub fn actor_id(&self) -> String {
 		self.inner.actor_id().to_owned()
@@ -1402,6 +1410,17 @@ impl WasmActorContext {
 			.map(|value| value.trunc() as i64);
 		self.inner
 			.set_alarm(timestamp_ms)
+			.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen(js_name = setRunWakeAt)]
+	pub async fn set_run_wake_at(&self, timestamp_ms: Option<f64>) -> Result<(), JsValue> {
+		let timestamp_ms = timestamp_ms
+			.filter(|value| value.is_finite())
+			.map(|value| value.trunc() as i64);
+		self.inner
+			.set_run_wake_at(timestamp_ms)
+			.await
 			.map_err(anyhow_to_js_error)
 	}
 
@@ -1922,6 +1941,88 @@ impl WasmKv {
 	}
 }
 
+#[wasm_bindgen(js_name = WorkflowStorage)]
+pub struct WasmWorkflowStorage {
+	inner: rivetkit_core::ActorContext,
+}
+
+#[wasm_bindgen(js_class = WorkflowStorage)]
+impl WasmWorkflowStorage {
+	#[wasm_bindgen]
+	pub async fn get(&self, key: Vec<u8>) -> Result<JsValue, JsValue> {
+		self.inner
+			.workflow_storage()
+			.get(&key)
+			.await
+			.map(|value| {
+				value
+					.map(|value| bytes_to_js(&value))
+					.unwrap_or(JsValue::NULL)
+			})
+			.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen]
+	pub async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), JsValue> {
+		self.inner
+			.workflow_storage()
+			.set(&key, &value)
+			.await
+			.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen(js_name = delete)]
+	pub async fn delete_key(&self, key: Vec<u8>) -> Result<(), JsValue> {
+		self.inner
+			.workflow_storage()
+			.delete(&key)
+			.await
+			.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen(js_name = deletePrefix)]
+	pub async fn delete_prefix(&self, prefix: Vec<u8>) -> Result<(), JsValue> {
+		self.inner
+			.workflow_storage()
+			.delete_prefix(&prefix)
+			.await
+			.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen(js_name = deleteRange)]
+	pub async fn delete_range(&self, start: Vec<u8>, end: Vec<u8>) -> Result<(), JsValue> {
+		self.inner
+			.workflow_storage()
+			.delete_range(&start, &end)
+			.await
+			.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen]
+	pub async fn list(&self, prefix: Vec<u8>) -> Result<JsValue, JsValue> {
+		self.inner
+			.workflow_storage()
+			.list(&prefix)
+			.await
+			.map(kv_entries_to_js)
+			.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen]
+	pub async fn batch(&self, entries: Array) -> Result<(), JsValue> {
+		let entries = kv_entries_from_js(entries)?;
+		let refs = entries
+			.iter()
+			.map(|(key, value)| (key.as_slice(), value.as_slice()))
+			.collect::<Vec<_>>();
+		self.inner
+			.workflow_storage()
+			.batch(&refs)
+			.await
+			.map_err(anyhow_to_js_error)
+	}
+}
+
 #[wasm_bindgen(js_name = Queue)]
 pub struct WasmQueue {
 	inner: rivetkit_core::ActorContext,
@@ -1983,6 +2084,31 @@ impl WasmQueue {
 			.await
 			.map_err(anyhow_to_js_error)?;
 		Ok(())
+	}
+
+	#[wasm_bindgen(js_name = verifyPersistedIdentity)]
+	pub async fn verify_persisted_identity(
+		&self,
+		message_id: u64,
+		expected_name: String,
+	) -> Result<Option<String>, JsValue> {
+		self.inner
+			.verify_persisted_message_identity(message_id, &expected_name)
+			.await
+			.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen(js_name = completePersisted)]
+	pub async fn complete_persisted(
+		&self,
+		message_id: u64,
+		expected_name: String,
+		response: Option<Vec<u8>>,
+	) -> Result<bool, JsValue> {
+		self.inner
+			.complete_persisted_message(message_id, &expected_name, response)
+			.await
+			.map_err(anyhow_to_js_error)
 	}
 
 	#[wasm_bindgen(js_name = enqueueAndWait)]

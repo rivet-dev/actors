@@ -10,6 +10,7 @@ pub mod registry;
 pub mod schedule;
 pub mod types;
 pub mod websocket;
+pub mod workflow_storage;
 
 use std::sync::Once;
 

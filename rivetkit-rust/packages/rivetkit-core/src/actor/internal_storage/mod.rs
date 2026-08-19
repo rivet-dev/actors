@@ -2,12 +2,16 @@ use std::collections::{BTreeSet, HashMap};
 use std::io::Cursor;
 
 use anyhow::{Context, Result, bail};
+use rivetkit_actor_persist::versioned as persist_versioned;
 
 use crate::actor::connection::{
 	PersistedConnection, PersistedSubscription, encode_persisted_connection,
 };
-use crate::actor::keys::make_workflow_key;
+use crate::actor::keys::{WORKFLOW_STORAGE_PREFIX, make_workflow_key};
 use crate::actor::messages::WorkflowKvWrite;
+use crate::actor::persist::{
+	decode_latest_with_embedded_version, encode_latest_with_embedded_version,
+};
 use crate::actor::queue::{PersistedQueueMessage, QueueMetadata};
 use crate::actor::state::PersistedActor;
 use crate::error::KvRuntimeError;
@@ -28,6 +32,8 @@ pub(crate) const USER_KV_BATCH_GET_MAX_KEYS: usize = 128;
 const QUEUE_METADATA_PAGE_ROWS: usize = 128;
 const QUEUE_MESSAGE_IDS_PER_QUERY: usize = 128;
 const WORKFLOW_KV_VALUE_LIMIT: usize = 256 * 1024;
+pub(crate) const RUN_WAKE_AT_META_KEY: &str = "run_wake_at";
+const RUN_WAKE_AT_VERSION: u16 = 1;
 
 /// Depot rejects SQLite commits that dirty more than `MAX_COMMIT_RAW_DIRTY_BYTES`
 /// (320 pages * 4 KiB = 1.3 MiB) in `engine/packages/depot/src/conveyer/constants.rs`.
@@ -72,6 +78,7 @@ where
 pub(crate) struct InternalActorSnapshot {
 	pub actor: PersistedActor,
 	pub last_pushed_alarm: Option<i64>,
+	pub run_wake_at: Option<i64>,
 }
 
 pub(crate) async fn load_actor_snapshot(db: &SqliteDb) -> Result<Option<InternalActorSnapshot>> {
@@ -87,6 +94,7 @@ pub(crate) async fn load_actor_snapshot(db: &SqliteDb) -> Result<Option<Internal
 	let input = read_optional_blob(row, 1, "input")?;
 	let state = read_blob(row, 2, "state")?;
 	let last_pushed_alarm = load_last_pushed_alarm(db).await?;
+	let run_wake_at = load_run_wake_at(db).await?;
 
 	Ok(Some(InternalActorSnapshot {
 		actor: PersistedActor {
@@ -96,6 +104,7 @@ pub(crate) async fn load_actor_snapshot(db: &SqliteDb) -> Result<Option<Internal
 			scheduled_events: Vec::new(),
 		},
 		last_pushed_alarm,
+		run_wake_at,
 	}))
 }
 
@@ -477,6 +486,21 @@ pub(crate) async fn load_queue_messages(db: &SqliteDb) -> Result<Vec<QueueMessag
 	decode_queue_message_rows(&result.rows)
 }
 
+pub(crate) async fn load_queue_message_name(db: &SqliteDb, id: u64) -> Result<Option<String>> {
+	let id = i64::try_from(id).context("queue message id exceeds sqlite integer range")?;
+	let result = db
+		.query(
+			LOAD_QUEUE_MESSAGE_NAME_SQL,
+			Some(vec![BindParam::Integer(id)]),
+		)
+		.await
+		.context("load internal queue message name")?;
+	let Some(row) = result.rows.first() else {
+		return Ok(None);
+	};
+	Ok(Some(read_text(row, 0, "queue message name")?))
+}
+
 pub(crate) async fn load_queue_messages_matching(
 	db: &SqliteDb,
 	names: Option<&BTreeSet<String>>,
@@ -831,6 +855,128 @@ pub(crate) async fn workflow_kv_batch_put(db: &SqliteDb, entries: &[(&[u8], &[u8
 	Ok(())
 }
 
+pub(crate) async fn workflow_storage_get(db: &SqliteDb, key: &[u8]) -> Result<Option<Vec<u8>>> {
+	let result = db
+		.query(
+			LOAD_WORKFLOW_KV_SQL,
+			Some(vec![BindParam::Blob(make_workflow_key(key))]),
+		)
+		.await
+		.context("get workflow storage value from sqlite")?;
+	let Some(row) = result.rows.first() else {
+		return Ok(None);
+	};
+	Ok(Some(read_blob(row, 0, "workflow storage value")?))
+}
+
+pub(crate) async fn workflow_storage_batch_put(
+	db: &SqliteDb,
+	entries: &[(&[u8], &[u8])],
+) -> Result<()> {
+	let prefixed = entries
+		.iter()
+		.map(|(key, value)| (make_workflow_key(key), (*value).to_vec()))
+		.collect::<Vec<_>>();
+	let row_count = prefixed.len();
+	let payload_bytes = prefixed
+		.iter()
+		.map(|(key, value)| key.len().saturating_add(value.len()))
+		.fold(0usize, usize::saturating_add);
+	if row_count > KV_TX_MAX_ROWS || payload_bytes > KV_TX_MAX_PAYLOAD_BYTES {
+		bail!(
+			"workflow storage batch exceeds sqlite transaction budget: {row_count} rows and {payload_bytes} bytes (limits: {} rows and {} bytes)",
+			KV_TX_MAX_ROWS,
+			KV_TX_MAX_PAYLOAD_BYTES,
+		);
+	}
+	let refs = prefixed
+		.iter()
+		.map(|(key, value)| (key.as_slice(), value.as_slice()))
+		.collect::<Vec<_>>();
+	workflow_kv_batch_put(db, &refs).await
+}
+
+pub(crate) async fn workflow_storage_delete(db: &SqliteDb, key: &[u8]) -> Result<()> {
+	db.execute(
+		DELETE_WORKFLOW_KV_SQL,
+		Some(vec![BindParam::Blob(make_workflow_key(key))]),
+	)
+	.await
+	.context("delete workflow storage value from sqlite")?;
+	Ok(())
+}
+
+pub(crate) async fn workflow_storage_delete_prefix(db: &SqliteDb, prefix: &[u8]) -> Result<()> {
+	let start = make_workflow_key(prefix);
+	let end = prefix_upper_bound(&start)
+		.expect("the workflow namespace prefix always has a finite upper bound");
+	workflow_storage_delete_prefixed_range(db, &start, &end).await
+}
+
+pub(crate) async fn workflow_storage_delete_range(
+	db: &SqliteDb,
+	start: &[u8],
+	end: &[u8],
+) -> Result<()> {
+	workflow_storage_delete_prefixed_range(db, &make_workflow_key(start), &make_workflow_key(end))
+		.await
+}
+
+async fn workflow_storage_delete_prefixed_range(
+	db: &SqliteDb,
+	start: &[u8],
+	end: &[u8],
+) -> Result<()> {
+	db.execute(
+		DELETE_WORKFLOW_KV_RANGE_SQL,
+		Some(vec![
+			BindParam::Blob(start.to_vec()),
+			BindParam::Blob(end.to_vec()),
+		]),
+	)
+	.await
+	.context("delete workflow storage range from sqlite")?;
+	Ok(())
+}
+
+pub(crate) async fn workflow_storage_list(
+	db: &SqliteDb,
+	prefix: &[u8],
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+	let start = make_workflow_key(prefix);
+	let upper_bound = prefix_upper_bound(&start);
+	let result = match upper_bound {
+		Some(end) => {
+			db.query(
+				LIST_WORKFLOW_KV_RANGE_SQL,
+				Some(vec![BindParam::Blob(start), BindParam::Blob(end)]),
+			)
+			.await
+		}
+		None => {
+			db.query(
+				LIST_WORKFLOW_KV_FROM_SQL,
+				Some(vec![BindParam::Blob(start)]),
+			)
+			.await
+		}
+	}
+	.context("list workflow storage values from sqlite")?;
+	result
+		.rows
+		.iter()
+		.map(|row| {
+			let key = read_blob(row, 0, "workflow storage key")?;
+			let value = read_blob(row, 1, "workflow storage value")?;
+			let key = key
+				.strip_prefix(&WORKFLOW_STORAGE_PREFIX)
+				.context("workflow storage row escaped its namespace")?
+				.to_vec();
+			Ok((key, value))
+		})
+		.collect()
+}
+
 fn build_workflow_kv_statements(writes: &[WorkflowKvWrite]) -> Result<Vec<SqliteBatchStatement>> {
 	writes
 		.iter()
@@ -992,6 +1138,42 @@ pub(crate) async fn persist_last_pushed_alarm(db: &SqliteDb, alarm_ts: Option<i6
 	)
 	.await
 	.context("persist internal last pushed alarm")?;
+	Ok(())
+}
+
+pub(crate) async fn load_run_wake_at(db: &SqliteDb) -> Result<Option<i64>> {
+	let result = db
+		.query(
+			LOAD_RUN_WAKE_AT_SQL,
+			Some(vec![BindParam::Text(RUN_WAKE_AT_META_KEY.to_owned())]),
+		)
+		.await
+		.context("load internal run wake deadline")?;
+	let Some(row) = result.rows.first() else {
+		return Ok(None);
+	};
+	let payload = read_blob(row, 0, "run wake deadline")?;
+	decode_latest_with_embedded_version::<persist_versioned::RunWakeAt>(
+		&payload,
+		"run wake deadline",
+	)
+}
+
+pub(crate) async fn persist_run_wake_at(db: &SqliteDb, wake_at: Option<i64>) -> Result<()> {
+	let payload = encode_latest_with_embedded_version::<persist_versioned::RunWakeAt>(
+		wake_at,
+		RUN_WAKE_AT_VERSION,
+		"run wake deadline",
+	)?;
+	db.execute(
+		UPSERT_RUN_WAKE_AT_SQL,
+		Some(vec![
+			BindParam::Text(RUN_WAKE_AT_META_KEY.to_owned()),
+			BindParam::Blob(payload),
+		]),
+	)
+	.await
+	.context("persist internal run wake deadline")?;
 	Ok(())
 }
 

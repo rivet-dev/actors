@@ -64,6 +64,15 @@ pub struct ActorKv {
 	sql: SqliteDb,
 }
 
+/// Opaque access to RivetKit-owned workflow storage version 1.
+///
+/// RivetKit owns the physical table, namespace prefix, and migrations. Clients
+/// must treat keys and values as opaque bytes and must not recreate the schema.
+#[derive(Clone)]
+pub struct WorkflowStorage {
+	ctx: ActorContext,
+}
+
 pub(crate) struct ActorContextInner {
 	pub(super) legacy_kv: LegacyActorKv,
 	user_kv: ActorKv,
@@ -75,6 +84,7 @@ pub(crate) struct ActorContextInner {
 	pub(super) current_state: RwLock<Vec<u8>>,
 	pub(super) persisted: RwLock<PersistedActor>,
 	pub(super) last_pushed_alarm: RwLock<Option<i64>>,
+	pub(super) run_wake_at: RwLock<Option<i64>>,
 	pub(super) state_save_interval: Duration,
 	pub(super) state_dirty: AtomicBool,
 	pub(super) state_revision: AtomicU64,
@@ -112,6 +122,7 @@ pub(crate) struct ActorContextInner {
 	// being moved out of the lock.
 	pub(super) schedule_pending_alarm_writes: Mutex<Vec<oneshot::Receiver<()>>>,
 	pub(super) schedule_local_alarm_epoch: AtomicU64,
+	pub(super) schedule_alarm_push_epoch: AtomicU64,
 	pub(super) schedule_alarm_dispatch_enabled: AtomicBool,
 	pub(super) schedule_dirty_since_push: AtomicBool,
 	pub(super) schedule_mutation_lock: AsyncMutex<()>,
@@ -232,6 +243,43 @@ impl ActorKv {
 	}
 }
 
+impl WorkflowStorage {
+	pub async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+		internal_storage::workflow_storage_get(self.ctx.sql(), key).await
+	}
+
+	pub async fn set(&self, key: &[u8], value: &[u8]) -> Result<()> {
+		self.batch(&[(key, value)]).await
+	}
+
+	pub async fn delete(&self, key: &[u8]) -> Result<()> {
+		internal_storage::workflow_storage_delete(self.ctx.sql(), key).await
+	}
+
+	pub async fn delete_prefix(&self, prefix: &[u8]) -> Result<()> {
+		internal_storage::workflow_storage_delete_prefix(self.ctx.sql(), prefix).await
+	}
+
+	pub async fn delete_range(&self, start: &[u8], end: &[u8]) -> Result<()> {
+		internal_storage::workflow_storage_delete_range(self.ctx.sql(), start, end).await
+	}
+
+	pub async fn list(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+		internal_storage::workflow_storage_list(self.ctx.sql(), prefix).await
+	}
+
+	/// Executes one storage-only transaction. The batch is rejected rather than
+	/// split when it exceeds the atomic workflow transaction budget.
+	pub async fn batch(&self, entries: &[(&[u8], &[u8])]) -> Result<()> {
+		internal_storage::workflow_storage_batch_put(self.ctx.sql(), entries).await
+	}
+
+	/// Commits workflow values atomically with lifecycle-owned actor state.
+	pub async fn flush_with_state(&self, writes: Vec<WorkflowKvWrite>) -> Result<()> {
+		self.ctx.save_state_and_workflow_batch(writes).await
+	}
+}
+
 impl ActorContext {
 	#[cfg(test)]
 	pub(crate) fn new(
@@ -297,6 +345,7 @@ impl ActorContext {
 			current_state: RwLock::new(Vec::new()),
 			persisted: RwLock::new(PersistedActor::default()),
 			last_pushed_alarm: RwLock::new(None),
+			run_wake_at: RwLock::new(None),
 			state_save_interval,
 			state_dirty: AtomicBool::new(false),
 			state_revision: AtomicU64::new(0),
@@ -326,6 +375,7 @@ impl ActorContext {
 			schedule_local_alarm_task: Mutex::new(None),
 			schedule_pending_alarm_writes: Mutex::new(Vec::new()),
 			schedule_local_alarm_epoch: AtomicU64::new(0),
+			schedule_alarm_push_epoch: AtomicU64::new(0),
 			schedule_alarm_dispatch_enabled: AtomicBool::new(true),
 			// A fresh actor context has no in-process record of a successful
 			// envoy alarm push yet, so the first sync must always push.
@@ -446,6 +496,10 @@ impl ActorContext {
 
 	pub fn sql(&self) -> &SqliteDb {
 		&self.0.sql
+	}
+
+	pub fn workflow_storage(&self) -> WorkflowStorage {
+		WorkflowStorage { ctx: self.clone() }
 	}
 
 	#[cfg(feature = "sqlite-local")]

@@ -2,6 +2,7 @@ export type {
 	AnyDatabaseProvider,
 	DatabaseProvider,
 	DatabaseProviderContext,
+	InferDatabaseClient,
 	NativeDatabaseProvider,
 	RawAccess,
 	RawDatabaseClient,

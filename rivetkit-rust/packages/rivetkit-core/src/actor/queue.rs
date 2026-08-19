@@ -195,6 +195,19 @@ struct QueueCompleteNotConfigured {
 	name: String,
 }
 
+#[derive(RivetError, Serialize, Deserialize)]
+#[error(
+	"queue",
+	"message_identity_mismatch",
+	"Queue message identity does not match",
+	"Queue message {message_id} is named '{actual_name}', not '{expected_name}'."
+)]
+struct QueueMessageIdentityMismatch {
+	message_id: u64,
+	expected_name: String,
+	actual_name: String,
+}
+
 #[derive(RivetError)]
 #[error("actor", "aborted", "Actor aborted")]
 struct QueueActorAborted;
@@ -487,6 +500,61 @@ impl ActorContext {
 		}
 	}
 
+	/// Verifies the durable name before foreign-runtime response validation.
+	pub async fn verify_persisted_message_identity(
+		&self,
+		message_id: u64,
+		expected_name: &str,
+	) -> Result<Option<String>> {
+		self.ensure_initialized().await?;
+		let _receive_guard = self.0.queue_receive_lock.lock().await;
+		self.verify_persisted_message_identity_unlocked(message_id, expected_name)
+			.await
+	}
+
+	/// Completes a persisted message by durable identity. Missing or already
+	/// completed IDs are idempotent; an expected-name mismatch leaves the row
+	/// untouched.
+	pub async fn complete_persisted_message(
+		&self,
+		message_id: u64,
+		expected_name: &str,
+		response: Option<Vec<u8>>,
+	) -> Result<bool> {
+		self.ensure_initialized().await?;
+		let _receive_guard = self.0.queue_receive_lock.lock().await;
+		let Some(_) = self
+			.verify_persisted_message_identity_unlocked(message_id, expected_name)
+			.await?
+		else {
+			return Ok(false);
+		};
+		self.complete_message_by_id_unlocked(message_id, response)
+			.await?;
+		Ok(true)
+	}
+
+	async fn verify_persisted_message_identity_unlocked(
+		&self,
+		message_id: u64,
+		expected_name: &str,
+	) -> Result<Option<String>> {
+		let Some(actual_name) =
+			internal_storage::load_queue_message_name(self.sql(), message_id).await?
+		else {
+			return Ok(None);
+		};
+		if actual_name != expected_name {
+			return Err(QueueMessageIdentityMismatch {
+				message_id,
+				expected_name: expected_name.to_owned(),
+				actual_name: actual_name.clone(),
+			}
+			.build());
+		}
+		Ok(Some(actual_name))
+	}
+
 	pub fn try_next(&self, opts: QueueTryNextOpts) -> Result<Option<QueueMessage>> {
 		let mut messages = self.try_next_batch(QueueTryNextBatchOpts {
 			names: opts.names,
@@ -672,6 +740,16 @@ impl ActorContext {
 	}
 
 	async fn complete_message_by_id(
+		&self,
+		message_id: u64,
+		response: Option<Vec<u8>>,
+	) -> Result<()> {
+		let _receive_guard = self.0.queue_receive_lock.lock().await;
+		self.complete_message_by_id_unlocked(message_id, response)
+			.await
+	}
+
+	async fn complete_message_by_id_unlocked(
 		&self,
 		message_id: u64,
 		response: Option<Vec<u8>>,

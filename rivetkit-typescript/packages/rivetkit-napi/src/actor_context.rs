@@ -31,6 +31,7 @@ use crate::database::JsNativeDatabase;
 use crate::kv::Kv;
 use crate::queue::Queue;
 use crate::schedule::Schedule;
+use crate::workflow_storage::WorkflowStorage;
 use crate::{NapiInvalidArgument, NapiInvalidState, napi_anyhow_error};
 
 type AbortSignalTsfn = ThreadsafeFunction<(), ErrorStrategy::CalleeHandled>;
@@ -268,6 +269,11 @@ impl ActorContext {
 	#[allow(deprecated)]
 	pub fn kv(&self) -> Kv {
 		Kv::new(self.inner.clone())
+	}
+
+	#[napi]
+	pub fn workflow_storage(&self) -> WorkflowStorage {
+		WorkflowStorage::new(self.inner.clone())
 	}
 
 	#[napi]
@@ -516,6 +522,14 @@ impl ActorContext {
 	#[napi]
 	pub fn restart_run_handler(&self) -> napi::Result<()> {
 		self.shared.run_restart().map_err(napi_anyhow_error)
+	}
+
+	#[napi]
+	pub async fn set_run_wake_at(&self, timestamp_ms: Option<i64>) -> napi::Result<()> {
+		self.inner
+			.set_run_wake_at(timestamp_ms)
+			.await
+			.map_err(napi_anyhow_error)
 	}
 
 	#[napi]
