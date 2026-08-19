@@ -154,10 +154,12 @@ interface ActorInspectorApi {
 	getWorkflowHistory: () => Promise<{
 		history: WorkflowHistory | null;
 		isEnabled: boolean;
+		error: string | null;
 	}>;
 	replayWorkflowFromStep: (entryId?: string) => Promise<{
 		history: WorkflowHistory | null;
 		isEnabled: boolean;
+		error: string | null;
 	}>;
 	getDatabaseSchema: () => Promise<DatabaseSchema>;
 	getDatabaseTableRows: (
@@ -664,9 +666,10 @@ const computeActorUrl = ({ url, actorId }: { url: string; actorId: ActorId }) =>
 function transformWorkflowHistoryFromJson(raw: number[] | null): {
 	history: WorkflowHistory | null;
 	isEnabled: boolean;
+	error: string | null;
 } {
 	if (!raw) {
-		return { history: null, isEnabled: true };
+		return { history: null, isEnabled: true, error: null };
 	}
 
 	return transformWorkflowHistoryFromInspector(
@@ -716,8 +719,11 @@ const replayWorkflowFromStepHttp = async ({
 		})
 		.parse((await response.json()) satisfies WorkflowHistoryHttpResponse);
 
+	const transformed = transformWorkflowHistoryFromJson(data.history);
+
 	return {
-		history: transformWorkflowHistoryFromJson(data.history).history,
+		history: transformed.history,
+		error: transformed.error,
 		isEnabled: data.isWorkflowEnabled,
 	};
 };
@@ -1115,6 +1121,7 @@ export const ActorInspectorProvider = ({
 				const { id, promise } = actionsManager.current.createResolver<{
 					history: WorkflowHistory | null;
 					isEnabled: boolean;
+					error: string | null;
 				}>({
 					name: "getWorkflowHistory",
 					timeoutMs: 10_000,
@@ -1533,6 +1540,7 @@ const createMessageHandler =
 				actionsManager.current.resolve(Number(rid), {
 					history: transformed?.history ?? null,
 					isEnabled: body.val.isWorkflowEnabled,
+					error: transformed?.error ?? null,
 				});
 			})
 			.with({ tag: "WorkflowReplayResponse" }, (body) => {
@@ -1551,6 +1559,7 @@ const createMessageHandler =
 				actionsManager.current.resolve(Number(rid), {
 					history: transformed?.history ?? null,
 					isEnabled: body.val.isWorkflowEnabled,
+					error: transformed?.error ?? null,
 				});
 			})
 			.with({ tag: "DatabaseSchemaResponse" }, (body) => {
@@ -1618,16 +1627,27 @@ function transformState(state: ArrayBuffer) {
 function transformWorkflowHistoryFromInspector(raw: ArrayBuffer): {
 	history: WorkflowHistory | null;
 	isEnabled: boolean;
+	error: string | null;
 } {
 	try {
 		const decoded = decodeWorkflowHistoryTransport(raw);
 		return {
 			history: transformWorkflowHistory(decoded),
 			isEnabled: true,
+			error: null,
 		};
 	} catch (error) {
-		console.warn("Failed to decode workflow history", error);
-		return { history: null, isEnabled: true };
+		// A decode failure is a protocol mismatch, not an empty workflow. It is
+		// reported so the tab cannot render it as "nothing recorded yet".
+		console.error("Failed to decode workflow history", error);
+		return {
+			history: null,
+			isEnabled: true,
+			error:
+				error instanceof Error
+					? error.message
+					: "Workflow history could not be decoded.",
+		};
 	}
 }
 

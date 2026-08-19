@@ -392,14 +392,7 @@ impl RegistryDispatcher {
 		instance: &ActorTaskHandle,
 	) -> Result<(bool, Option<JsonValue>)> {
 		self.inspector_workflow_history_bytes(instance).await.map(
-			|(workflow_supported, history)| {
-				(
-					workflow_supported,
-					history
-						.map(|payload| decode_cbor_json_or_null(&payload))
-						.filter(|value| !value.is_null()),
-				)
-			},
+			|(workflow_supported, history)| (workflow_supported, workflow_history_json(history)),
 		)
 	}
 
@@ -411,12 +404,7 @@ impl RegistryDispatcher {
 		self.inspector_workflow_replay_bytes(instance, entry_id)
 			.await
 			.map(|(workflow_supported, history)| {
-				(
-					workflow_supported,
-					history
-						.map(|payload| decode_cbor_json_or_null(&payload))
-						.filter(|value| !value.is_null()),
-				)
+				(workflow_supported, workflow_history_json(history))
 			})
 	}
 
@@ -831,6 +819,20 @@ pub(super) fn inspector_error_status(group: &str, code: &str) -> StatusCode {
 		}
 		_ => StatusCode::INTERNAL_SERVER_ERROR,
 	}
+}
+
+// Workflow history is BARE, and the only codec lives in the TypeScript workflow engine. Runtimes
+// that reach these JSON routes have no workflow engine, so history is expected to be absent; bytes
+// arriving here mean a runtime grew one without a Rust decoder.
+fn workflow_history_json(history: Option<Vec<u8>>) -> Option<JsonValue> {
+	if let Some(history) = history {
+		tracing::warn!(
+			byte_len = history.len(),
+			"omitting workflow history from json inspector response, BARE decoding is not available in core",
+		);
+	}
+
+	None
 }
 
 pub(super) fn parse_json_body<T>(request: &Request) -> std::result::Result<T, HttpResponse>
