@@ -10,14 +10,14 @@ import type {
 	WorkflowHistorySnapshot,
 	WorkflowState,
 } from "@rivetkit/workflow-engine";
-import type * as inspectorSchema from "@/common/bare/generated/inspector/v4";
 import * as transport from "@/common/bare/transport/v1";
 import type { JsonCompatValue } from "@/common/encoding";
+import type { WorkflowHistoryBytes } from "@/common/inspector-transport";
 import { encodeWorkflowHistoryTransport } from "@/common/inspector-transport";
 import { encodeCborCompat } from "@/serde";
 import { assertUnreachable, bufferToArrayBuffer } from "@/utils";
 
-type HistoryListener = (history: inspectorSchema.WorkflowHistory) => void;
+type HistoryListener = (history: WorkflowHistoryBytes) => void;
 
 function createHistoryEmitter() {
 	const listeners = new Set<HistoryListener>();
@@ -27,7 +27,7 @@ function createHistoryEmitter() {
 			listeners.add(listener);
 			return () => listeners.delete(listener);
 		},
-		emit: (history: inspectorSchema.WorkflowHistory) => {
+		emit: (history: WorkflowHistoryBytes) => {
 			for (const listener of listeners) {
 				listener(history);
 			}
@@ -36,14 +36,12 @@ function createHistoryEmitter() {
 }
 
 export interface WorkflowInspectorAdapter {
-	getHistory: () => inspectorSchema.WorkflowHistory | null;
+	getHistory: () => WorkflowHistoryBytes | null;
 	getState: () => Promise<WorkflowState | null>;
 	onHistoryUpdated: (
-		listener: (history: inspectorSchema.WorkflowHistory) => void,
+		listener: (history: WorkflowHistoryBytes) => void,
 	) => () => void;
-	replayFromStep: (
-		entryId?: string,
-	) => Promise<inspectorSchema.WorkflowHistory | null>;
+	replayFromStep: (entryId?: string) => Promise<WorkflowHistoryBytes | null>;
 }
 
 export function createWorkflowInspectorAdapter(): {
@@ -51,17 +49,15 @@ export function createWorkflowInspectorAdapter(): {
 	update: (snapshot: WorkflowHistorySnapshot) => void;
 	setGetState: (fn: () => Promise<WorkflowState | null>) => void;
 	setReplayFromStep: (
-		fn: (
-			entryId?: string,
-		) => Promise<inspectorSchema.WorkflowHistory | null>,
+		fn: (entryId?: string) => Promise<WorkflowHistoryBytes | null>,
 	) => void;
 } {
 	const emitter = createHistoryEmitter();
-	let history: inspectorSchema.WorkflowHistory | null = null;
+	let history: WorkflowHistoryBytes | null = null;
 	let getState: () => Promise<WorkflowState | null> = async () => null;
 	let replayFromStep: (
 		entryId?: string,
-	) => Promise<inspectorSchema.WorkflowHistory | null> = async () => {
+	) => Promise<WorkflowHistoryBytes | null> = async () => {
 		throw new Error("Workflow replay controls are not initialized");
 	};
 

@@ -48,7 +48,10 @@ import type { AnyDatabaseProvider } from "@/common/database/config";
 import { wrapJsNativeDatabase } from "@/common/database/native-database";
 import { assertJsonCompatValue, type JsonCompatValue } from "@/common/encoding";
 import { isResponseLike, type ResponseLike } from "@/common/fetch-like";
-import { decodeWorkflowHistoryTransport } from "@/common/inspector-transport";
+import {
+	decodeWorkflowHistoryTransport,
+	type WorkflowHistoryBytes,
+} from "@/common/inspector-transport";
 import { deconstructError, stringifyError } from "@/common/utils";
 import type {
 	RivetCloseEvent,
@@ -64,7 +67,7 @@ import type {
 	SqliteBackend,
 } from "@/registry/config";
 import { decodeCborCompat, encodeCborCompat } from "@/serde";
-import { getEnvUniversal, VERSION } from "@/utils";
+import { getEnvUniversal, toUint8Array, VERSION } from "@/utils";
 import {
 	getNodeFsSync,
 	getNodePath,
@@ -677,7 +680,11 @@ function decodeValue<T>(value?: RuntimeBytes | null): T {
 	return decodeCborCompat(value);
 }
 
-function encodeValue(value: unknown): RuntimeBytes {
+// Rejects `WorkflowHistoryBytes`: the compat layer rewrites an ArrayBuffer as
+// `["$ArrayBuffer", "<base64>"]`, and the inspector wire field carries raw BARE.
+function encodeValue<T>(
+	value: T extends WorkflowHistoryBytes ? never : T,
+): RuntimeBytes {
 	return encodeCborCompat(value as JsonCompatValue);
 }
 
@@ -769,9 +776,10 @@ function callNativeSync<T>(invoke: () => T): T {
 	}
 }
 
-type NativeWorkflowInspectorConfig = WorkflowInspectorConfig<ArrayBuffer> & {
-	getState?: () => Promise<unknown> | unknown;
-};
+type NativeWorkflowInspectorConfig =
+	WorkflowInspectorConfig<WorkflowHistoryBytes> & {
+		getState?: () => Promise<unknown> | unknown;
+	};
 
 function isClosedTaskRegistrationError(error: unknown): boolean {
 	const metadata = error instanceof RivetError ? error.metadata : undefined;
@@ -4816,7 +4824,7 @@ export function buildNativeFactory(
 								getNativeWorkflowInspector(ctx)?.getHistory();
 							return history == null
 								? undefined
-								: encodeValue(history);
+								: toUint8Array(history);
 						},
 					)
 				: undefined,
@@ -4846,7 +4854,7 @@ export function buildNativeFactory(
 								)) ?? null;
 							return history == null
 								? undefined
-								: encodeValue(history);
+								: toUint8Array(history);
 						},
 					)
 				: undefined,
