@@ -1,0 +1,16 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vs/
+*.sln
+*.csproj
+*.user
+
+# Unity Library (not applicable for packages, but just in case)
+Library/
+Temp/
+Logs/
+obj/

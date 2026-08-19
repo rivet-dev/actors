@@ -1,0 +1,3 @@
+2020/09/22
+	+ Added demo scene.
+	+ You can now Store with a delay, which will behave similar to Destroy(obj, delay).

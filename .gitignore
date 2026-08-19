@@ -113,3 +113,12 @@ container-runner/examples/unity-demo/packages-lock.json
 container-runner/examples/unity-demo/*.csproj
 container-runner/examples/unity-demo/*.sln
 container-runner/examples/unity-demo/.vsconfig
+container-runner/examples/unity-webrtc-demo/Library/
+container-runner/examples/unity-webrtc-demo/Temp/
+container-runner/examples/unity-webrtc-demo/Obj/
+container-runner/examples/unity-webrtc-demo/Logs/
+container-runner/examples/unity-webrtc-demo/UserSettings/
+container-runner/examples/unity-webrtc-demo/Builds/
+container-runner/examples/unity-webrtc-demo/*.csproj
+container-runner/examples/unity-webrtc-demo/*.sln
+container-runner/examples/unity-webrtc-demo/.vsconfig

@@ -1,0 +1,23 @@
+{
+  "name": "FishyWebRTC",
+  "rootNamespace": "FishNet.Transporting.FishyWebRTC",
+  "references": [
+    "FishNet.Runtime",
+    "SimpleWebRTC"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [
+    {
+      "name": "com.unity.webrtc",
+      "expression": "3.0.0-pre.7",
+      "define": "ENABLE_WEBRTC"
+    }
+  ],
+  "noEngineReferences": false
+}

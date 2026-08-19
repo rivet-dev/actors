@@ -1,0 +1,27 @@
+{
+  "dependencies": {
+    "com.firstgeargames.fishnet": "4.7.2",
+    "com.skillcade.fishy-webrtc": "file:com.skillcade.fishy-webrtc",
+    "com.unity.nuget.newtonsoft-json": "3.2.2",
+    "com.unity.sdk.linux-arm64": "1.1.0",
+    "com.unity.sdk.linux-x86_64": "1.1.0",
+    "com.unity.toolchain.macos-arm64-linux": "1.1.0",
+    "com.unity.ugui": "2.5.0",
+    "com.unity.modules.ai": "1.0.0",
+    "com.unity.modules.animation": "1.0.0",
+    "com.unity.modules.assetbundle": "1.0.0",
+    "com.unity.modules.audio": "1.0.0",
+    "com.unity.modules.imageconversion": "1.0.0",
+    "com.unity.modules.imgui": "1.0.0",
+    "com.unity.modules.jsonserialize": "1.0.0",
+    "com.unity.modules.particlesystem": "1.0.0",
+    "com.unity.modules.physics": "1.0.0",
+    "com.unity.modules.physics2d": "1.0.0",
+    "com.unity.modules.physicscore2d": "1.0.0",
+    "com.unity.modules.screencapture": "1.0.0",
+    "com.unity.modules.ui": "1.0.0",
+    "com.unity.modules.uielements": "1.0.0",
+    "com.unity.modules.unitywebrequest": "1.0.0",
+    "com.unity.modules.unitywebrequestwww": "1.0.0"
+  }
+}

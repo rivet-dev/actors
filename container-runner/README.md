@@ -34,6 +34,7 @@ see [Rivet Compute](#rivet-compute) below.
 | Path | What |
 |------|------|
 | `examples/unity-demo/` | Standard Unity project with a simple FishNet + Bayou scene |
+| `examples/unity-webrtc-demo/` | Copy of the Unity project using FishyWebRTC reliable and unreliable data channels |
 | `src/` | Rust runner that spawns a child game server and proxies Rivet traffic to it |
 | `examples/e2e-test/` | Local Rivet engine test harness |
 | `examples/test-server/` | Small Node WebSocket server used as a fast runner/tunnel regression test |

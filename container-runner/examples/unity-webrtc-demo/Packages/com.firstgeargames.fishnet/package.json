@@ -1,0 +1,38 @@
+{
+  "name": "com.firstgeargames.fishnet",
+  "version": "4.7.2",
+  "displayName": "FishNet: Networking Evolved",
+  "description": "A feature-rich Unity networking solution aimed towards reliability, ease of use, efficiency, and flexibility.",
+  "unity": "2021.3",
+  "documentationUrl": "https://fish-networking.gitbook.io/docs/",
+  "licensesUrl": "https://github.com/FirstGearGames/FishNet/blob/main/LICENSE.md",
+  "license": "See LICENSE.txt file",
+  "keywords": [
+    "FishNetworking",
+    "Networking",
+    "FishNet",
+    "Unity Networking",
+    "Bolt",
+    "Mirror",
+    "Photon",
+    "DarkRift",
+    "DedicatedServer",
+    "Fusion",
+    "Netcode"
+  ],
+  "author": {
+    "name": "FirstGearGames",
+    "url": "http://www.fish-networking.com"
+  },
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1",
+    "com.unity.ugui": "1.0.0",
+    "com.unity.modules.animation": "1.0.0",
+    "com.unity.modules.imgui": "1.0.0",
+    "com.unity.modules.particlesystem": "1.0.0",
+    "com.unity.modules.physics": "1.0.0",
+    "com.unity.modules.physics2d": "1.0.0",
+    "com.unity.modules.ui": "1.0.0"
+  },
+  "_fingerprint": "0728292d833997b3eee75e33393d8a140c690b50"
+}
