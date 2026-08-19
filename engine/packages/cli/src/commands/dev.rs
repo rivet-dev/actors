@@ -510,6 +510,7 @@ mod tests {
 			endpoint: DEFAULT_ENGINE_ENDPOINT.to_string(),
 			bind_host: bind_host.to_string(),
 			public_url: public_url.map(str::to_string),
+			instance_path: None,
 		}
 	}
 

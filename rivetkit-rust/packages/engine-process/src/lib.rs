@@ -31,6 +31,11 @@ struct EngineHealthResponse {
 pub struct EngineResolverConfig {
 	pub endpoint: String,
 	pub explicit_binary_path: Option<PathBuf>,
+	/// Directory for mutable state owned by this managed engine instance.
+	///
+	/// Embedders can set this to isolate multiple managed engines. When unset,
+	/// the legacy shared engine paths are used.
+	pub instance_path: Option<PathBuf>,
 	pub bind_host: Option<String>,
 	pub bind_port: Option<u16>,
 	pub public_url: Option<String>,
@@ -50,6 +55,7 @@ impl EngineResolverConfig {
 		Self {
 			endpoint: endpoint.to_owned(),
 			explicit_binary_path,
+			instance_path: None,
 			bind_host,
 			bind_port,
 			public_url: None,
@@ -77,6 +83,8 @@ pub struct EngineRuntimeStamp {
 	pub endpoint: String,
 	pub bind_host: String,
 	pub public_url: Option<String>,
+	#[serde(default)]
+	pub instance_path: Option<PathBuf>,
 }
 
 impl EngineRuntimeStamp {
@@ -155,7 +163,7 @@ impl EngineProcessManager {
 			return Ok(Self {
 				watcher: None,
 				startup: EngineStartup::Reused {
-					stamp: read_engine_stamp(),
+					stamp: read_engine_stamp(config),
 				},
 			});
 		}
@@ -174,7 +182,7 @@ impl EngineProcessManager {
 			return Ok(Self {
 				watcher: None,
 				startup: EngineStartup::Reused {
-					stamp: read_engine_stamp(),
+					stamp: read_engine_stamp(config),
 				},
 			});
 		}
@@ -188,11 +196,8 @@ impl EngineProcessManager {
 
 		let env = engine_env(config)?;
 		let config_path = write_engine_config(config)?;
-		let db_path = engine_db_path()?;
-		let logs_dir = storage_root()?
-			.join("var")
-			.join("logs")
-			.join("rivet-engine");
+		let db_path = engine_db_path(config)?;
+		let logs_dir = engine_logs_dir(config)?;
 		ensure_dir(&db_path).context("create engine db directory")?;
 		ensure_dir(&logs_dir).context("create engine logs directory")?;
 
@@ -284,8 +289,9 @@ impl EngineProcessManager {
 			endpoint: endpoint.clone(),
 			bind_host: resolve_bind_host(config)?,
 			public_url: config.public_url.clone(),
+			instance_path: config.instance_path.clone(),
 		};
-		if let Err(error) = write_engine_stamp(&stamp) {
+		if let Err(error) = write_engine_stamp(config, &stamp) {
 			tracing::warn!(?error, "failed to write engine runtime stamp");
 		}
 
@@ -296,16 +302,35 @@ impl EngineProcessManager {
 	}
 }
 
-/// Path to the rivet-engine database directory under the shared storage root.
-pub fn engine_db_path() -> Result<PathBuf> {
-	Ok(storage_root()?.join("var").join("engine").join("db"))
+/// Path to the rivet-engine database directory.
+pub fn engine_db_path(config: &EngineResolverConfig) -> Result<PathBuf> {
+	Ok(engine_instance_path(config)?.join("db"))
 }
 
-fn engine_stamp_path() -> Result<PathBuf> {
-	Ok(storage_root()?
-		.join("var")
-		.join("engine")
-		.join("runtime.json"))
+/// Default directory for mutable state owned by a managed engine instance.
+pub fn default_engine_instance_path() -> Result<PathBuf> {
+	Ok(storage_root()?.join("var").join("engine"))
+}
+
+fn engine_instance_path(config: &EngineResolverConfig) -> Result<PathBuf> {
+	match &config.instance_path {
+		Some(path) => Ok(path.clone()),
+		None => default_engine_instance_path(),
+	}
+}
+
+fn engine_stamp_path(config: &EngineResolverConfig) -> Result<PathBuf> {
+	Ok(engine_instance_path(config)?.join("runtime.json"))
+}
+
+fn engine_logs_dir(config: &EngineResolverConfig) -> Result<PathBuf> {
+	match &config.instance_path {
+		Some(path) => Ok(path.join("logs")),
+		None => Ok(storage_root()?
+			.join("var")
+			.join("logs")
+			.join("rivet-engine")),
+	}
 }
 
 /// The address the engine actually binds: the explicit `bind_host` override, or
@@ -323,8 +348,8 @@ fn resolve_bind_host(config: &EngineResolverConfig) -> Result<String> {
 		.to_owned())
 }
 
-fn write_engine_stamp(stamp: &EngineRuntimeStamp) -> Result<()> {
-	let path = engine_stamp_path()?;
+fn write_engine_stamp(config: &EngineResolverConfig, stamp: &EngineRuntimeStamp) -> Result<()> {
+	let path = engine_stamp_path(config)?;
 	if let Some(dir) = path.parent() {
 		ensure_dir(dir)?;
 	}
@@ -339,8 +364,8 @@ fn write_engine_stamp(stamp: &EngineRuntimeStamp) -> Result<()> {
 /// callers treat the binding as unknown rather than trusting old data. On
 /// platforms without a liveness check (see `pid_is_alive`) the stamp is always
 /// treated as unknown for the same reason.
-fn read_engine_stamp() -> Option<EngineRuntimeStamp> {
-	let path = engine_stamp_path().ok()?;
+fn read_engine_stamp(config: &EngineResolverConfig) -> Option<EngineRuntimeStamp> {
+	let path = engine_stamp_path(config).ok()?;
 	let contents = std::fs::read(&path).ok()?;
 	let stamp: EngineRuntimeStamp = serde_json::from_slice(&contents).ok()?;
 	pid_is_alive(stamp.pid).then_some(stamp)
@@ -384,7 +409,7 @@ pub fn engine_env(config: &EngineResolverConfig) -> Result<Vec<(String, String)>
 		.checked_add(10)
 		.ok_or_else(|| invalid_endpoint(endpoint, "port is too large"))?;
 
-	let db_path = engine_db_path()?;
+	let db_path = engine_db_path(config)?;
 
 	Ok(vec![
 		("RIVET__GUARD__HOST".to_owned(), guard_host.clone()),
@@ -411,7 +436,7 @@ fn write_engine_config(config: &EngineResolverConfig) -> Result<Option<PathBuf>>
 	let public_url = Url::parse(public_url)
 		.with_context(|| format!("parse engine public URL `{public_url}`"))?;
 	let peer_url = peer_url_for_public_url(&public_url)?;
-	let dir = storage_root()?.join("var").join("engine");
+	let dir = engine_instance_path(config)?;
 	ensure_dir(&dir)?;
 	let path = dir.join("config.json");
 	let config = serde_json::json!({
@@ -950,6 +975,7 @@ mod tests {
 		EngineResolverConfig {
 			endpoint: "http://127.0.0.1:1".to_owned(),
 			explicit_binary_path: None,
+			instance_path: None,
 			bind_host: None,
 			bind_port: None,
 			public_url: None,
@@ -965,7 +991,23 @@ mod tests {
 			endpoint: "http://127.0.0.1:6420".to_owned(),
 			bind_host: bind_host.to_owned(),
 			public_url: None,
+			instance_path: None,
 		}
+	}
+
+	#[test]
+	fn caller_defined_instance_path_scopes_mutable_state() {
+		let temp = tempfile::tempdir().expect("create temp dir");
+		let instance_path = temp.path().join("engine-6421");
+		let mut config = test_config(String::new(), false);
+		config.instance_path = Some(instance_path.clone());
+
+		assert_eq!(engine_db_path(&config).unwrap(), instance_path.join("db"));
+		assert_eq!(
+			engine_stamp_path(&config).unwrap(),
+			instance_path.join("runtime.json")
+		);
+		assert_eq!(engine_logs_dir(&config).unwrap(), instance_path.join("logs"));
 	}
 
 	#[test]
