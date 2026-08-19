@@ -188,6 +188,7 @@ export const buildServerlessConfig = async (
 							slotsPerRunner: values.slotsPerRunner ?? 1,
 							runnersMargin: values.runnerMargin ?? 0,
 							minRunners: values.minRunners ?? 0,
+							drainGracePeriod: values.drainGracePeriod,
 						};
 				const resolvedProvider = provider || "custom";
 				const isCustom =

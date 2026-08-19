@@ -1,10 +1,12 @@
 import z from "zod";
 import * as ConnectVercelForm from "@/app/forms/connect-vercel-form";
 import { defineStepper } from "@/components/ui/stepper";
-import {
-	configurationSchema,
-	deploymentSchema,
-} from "./connect-manual-serverless-form";
+import { deploymentSchema } from "./connect-manual-serverless-form";
+
+export const VERCEL_REQUEST_LIFESPAN =
+	ConnectVercelForm.VERCEL_REQUEST_LIFESPAN;
+export const VERCEL_DRAIN_GRACE_PERIOD =
+	ConnectVercelForm.VERCEL_DRAIN_GRACE_PERIOD;
 
 export const stepper = defineStepper(
 	{
@@ -20,7 +22,7 @@ export const stepper = defineStepper(
 		assist: true,
 		next: "Done",
 		schema: z.object({
-			...configurationSchema.omit({ requestLifespan: true }).shape,
+			...ConnectVercelForm.configurationSchema.shape,
 			...deploymentSchema.shape,
 			plan: z.string().min(1, "Please select a Vercel plan"),
 		}),
