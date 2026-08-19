@@ -49,31 +49,31 @@
 	@apply bg-secondary/50;
 }
 
-/* Dark theme overrides for xyflow Controls. */
+/*
+ * xyflow theming. These map the library's own custom properties to dashboard
+ * tokens, which wins over `dist/style.css` regardless of bundle import order.
+ * Setting individual properties instead loses to the library stylesheet, and
+ * `fill` on the button never reaches the icon because `.react-flow__controls-button svg`
+ * is more specific and resolves `currentColor` from `color`.
+ */
+.react-flow {
+	--xy-controls-button-background-color: hsl(var(--card));
+	--xy-controls-button-background-color-hover: hsl(var(--accent));
+	--xy-controls-button-color: hsl(var(--foreground));
+	--xy-controls-button-color-hover: hsl(var(--accent-foreground));
+	--xy-controls-button-border-color: hsl(var(--border));
+	--xy-controls-box-shadow: none;
+	--xy-minimap-background-color: hsl(var(--card));
+	--xy-edge-stroke: hsl(var(--muted-foreground));
+}
+
 .react-flow__controls {
-	background: hsl(var(--card));
 	border: 1px solid hsl(var(--border));
 	border-radius: 6px;
-	box-shadow: none;
+	overflow: hidden;
 }
 
-.react-flow__controls-button {
-	background: transparent;
-	border-bottom: 1px solid hsl(var(--border));
-	fill: hsl(var(--foreground));
-}
-
-.react-flow__controls-button:hover {
-	background: hsl(var(--accent));
-}
-
-.react-flow__controls-button:last-child {
-	border-bottom: none;
-}
-
-/* Dark theme overrides for xyflow MiniMap. */
 .react-flow__minimap {
-	background: hsl(var(--card)) !important;
 	border: 1px solid hsl(var(--border));
 	border-radius: 6px;
 }
@@ -84,7 +84,3 @@
 	height: 100vh;
 }
 
-/* Dark theme for xyflow edges. */
-.react-flow__edge-path {
-	stroke: hsl(var(--muted-foreground));
-}
