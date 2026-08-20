@@ -13,8 +13,8 @@ import type {
 	WasmRuntimeInitInput,
 } from "./config";
 import type {
-	ActorStateTransactionHandle,
 	ActorContextHandle,
+	ActorStateTransactionHandle,
 	ActorFactoryHandle,
 	CancellationTokenHandle,
 	ConnHandle,
@@ -396,6 +396,17 @@ export class WasmCoreRuntime implements CoreRuntime {
 		callHandle(
 			asWasmActorContext(ctx),
 			"setAlarm",
+			optionalWasmNumber(timestampMs),
+		);
+	}
+
+	async actorSetRunWakeAt(
+		ctx: ActorContextHandle,
+		timestampMs?: number | undefined | null,
+	): Promise<void> {
+		await callHandleAsync(
+			asWasmActorContext(ctx),
+			"setRunWakeAt",
 			optionalWasmNumber(timestampMs),
 		);
 	}
@@ -803,6 +814,7 @@ export class WasmCoreRuntime implements CoreRuntime {
 			).rollback(),
 		);
 	}
+
 	async actorBeginStateTransaction(
 		ctx: ActorContextHandle,
 		timeoutMs?: number,

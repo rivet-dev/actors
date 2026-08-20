@@ -436,6 +436,7 @@ async fn handle_actor_event<A: Actor>(
 		ActorEvent::WorkflowReplayRequested { reply, .. } => {
 			reply.send(Err(not_configured("workflow replay")));
 		}
+		ActorEvent::RunWake { .. } => {}
 	}
 
 	Ok(false)

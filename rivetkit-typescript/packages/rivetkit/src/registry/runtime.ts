@@ -15,8 +15,8 @@ export type ActorContextHandle = OpaqueHandle<"actorContext">;
 export type ConnHandle = OpaqueHandle<"conn">;
 export type WebSocketHandle = OpaqueHandle<"webSocket">;
 export type CancellationTokenHandle = OpaqueHandle<"cancellationToken">;
-export type ActorStateTransactionHandle = OpaqueHandle<"actorStateTransaction">;
 export type SqliteTransactionHandle = OpaqueHandle<"sqliteTransaction">;
+export type ActorStateTransactionHandle = OpaqueHandle<"actorStateTransaction">;
 
 export type RuntimeBytes = Uint8Array;
 
@@ -480,6 +480,10 @@ export interface CoreRuntime {
 		ctx: ActorContextHandle,
 		timestampMs?: number | undefined | null,
 	): void;
+	actorSetRunWakeAt(
+		ctx: ActorContextHandle,
+		timestampMs?: number | undefined | null,
+	): Promise<void>;
 	actorRequestSave(
 		ctx: ActorContextHandle,
 		opts?: RuntimeRequestSaveOpts | undefined | null,

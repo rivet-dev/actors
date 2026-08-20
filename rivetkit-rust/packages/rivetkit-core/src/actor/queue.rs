@@ -194,6 +194,7 @@ struct QueueAlreadyCompleted;
 struct QueueCompleteNotConfigured {
 	name: String,
 }
+
 #[derive(RivetError, Serialize, Deserialize)]
 #[error(
 	"queue",
@@ -498,6 +499,7 @@ impl ActorContext {
 			}
 		}
 	}
+
 	/// Completes a persisted message by durable identity. Missing or already
 	/// completed IDs are idempotent; an expected-name mismatch leaves the row
 	/// untouched.

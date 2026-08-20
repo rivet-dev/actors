@@ -81,10 +81,10 @@ export interface JsNativeDatabaseLike {
 	executeBatch?(
 		statements: NativeBatchStatement[],
 	): Promise<NativeExecuteResult[]>;
+	beginTransaction(timeoutMs?: number): Promise<JsNativeTransactionLike>;
 	beginStateTransaction?(
 		timeoutMs?: number,
 	): Promise<JsNativeTransactionLike>;
-	beginTransaction(timeoutMs?: number): Promise<JsNativeTransactionLike>;
 	query(
 		sql: string,
 		params?: NativeBindParam[] | null,
@@ -97,6 +97,7 @@ export interface JsNativeDatabaseLike {
 	takeLastKvError?(): string | null;
 	close(): Promise<void>;
 }
+
 export type StateAwareSqliteDatabase = SqliteDatabase & {
 	beginStateTransaction(
 		timeoutMs?: number,

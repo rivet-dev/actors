@@ -348,6 +348,7 @@ function fakeWasmBindings(
 				input: encodeValue({ host: host.kind }),
 			});
 			ctx.stateBytes = Buffer.from(initialState);
+			await factory.callbacks.onMigrate(null, { ctx, isNew: true });
 
 			let actionSettled = false;
 			const actionPromise = factory.callbacks.actions.smoke(null, {
@@ -366,11 +367,23 @@ function fakeWasmBindings(
 				},
 			);
 
-			await scenario.actionReconnect.started;
+			await Promise.race([
+				scenario.actionReconnect.started,
+				actionPromise.then(() => {
+					throw new Error("action settled before the reconnect gate");
+				}),
+			]);
 			host.reconnect(config, "during-action");
 			scenario.actionReconnect.release();
 
-			await scenario.remoteWriteReconnect.started;
+			await Promise.race([
+				scenario.remoteWriteReconnect.started,
+				actionPromise.then(() => {
+					throw new Error(
+						"action settled before the remote-write reconnect gate",
+					);
+				}),
+			]);
 			host.reconnect(config, "during-remote-write-sql");
 			scenario.remoteWriteReconnect.release();
 
@@ -443,13 +456,6 @@ async function runHostSmoke(kind: HostKind): Promise<SmokeHost> {
 	const registry = runtime.createRegistry();
 	const definition = actor({
 		state: { count: 0 },
-		db: {
-			createClient: async () => ({
-				execute: async () => [],
-				close: async () => {},
-			}),
-			onMigrate: async () => {},
-		},
 		actions: {
 			smoke: async (c, label: string) => {
 				c.state.count += 1;
@@ -461,7 +467,7 @@ async function runHostSmoke(kind: HostKind): Promise<SmokeHost> {
 
 				await c.db.execute(
 					"INSERT INTO smoke_events (host) VALUES (?)",
-					[label],
+					label,
 				);
 
 				scenario.remoteWriteReconnect.markStarted();
@@ -469,11 +475,12 @@ async function runHostSmoke(kind: HostKind): Promise<SmokeHost> {
 
 				await c.db.execute(
 					"UPDATE smoke_events SET host = ? WHERE id = ?",
-					[label, 1],
+					label,
+					1,
 				);
 				const rows = await c.db.execute(
 					"SELECT host FROM smoke_events WHERE host = ?",
-					[label],
+					label,
 				);
 				await c.saveState({ immediate: true });
 				void (
@@ -489,7 +496,7 @@ async function runHostSmoke(kind: HostKind): Promise<SmokeHost> {
 				return {
 					stateCount: c.state.count,
 					kvValue,
-					sqlRows: rows.rows.length,
+					sqlRows: rows.length,
 				};
 			},
 		},

@@ -7,8 +7,8 @@ import type {
 	WebSocket as NativeWebSocket,
 } from "@rivetkit/rivetkit-napi";
 import type {
-	ActorStateTransactionHandle,
 	ActorContextHandle,
+	ActorStateTransactionHandle,
 	ActorFactoryHandle,
 	CancellationTokenHandle,
 	ConnHandle,
@@ -89,6 +89,7 @@ function asNativeSqlTransaction(
 ): NapiSqlTransaction {
 	return handle as unknown as NapiSqlTransaction;
 }
+
 function asNativeActorStateTransaction(
 	handle: ActorStateTransactionHandle,
 ): NapiActorStateTransaction {
@@ -427,6 +428,13 @@ export class NapiCoreRuntime implements CoreRuntime {
 		timestampMs?: number | undefined | null,
 	): void {
 		asNativeActorContext(ctx).setAlarm(timestampMs);
+	}
+
+	async actorSetRunWakeAt(
+		ctx: ActorContextHandle,
+		timestampMs?: number | undefined | null,
+	): Promise<void> {
+		await asNativeActorContext(ctx).setRunWakeAt(timestampMs);
 	}
 
 	actorRequestSave(
@@ -770,6 +778,7 @@ export class NapiCoreRuntime implements CoreRuntime {
 	): Promise<void> {
 		await asNativeSqlTransaction(transaction).rollback();
 	}
+
 	async actorBeginStateTransaction(
 		ctx: ActorContextHandle,
 		timeoutMs?: number,

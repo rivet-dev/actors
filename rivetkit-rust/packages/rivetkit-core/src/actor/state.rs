@@ -84,6 +84,7 @@ pub(super) struct PendingSave {
 pub struct OnStateChangeGuard {
 	ctx: Option<ActorContext>,
 }
+
 /// A SQLite transaction that owns the actor state-save exclusion until it is
 /// committed or rolled back.
 #[derive(Clone)]
@@ -639,6 +640,7 @@ impl ActorContext {
 		);
 		Ok(())
 	}
+
 	async fn commit_state_transaction(
 		&self,
 		transaction: &SqliteTransaction,
@@ -848,6 +850,22 @@ impl ActorContext {
 			.await
 			.context("persist last pushed alarm to sqlite")?;
 		self.load_last_pushed_alarm(alarm_ts);
+		Ok(())
+	}
+
+	pub(crate) fn load_run_wake_at(&self, wake_at: Option<i64>) {
+		*self.0.run_wake_at.write() = wake_at;
+	}
+
+	pub fn run_wake_at(&self) -> Option<i64> {
+		*self.0.run_wake_at.read()
+	}
+
+	pub(crate) async fn persist_run_wake_at(&self, wake_at: Option<i64>) -> Result<()> {
+		internal_storage::persist_run_wake_at(self.sql(), wake_at)
+			.await
+			.context("persist run wake deadline to sqlite")?;
+		self.load_run_wake_at(wake_at);
 		Ok(())
 	}
 

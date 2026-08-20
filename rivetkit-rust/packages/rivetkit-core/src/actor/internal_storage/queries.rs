@@ -87,10 +87,12 @@ pub(crate) const UPSERT_WORKFLOW_KV_SQL: &str = "INSERT INTO _rivet_wf_kv (key, 
 
 pub(crate) const LOAD_LAST_PUSHED_ALARM_SQL: &str =
 	"SELECT last_pushed_alarm FROM _rivet_runtime WHERE id = 1";
+pub(crate) const LOAD_RUN_WAKE_AT_SQL: &str = "SELECT value FROM _rivet_meta WHERE key = ?";
 pub(crate) const LOAD_INSPECTOR_TOKEN_SQL: &str =
 	"SELECT inspector_token FROM _rivet_runtime WHERE id = 1";
 pub(crate) const UPSERT_QUEUE_NEXT_ID_SQL: &str = "INSERT INTO _rivet_runtime (id, last_pushed_alarm, inspector_token, queue_next_id) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET queue_next_id = excluded.queue_next_id";
 pub(crate) const UPSERT_LAST_PUSHED_ALARM_SQL: &str = "INSERT INTO _rivet_runtime (id, last_pushed_alarm, inspector_token, queue_next_id) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET last_pushed_alarm = excluded.last_pushed_alarm";
+pub(crate) const UPSERT_RUN_WAKE_AT_SQL: &str = "INSERT INTO _rivet_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value";
 pub(crate) const UPSERT_INSPECTOR_TOKEN_SQL: &str = "INSERT INTO _rivet_runtime (id, last_pushed_alarm, inspector_token, queue_next_id) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET inspector_token = excluded.inspector_token";
 pub(crate) const LOAD_META_TEXT_SQL: &str = "SELECT value FROM _rivet_meta WHERE key = ?";
 pub(crate) const UPSERT_META_TEXT_SQL: &str = "INSERT INTO _rivet_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value";

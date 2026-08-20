@@ -13,10 +13,11 @@ import {
 	type WorkflowErrorEvent,
 } from "@rivetkit/workflow-engine";
 import invariant from "invariant";
-import type { RunContext } from "@/actor/config";
 import {
 	ACTOR_CONTEXT_INTERNAL_SYMBOL,
-	RUN_FUNCTION_CONFIG_SYMBOL,
+	defineRunHandler,
+	type RunContext,
+	type RunControl,
 } from "@/actor/config";
 import type { AnyStaticActorInstance } from "@/actor/definition";
 import { isActorAbortedError, RivetError } from "@/actor/errors";
@@ -96,6 +97,14 @@ function isWorkflowReplayBlockedByRunningEntry(error: unknown): boolean {
 	);
 }
 
+function isRunHandlerUnavailable(error: unknown): boolean {
+	return (
+		error instanceof RivetError &&
+		error.group === "actor" &&
+		error.code === "run_handler_unavailable"
+	);
+}
+
 export interface WorkflowOptions<
 	TState,
 	TConnParams,
@@ -166,10 +175,10 @@ export function workflow<
 	>,
 ) => Promise<void> {
 	const onError = options.onError;
-	const workflowInspectors = new Map<
-		string,
-		ReturnType<typeof createWorkflowInspectorAdapter>
-	>();
+	type WorkflowInspectorRegistration = ReturnType<
+		typeof createWorkflowInspectorAdapter
+	> & { control?: RunControl };
+	const workflowInspectors = new Map<string, WorkflowInspectorRegistration>();
 
 	function getWorkflowInspector(actorId: string) {
 		let workflowInspector = workflowInspectors.get(actorId);
@@ -204,31 +213,35 @@ export function workflow<
 		const controlDriver = new ActorWorkflowControlDriver(actor, runCtx);
 		workflowInspector.setReplayFromStep(async (entryId) => {
 			const workflowState = await workflowInspector.adapter.getState();
-			if (
-				actor.isRunHandlerActive() ||
-				workflowState === "pending" ||
-				workflowState === "running"
-			) {
+			if (workflowState === "pending" || workflowState === "running") {
 				throw workflowReplayInFlightError();
 			}
 
-			let snapshot: Awaited<ReturnType<typeof replayWorkflowFromStep>>;
+			const control = workflowInspector.control;
+			invariant(control, "workflow Inspector control is not initialized");
 			try {
-				snapshot = await replayWorkflowFromStep(
-					actor.id,
-					controlDriver,
-					entryId,
-					{ scheduleAlarm: false },
+				return await control.run.withInactive(
+					{ restartOnSuccess: true },
+					async () => {
+						const snapshot = await replayWorkflowFromStep(
+							actor.id,
+							controlDriver,
+							entryId,
+							{ scheduleAlarm: false },
+						);
+						workflowInspector.update(snapshot);
+						return workflowInspector.adapter.getHistory();
+					},
 				);
 			} catch (error) {
-				if (isWorkflowReplayBlockedByRunningEntry(error)) {
+				if (
+					isWorkflowReplayBlockedByRunningEntry(error) ||
+					isRunHandlerUnavailable(error)
+				) {
 					throw workflowReplayInFlightError();
 				}
 				throw error;
 			}
-			workflowInspector.update(snapshot);
-			await actor.restartRunHandler();
-			return workflowInspector.adapter.getHistory();
 		});
 
 		const handle = runWorkflow(
@@ -286,57 +299,22 @@ export function workflow<
 		}
 	}
 
-	const runWithConfig = run as typeof run & {
-		[RUN_FUNCTION_CONFIG_SYMBOL]?: {
-			icon?: string;
-			inspectorFactory?: (actor: unknown) => unknown;
-			disposeInspector?: (actorId: string) => void;
-		};
-	};
-	runWithConfig[RUN_FUNCTION_CONFIG_SYMBOL] = {
+	return defineRunHandler(run, {
 		icon: "diagram-project",
-		// Drop the per-actor inspector when the actor is destroyed so this map
-		// does not retain one inspector (and its encoded history) per actor id
-		// for the process lifetime.
-		disposeInspector: (actorId) => {
-			workflowInspectors.delete(actorId);
-		},
-		inspectorFactory: (actor) => {
-			const actorId = resolveWorkflowInspectorActorId(actor);
+		inspectorKind: "workflow",
+		createInspector: ({ actorId, control }) => {
+			const workflowInspector = getWorkflowInspector(actorId);
+			workflowInspector.control = control;
 			return {
-				workflow: actorId
-					? getWorkflowInspector(actorId).adapter
-					: {
-							getHistory: () => null,
-							onHistoryUpdated: () => () => {},
-							replayFromStep: async () => null,
-						},
+				inspector: { workflow: workflowInspector.adapter },
+				dispose: () => {
+					// Do not let a stale disposer remove a newly-created adapter for
+					// the same actor id.
+					if (workflowInspectors.get(actorId) === workflowInspector) {
+						workflowInspectors.delete(actorId);
+					}
+				},
 			};
 		},
-	};
-
-	return runWithConfig;
-}
-
-function resolveWorkflowInspectorActorId(actor: unknown): string | undefined {
-	if (typeof actor === "string" && actor.length > 0) {
-		return actor;
-	}
-
-	if (!actor || typeof actor !== "object") {
-		return undefined;
-	}
-
-	const candidate = actor as {
-		id?: unknown;
-		actorId?: unknown;
-	};
-	if (typeof candidate.id === "string" && candidate.id.length > 0) {
-		return candidate.id;
-	}
-	if (typeof candidate.actorId === "string" && candidate.actorId.length > 0) {
-		return candidate.actorId;
-	}
-
-	return undefined;
+	});
 }

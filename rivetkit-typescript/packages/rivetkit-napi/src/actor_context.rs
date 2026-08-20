@@ -532,6 +532,14 @@ impl ActorContext {
 	}
 
 	#[napi]
+	pub async fn set_run_wake_at(&self, timestamp_ms: Option<i64>) -> napi::Result<()> {
+		self.inner
+			.set_run_wake_at(timestamp_ms)
+			.await
+			.map_err(napi_anyhow_error)
+	}
+
+	#[napi]
 	pub fn begin_keep_awake(&self) -> u32 {
 		self.shared.begin_keep_awake(self.inner.keep_awake_region())
 	}

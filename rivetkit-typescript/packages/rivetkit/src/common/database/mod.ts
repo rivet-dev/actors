@@ -1,7 +1,7 @@
 import { getLogger } from "@/common/log";
 import type {
-	NativeDatabaseProvider,
 	DatabaseProvider,
+	NativeDatabaseProvider,
 	RawAccess,
 	SqliteDatabase,
 	SqliteTransactionDatabase,
@@ -20,6 +20,7 @@ interface DatabaseFactoryConfig {
 	onMigrate?: (db: RawAccess) => Promise<void> | void;
 	warnOnManualTransactions?: boolean;
 }
+
 const builtInDatabaseProviders = new WeakSet<object>();
 const nativeStateTransactionOpeners = new WeakMap<
 	NativeDatabaseProvider,

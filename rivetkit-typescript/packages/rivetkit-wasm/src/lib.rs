@@ -574,7 +574,9 @@ async fn run_actor_adapter(callbacks: WasmCallbacks, start: ActorStart) -> Resul
 		);
 	}
 	preamble?;
-	start_run_handler(&callbacks, &ctx);
+	if callbacks.run.is_some() {
+		start_run_handler(&callbacks, &ctx)?;
+	}
 
 	while let Some(event) = events.recv().await {
 		dispatch_event(&callbacks, &ctx, event).await;
@@ -583,10 +585,13 @@ async fn run_actor_adapter(callbacks: WasmCallbacks, start: ActorStart) -> Resul
 	Ok(())
 }
 
-fn start_run_handler(callbacks: &WasmCallbacks, ctx: &WasmActorContext) {
+fn start_run_handler(callbacks: &WasmCallbacks, ctx: &WasmActorContext) -> Result<()> {
 	let Some(callback) = callbacks.run.clone() else {
-		return;
+		return Err(anyhow!("wasm run handler is not configured"));
 	};
+	if ctx.inner.run_handler_active() {
+		return Err(anyhow!("wasm run handler is already active"));
+	}
 	let ctx = ctx.clone();
 	ctx.inner.begin_run_handler();
 	spawn_local(async move {
@@ -602,6 +607,7 @@ fn start_run_handler(callbacks: &WasmCallbacks, ctx: &WasmActorContext) {
 		}
 		ctx.inner.end_run_handler();
 	});
+	Ok(())
 }
 
 async fn run_preamble(
@@ -800,6 +806,9 @@ async fn dispatch_event(callbacks: &WasmCallbacks, ctx: &WasmActorContext, event
 				console_error(&format!("wasm workflow replay callback failed: {error:#}"));
 			}
 			reply.send(result);
+		}
+		ActorEvent::RunWake { reply } => {
+			reply.send(start_run_handler(callbacks, ctx));
 		}
 		ActorEvent::HttpRequest { request, reply } => {
 			let callback = callbacks.on_request.clone();
@@ -1291,6 +1300,7 @@ impl WasmActorContext {
 			.await
 			.map_err(anyhow_to_js_error)
 	}
+
 	#[wasm_bindgen(js_name = beginStateTransaction)]
 	pub async fn begin_state_transaction(
 		&self,
@@ -1417,6 +1427,17 @@ impl WasmActorContext {
 			.map_err(anyhow_to_js_error)
 	}
 
+	#[wasm_bindgen(js_name = setRunWakeAt)]
+	pub async fn set_run_wake_at(&self, timestamp_ms: Option<f64>) -> Result<(), JsValue> {
+		let timestamp_ms = timestamp_ms
+			.filter(|value| value.is_finite())
+			.map(|value| value.trunc() as i64);
+		self.inner
+			.set_run_wake_at(timestamp_ms)
+			.await
+			.map_err(anyhow_to_js_error)
+	}
+
 	#[wasm_bindgen]
 	pub fn sleep(&self) -> Result<(), JsValue> {
 		self.inner.sleep().map_err(anyhow_to_js_error)
@@ -1504,8 +1525,8 @@ impl WasmActorContext {
 	}
 
 	#[wasm_bindgen(js_name = restartRunHandler)]
-	pub fn restart_run_handler(&self) {
-		start_run_handler(&self.callbacks, self);
+	pub fn restart_run_handler(&self) -> Result<(), JsValue> {
+		start_run_handler(&self.callbacks, self).map_err(anyhow_to_js_error)
 	}
 
 	#[wasm_bindgen(js_name = beginKeepAwake)]
@@ -1996,6 +2017,7 @@ impl WasmQueue {
 			.map_err(anyhow_to_js_error)?;
 		Ok(())
 	}
+
 	#[wasm_bindgen(js_name = completePersisted)]
 	pub async fn complete_persisted(
 		&self,
@@ -2250,7 +2272,9 @@ impl WasmSqliteTransaction {
 	}
 
 	#[wasm_bindgen]
-	pub async fn commit(&self) -> Result<(), JsValue> {}
+	pub async fn commit(&self) -> Result<(), JsValue> {
+		self.inner.commit().await.map_err(anyhow_to_js_error)
+	}
 
 	#[wasm_bindgen]
 	pub async fn rollback(&self) -> Result<(), JsValue> {

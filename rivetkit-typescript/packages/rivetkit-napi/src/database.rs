@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use crate::actor_context::{StateDeltaPayload, state_deltas_from_payload};
 use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
 use rivetkit_core::ActorStateTransaction as CoreActorStateTransaction;
@@ -10,6 +9,7 @@ use rivetkit_core::sqlite::{
 	SqliteTransaction as CoreSqliteTransaction,
 };
 
+use crate::actor_context::{StateDeltaPayload, state_deltas_from_payload};
 use crate::{NapiInvalidArgument, napi_anyhow_error};
 #[napi]
 #[derive(Clone)]
@@ -23,6 +23,7 @@ pub struct JsNativeDatabase {
 pub struct JsSqliteTransaction {
 	transaction: CoreSqliteTransaction,
 }
+
 #[napi]
 #[derive(Clone)]
 pub struct JsActorStateTransaction {

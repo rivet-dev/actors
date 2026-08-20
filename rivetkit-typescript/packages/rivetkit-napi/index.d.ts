@@ -298,8 +298,8 @@ export declare class ActorContext {
   hasPendingHibernationChanges(): boolean
   takePendingHibernationChanges(): Array<string>
   dirtyHibernatableConns(): Array<ConnHandle>
-  beginStateTransaction(timeoutMs?: number | undefined | null): Promise<JsActorStateTransaction>
   saveState(payload: StateDeltaPayload): Promise<void>
+  beginStateTransaction(timeoutMs?: number | undefined | null): Promise<JsActorStateTransaction>
   saveStateAndWorkflowBatch(writes: Array<WorkflowKvWritePayload>): Promise<void>
   actorId(): string
   name(): string
@@ -314,6 +314,7 @@ export declare class ActorContext {
   aborted(): boolean
   runHandlerActive(): boolean
   restartRunHandler(): void
+  setRunWakeAt(timestampMs?: number | undefined | null): Promise<void>
   beginKeepAwake(): number
   endKeepAwake(regionId: number): void
   keepAwake(promise: Promise<any>): void
@@ -366,12 +367,12 @@ export declare class JsSqliteTransaction {
   exec(sql: string): Promise<QueryResult>
   commit(): Promise<void>
   rollback(): Promise<void>
+}
 export declare class JsActorStateTransaction {
   execute(sql: string, params?: Array<JsBindParam> | undefined | null): Promise<NativeExecuteResult>
   exec(sql: string): Promise<QueryResult>
   commit(payload: StateDeltaPayload): Promise<void>
   rollback(): Promise<void>
-}
 }
 export declare class Kv {
   get(key: Buffer): Promise<Buffer | null>
@@ -389,8 +390,8 @@ export declare class Queue {
   next(options?: JsQueueNextOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<QueueMessage | null>
   nextBatch(options?: JsQueueNextBatchOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<Array<QueueMessage>>
   waitForNames(names: Array<string>, options?: JsQueueWaitOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<QueueMessage>
-  completePersisted(messageId: bigint, expectedName: string, response?: Buffer | undefined | null): Promise<boolean>
   waitForNamesAvailable(names: Array<string>, options?: JsQueueWaitOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<void>
+  completePersisted(messageId: bigint, expectedName: string, response?: Buffer | undefined | null): Promise<boolean>
   enqueueAndWait(name: string, body: Buffer, options?: JsQueueEnqueueAndWaitOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<Buffer | null>
   tryNext(options?: JsQueueTryNextOptions | undefined | null): QueueMessage | null
   tryNextBatch(options?: JsQueueTryNextBatchOptions | undefined | null): Array<QueueMessage>

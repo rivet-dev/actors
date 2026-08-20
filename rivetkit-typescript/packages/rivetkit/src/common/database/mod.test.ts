@@ -15,8 +15,8 @@ let logLines: string[];
 class FakeSqliteDatabase implements SqliteDatabase {
 	failSql = new Map<string, Error>();
 	executeCalls: { sql: string; params?: SqliteBindings }[] = [];
-	stateTransactionTimeouts: Array<number | undefined> = [];
 	transactionTimeouts: Array<number | undefined> = [];
+	stateTransactionTimeouts: Array<number | undefined> = [];
 
 	async exec(): Promise<void> {}
 
@@ -43,6 +43,7 @@ class FakeSqliteDatabase implements SqliteDatabase {
 			rollback: async () => this.record("ROLLBACK"),
 		};
 	}
+
 	async beginStateTransaction(
 		timeoutMs?: number,
 	): Promise<SqliteTransactionDatabase> {
@@ -211,6 +212,7 @@ describe("db", () => {
 		).rejects.toThrow("callback failed");
 		expect(nativeDb.executeCalls.map(({ sql }) => sql)).toEqual([
 			"BEGIN",
+			"INSERT INTO items(value) VALUES (?)",
 			"ROLLBACK",
 		]);
 	});
@@ -286,7 +288,6 @@ describe("db", () => {
 		).rejects.toThrow("not supported for nested transactions");
 		expect(nativeDb.executeCalls.map(({ sql }) => sql)).toEqual([
 			"BEGIN_STATE",
-			"INSERT INTO items(value) VALUES (?)",
 			"ROLLBACK",
 		]);
 	});
