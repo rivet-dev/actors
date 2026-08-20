@@ -104,7 +104,10 @@ import type {
 	WebSocketHandle,
 } from "./runtime";
 import { loadWasmRuntime } from "./wasm-runtime";
-import { createWriteThroughProxy } from "./write-through-proxy";
+import {
+	createWriteThroughProxy,
+	unwrapWriteThroughProxy,
+} from "./write-through-proxy";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -126,6 +129,10 @@ type NativeOnStateChangeHandler = (
 ) => void | Promise<void>;
 type NativePersistConnState = {
 	state: unknown;
+	// Memoized deep write-through proxy and the state object it wraps. Rebuilt
+	// only when the underlying state object identity changes.
+	stateProxy?: unknown;
+	stateProxyTarget?: unknown;
 };
 
 const defaultRuntimeLoaders: RuntimeLoaders = {
@@ -1270,8 +1277,32 @@ class NativeConnAdapter {
 
 	get state(): unknown {
 		const nextState = this.#readState();
+		if (!this.#ctx) {
+			return this.#createStateProxy(nextState);
+		}
+
+		// Reading `conn.state` rebuilds the deep write-through proxy, which
+		// allocates fresh on-change caches and rewraps the whole tree. Memoize
+		// the proxy keyed on the underlying state object so repeated reads and
+		// deep read cascades reuse a single proxy.
+		const connState = getNativeConnPersistState(
+			this.#runtime,
+			this.#ctx,
+			this.#conn,
+		);
+		if (
+			connState.stateProxy === undefined ||
+			connState.stateProxyTarget !== nextState
+		) {
+			connState.stateProxyTarget = nextState;
+			connState.stateProxy = this.#createStateProxy(nextState);
+		}
+		return connState.stateProxy;
+	}
+
+	#createStateProxy(state: unknown): unknown {
 		return createWriteThroughProxy(
-			nextState,
+			state,
 			(nextValue) => {
 				this.#writeState(nextValue, { writeNative: true });
 			},
@@ -1282,12 +1313,15 @@ class NativeConnAdapter {
 	}
 
 	set state(value: unknown) {
-		assertJsonCompatValue(value);
-		this.#writeState(value, { writeNative: true });
+		const nextValue = unwrapWriteThroughProxy(value);
+		assertJsonCompatValue(nextValue);
+		this.#writeState(nextValue, { writeNative: true });
 	}
 
 	initializeState(value: unknown): void {
-		this.#writeState(value, { writeNative: false });
+		this.#writeState(unwrapWriteThroughProxy(value), {
+			writeNative: false,
+		});
 	}
 
 	get isHibernatable(): boolean {
@@ -2693,15 +2727,18 @@ export class ActorContextHandleAdapter {
 			throw stateNotEnabledError();
 		}
 		this.#assertCanMutateState();
-		assertJsonCompatValue(value);
-		this.#writeState(value, { scheduleSave: true });
+		const nextValue = unwrapWriteThroughProxy(value);
+		assertJsonCompatValue(nextValue);
+		this.#writeState(nextValue, { scheduleSave: true });
 	}
 
 	initializeState(value: unknown): void {
 		if (!this.#stateEnabled) {
 			return;
 		}
-		this.#writeState(value, { scheduleSave: false });
+		this.#writeState(unwrapWriteThroughProxy(value), {
+			scheduleSave: false,
+		});
 	}
 
 	get vars(): unknown {

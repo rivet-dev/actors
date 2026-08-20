@@ -54,6 +54,41 @@ describeDriverMatrix("Actor Conn State", (driverTestConfig) => {
 			});
 		});
 
+		describe("State Proxy Nesting", () => {
+			test("does not stack proxies on nested connection state", async (c) => {
+				const { client } = await setupDriverTest(c, driverTestConfig);
+
+				const connection = client.connStateActor
+					.getOrCreate()
+					.connect();
+
+				const result = await connection.spreadUpdateConnState(12);
+
+				// Values read off the state proxy are wrapped exactly once.
+				// Extra layers mean each update persisted the previous read's
+				// proxies, which makes state traversal cost grow exponentially.
+				expect(result.depth).toBe(1);
+				expect(result.tags).toEqual(["read", "write"]);
+
+				await connection.dispose();
+			});
+
+			test("does not stack proxies on nested actor state", async (c) => {
+				const { client } = await setupDriverTest(c, driverTestConfig);
+
+				const connection = client.connStateActor
+					.getOrCreate()
+					.connect();
+
+				const result = await connection.spreadUpdateActorState(12);
+
+				expect(result.depth).toBe(1);
+				expect(result.tags).toEqual(["read", "write"]);
+
+				await connection.dispose();
+			});
+		});
+
 		describe("Connection State Management", () => {
 			test("should maintain unique state for each connection", async (c) => {
 				const { client } = await setupDriverTest(c, driverTestConfig);
