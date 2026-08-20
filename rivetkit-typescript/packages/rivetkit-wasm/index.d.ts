@@ -16,6 +16,7 @@ export class ActorContext {
 	connectConn(params: Uint8Array, request: any): Promise<ConnHandle>;
 	requestSave(opts: any): void;
 	registerTask(promise: Promise<any>): void;
+	beginStateTransaction(timeout_ms?: number | null): Promise<ActorStateTransaction>;
 	runtimeState(): any;
 	endKeepAwake(region_id: number): void;
 	beginKeepAwake(): number;
@@ -121,6 +122,11 @@ export class Queue {
 	): Promise<Uint8Array | undefined>;
 	inspectMessages(): Promise<Array<any>>;
 	waitForNamesAvailable(names: any, options: any): Promise<void>;
+	completePersisted(
+		message_id: bigint,
+		expected_name: string,
+		response?: Uint8Array | null,
+	): Promise<boolean>;
 	send(name: string, body: Uint8Array): Promise<QueueMessage>;
 	maxSize(): number;
 	reset(): Promise<void>;
@@ -184,6 +190,15 @@ export class SqliteTransaction {
 	exec(sql: string): Promise<any>;
 	execute(sql: string, params: any): Promise<any>;
 	commit(): Promise<void>;
+	rollback(): Promise<void>;
+}
+
+export class ActorStateTransaction {
+	private constructor();
+	free(): void;
+	exec(sql: string): Promise<any>;
+	execute(sql: string, params: any): Promise<any>;
+	commit(payload: any): Promise<void>;
 	rollback(): Promise<void>;
 }
 

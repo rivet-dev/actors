@@ -1,0 +1,83 @@
+# Test-only logical actor SQLite fixture.
+#
+# The Rust definitions in `src/testing/workflow_fixture.rs` intentionally mirror
+# this schema. The outer payload is encoded with vbare's embedded version header.
+
+type FixtureMetadata struct {
+	fixtureName: str
+	sourceRivetkitVersion: str
+	sourceWorkflowVersion: str
+	sourceRevision: str
+	actorId: str
+	registryKey: str
+	internalSchemaVersion: i64
+	fakeClockSeed: u64
+	generatedIdSeed: u64
+}
+
+type RuntimeRow struct {
+	lastPushedAlarm: optional<i64>
+	inspectorToken: optional<str>
+	queueNextId: i64
+}
+
+type MetaRow struct {
+	key: str
+	value: data
+}
+
+type ActorRow struct {
+	hasInitialized: i64
+	input: optional<data>
+}
+
+type WorkflowRow struct {
+	key: data
+	value: data
+}
+
+type QueueRow struct {
+	id: i64
+	name: str
+	body: data
+	createdAt: i64
+}
+
+type ScheduleEventRow struct {
+	eventId: str
+	triggerAt: i64
+	action: str
+	args: optional<data>
+	kind: i64
+	cronExpression: optional<str>
+	timezone: optional<str>
+	intervalMs: optional<i64>
+	lastStartedAt: optional<i64>
+	maxHistory: i64
+}
+
+type ScheduleHistoryRow struct {
+	id: i64
+	scheduleId: str
+	action: str
+	scheduledAt: i64
+	firedAt: i64
+	finishedAt: optional<i64>
+	result: i64
+	errorGroup: optional<str>
+	errorCode: optional<str>
+	errorMessage: optional<str>
+	errorMetadata: optional<data>
+}
+
+type WorkflowFixture struct {
+	metadata: FixtureMetadata
+	metaRows: list<MetaRow>
+	runtime: optional<RuntimeRow>
+	actor: optional<ActorRow>
+	actorState: optional<data>
+	workflowRows: list<WorkflowRow>
+	queueRows: list<QueueRow>
+	scheduleEvents: list<ScheduleEventRow>
+	scheduleHistory: list<ScheduleHistoryRow>
+}

@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken as CoreCancellationToken;
 
 use crate::actor_factory::BridgeRivetErrorContext;
 use crate::connection::ConnHandle;
-use crate::database::JsNativeDatabase;
+use crate::database::{JsActorStateTransaction, JsNativeDatabase, transaction_timeout};
 use crate::kv::Kv;
 use crate::queue::Queue;
 use crate::schedule::Schedule;
@@ -414,6 +414,19 @@ impl ActorContext {
 	}
 
 	#[napi]
+	pub async fn begin_state_transaction(
+		&self,
+		timeout_ms: Option<f64>,
+	) -> napi::Result<JsActorStateTransaction> {
+		let timeout = timeout_ms.map(transaction_timeout).transpose()?;
+		self.inner
+			.begin_state_transaction(timeout)
+			.await
+			.map(JsActorStateTransaction::new)
+			.map_err(napi_anyhow_error)
+	}
+
+	#[napi]
 	pub async fn save_state_and_workflow_batch(
 		&self,
 		writes: Vec<WorkflowKvWritePayload>,
@@ -516,6 +529,14 @@ impl ActorContext {
 	#[napi]
 	pub fn restart_run_handler(&self) -> napi::Result<()> {
 		self.shared.run_restart().map_err(napi_anyhow_error)
+	}
+
+	#[napi]
+	pub async fn set_run_wake_at(&self, timestamp_ms: Option<i64>) -> napi::Result<()> {
+		self.inner
+			.set_run_wake_at(timestamp_ms)
+			.await
+			.map_err(napi_anyhow_error)
 	}
 
 	#[napi]

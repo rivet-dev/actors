@@ -8,7 +8,7 @@ import type {
 	SqliteExecuteResult,
 	SqliteTransactionDatabase,
 } from "./config";
-import { db } from "./mod";
+import { db, registerNativeStateTransactionOpener } from "./mod";
 
 let logLines: string[];
 
@@ -16,6 +16,7 @@ class FakeSqliteDatabase implements SqliteDatabase {
 	failSql = new Map<string, Error>();
 	executeCalls: { sql: string; params?: SqliteBindings }[] = [];
 	transactionTimeouts: Array<number | undefined> = [];
+	stateTransactionTimeouts: Array<number | undefined> = [];
 
 	async exec(): Promise<void> {}
 
@@ -32,6 +33,22 @@ class FakeSqliteDatabase implements SqliteDatabase {
 	): Promise<SqliteTransactionDatabase> {
 		this.transactionTimeouts.push(timeoutMs);
 		this.record("BEGIN");
+		return {
+			exec: async () => {},
+			execute: async (sql, params) => {
+				this.record(sql, params);
+				return emptyResult();
+			},
+			commit: async () => this.record("COMMIT"),
+			rollback: async () => this.record("ROLLBACK"),
+		};
+	}
+
+	async beginStateTransaction(
+		timeoutMs?: number,
+	): Promise<SqliteTransactionDatabase> {
+		this.stateTransactionTimeouts.push(timeoutMs);
+		this.record("BEGIN_STATE");
 		return {
 			exec: async () => {},
 			execute: async (sql, params) => {
@@ -81,7 +98,8 @@ function emptyResult(): SqliteExecuteResult {
 }
 
 function testProviderContext(
-	database: SqliteDatabase,
+	database: FakeSqliteDatabase,
+	includeStateTransactions = false,
 ): DatabaseProviderContext {
 	return {
 		actorId: "actor-a",
@@ -91,7 +109,13 @@ function testProviderContext(
 			batchDelete: async () => {},
 			deleteRange: async () => {},
 		},
-		nativeDatabaseProvider: { open: async () => database },
+			nativeDatabaseProvider: includeStateTransactions
+				? registerNativeStateTransactionOpener(
+						{ open: async () => database },
+						async (timeoutMs?: number) =>
+							await database.beginStateTransaction(timeoutMs),
+					)
+				: { open: async () => database },
 	};
 }
 
@@ -189,6 +213,81 @@ describe("db", () => {
 		expect(nativeDb.executeCalls.map(({ sql }) => sql)).toEqual([
 			"BEGIN",
 			"INSERT INTO items(value) VALUES (?)",
+			"ROLLBACK",
+		]);
+	});
+
+	test("uses the state-aware transaction bridge when explicitly requested", async () => {
+		const nativeDb = new FakeSqliteDatabase();
+		const client = await db().createClient(
+			testProviderContext(nativeDb, true),
+		);
+
+		await client.transaction(
+			async (tx) => {
+				await tx.execute(
+					"INSERT INTO items(value) VALUES (?)",
+					"inside",
+				);
+			},
+			{
+				timeout: 120_000,
+				experimental: { includeState: true },
+			},
+		);
+
+		expect(nativeDb.transactionTimeouts).toEqual([]);
+		expect(nativeDb.stateTransactionTimeouts).toEqual([120_000]);
+		expect(nativeDb.executeCalls.map(({ sql }) => sql)).toEqual([
+			"BEGIN_STATE",
+			"INSERT INTO items(value) VALUES (?)",
+			"COMMIT",
+		]);
+	});
+
+	test("rolls back state-aware transactions when the callback throws", async () => {
+		const nativeDb = new FakeSqliteDatabase();
+		const client = await db().createClient(
+			testProviderContext(nativeDb, true),
+		);
+
+		await expect(
+			client.transaction(
+				async (tx) => {
+					await tx.execute(
+						"INSERT INTO items(value) VALUES (?)",
+						"inside",
+					);
+					throw new Error("callback failed");
+				},
+				{ experimental: { includeState: true } },
+			),
+		).rejects.toThrow("callback failed");
+		expect(nativeDb.executeCalls.map(({ sql }) => sql)).toEqual([
+			"BEGIN_STATE",
+			"INSERT INTO items(value) VALUES (?)",
+			"ROLLBACK",
+		]);
+	});
+
+	test("rejects nested state-aware transactions", async () => {
+		const nativeDb = new FakeSqliteDatabase();
+		const client = await db().createClient(
+			testProviderContext(nativeDb, true),
+		);
+
+		await expect(
+			client.transaction(
+				async (tx) => {
+					await tx.transaction(async () => {}, {
+						experimental: { includeState: true },
+					});
+				},
+				{ experimental: { includeState: true } },
+			),
+		).rejects.toThrow("not supported for nested transactions");
+		expect(nativeDb.executeCalls.map(({ sql }) => sql)).toEqual([
+			"BEGIN_STATE",
 			"ROLLBACK",
 		]);
 	});

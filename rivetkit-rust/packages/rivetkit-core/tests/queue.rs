@@ -72,6 +72,63 @@ mod moved_tests {
 	}
 
 	#[tokio::test]
+	async fn wait_for_available_does_not_consume_or_reorder_messages() {
+		let queue = test_queue();
+		crate::actor::internal_storage::schema::ensure_internal_schema(queue.sql())
+			.await
+			.expect("initialize queue storage");
+		queue.send("first", b"one").await.expect("send first");
+		queue.send("target", b"two").await.expect("send target");
+
+		queue
+			.wait_for_names_available(vec!["target".to_owned()], QueueWaitOpts::default())
+			.await
+			.expect("wait for matching queue message");
+
+		let messages = queue.inspect_messages().await.expect("inspect queue");
+		assert_eq!(
+			messages
+				.iter()
+				.map(|message| message.name.as_str())
+				.collect::<Vec<_>>(),
+			vec!["first", "target"],
+		);
+	}
+
+	#[tokio::test]
+	async fn durable_completion_verifies_persisted_name_and_is_idempotent() {
+		let queue = test_queue();
+		crate::actor::internal_storage::schema::ensure_internal_schema(queue.sql())
+			.await
+			.expect("initialize queue storage");
+		let message = queue
+			.send("expected", b"body")
+			.await
+			.expect("send queue message");
+		let error = queue
+			.complete_persisted_message(message.id, "wrong", None)
+			.await
+			.expect_err("wrong name must fail while completing");
+		let error = rivet_error::RivetError::extract(&error);
+		assert_eq!(error.group(), "queue");
+		assert_eq!(error.code(), "message_identity_mismatch");
+		assert_eq!(queue.inspect_messages().await.expect("inspect").len(), 1);
+
+		assert!(
+			queue
+				.complete_persisted_message(message.id, "expected", None)
+				.await
+				.expect("complete matching message")
+		);
+		assert!(
+			!queue
+				.complete_persisted_message(message.id, "expected", None)
+				.await
+				.expect("repeat completion is an idempotent miss")
+		);
+	}
+
+	#[tokio::test]
 	async fn next_batch_supports_large_name_filters_without_sql_bind_expansion() {
 		let queue = test_queue();
 		crate::actor::internal_storage::schema::ensure_internal_schema(queue.sql())

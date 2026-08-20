@@ -24,15 +24,10 @@ let hasImportedDependencies = false;
 // We use require() instead of await import() because registry.start() cannot
 // be async and needs immediate access to Node.js modules during setup.
 export function getRequireFn() {
-	// TODO: This causes issues in tsup
-	// CommonJS context - use global require
-	// if (typeof require !== "undefined") {
-	// 	console.log("existing require");
-	// 	return require;
-	// }
-
-	// ESM context - use createRequire with import.meta.url
-	return createRequire(import.meta.url);
+	// This loader only resolves Node built-ins, so its resolution base is
+	// intentionally process-local. Avoid import.meta here: tsup preserves it in
+	// CommonJS output, which makes the published require entrypoint invalid.
+	return createRequire(`${process.cwd()}/package.json`);
 }
 
 /**

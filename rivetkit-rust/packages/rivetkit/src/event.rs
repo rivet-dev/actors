@@ -180,9 +180,10 @@ impl<A: Actor> RuntimeEvent<A> {
 				unreachable!("DisconnectConn is handled by foreign-runtime adapters")
 			}
 			ActorEvent::WorkflowHistoryRequested { .. }
-			| ActorEvent::WorkflowReplayRequested { .. } => {
+			| ActorEvent::WorkflowReplayRequested { .. }
+			| ActorEvent::RunWake { .. } => {
 				unreachable!(
-					"workflow events are handled by the TypeScript runtime; Rust actors never host workflows"
+					"workflow/run-wake events are handled by the TypeScript runtime; Rust actors never host workflows"
 				)
 			}
 		}

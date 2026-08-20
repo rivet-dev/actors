@@ -6,6 +6,7 @@ import type {
 } from "@/common/database/config";
 import type { UniversalWebSocket } from "@/common/websocket-interface";
 import type { Registry } from "@/registry";
+import type { WorkflowState } from "@/inspector/workflow";
 import { flattenActionHandlers } from "./actions";
 import type { BaseActorDefinition } from "./definition";
 import type {
@@ -64,7 +65,7 @@ type ActorKvListOptions<
 type ActorClientFor<T> = T extends Registry<any> ? Client<T> : T;
 
 /**
- * @deprecated Actor KV is deprecated. Use embedded SQLite (`c.db` / `c.sql`)
+ * @deprecated Actor KV is deprecated. Use embedded SQLite (`c.db`)
  * or actor state instead.
  */
 export interface ActorKv {
@@ -332,6 +333,16 @@ export interface ActorQueue<
 		names: readonly TName[],
 		opts?: QueueWaitOptions<TCompletable>,
 	): Promise<any>;
+	/** @experimental */
+	waitForAvailable<const TName extends QueueFilterName<TQueues>>(
+		names?: readonly TName[],
+		opts?: Omit<QueueWaitOptions<false>, "completable">,
+	): Promise<void>;
+	/** @experimental */
+	complete<const TName extends QueueFilterName<TQueues>>(
+		message: { id: bigint; name: TName },
+		...args: QueueCompleteArgsForName<TQueues, TName>
+	): Promise<void>;
 	enqueueAndWait<const TName extends QueueFilterName<TQueues>>(
 		name: TName,
 		body: QueueMessageForName<TQueues, TName>["body"],
@@ -389,7 +400,7 @@ export interface ActorContext<
 	state: TState;
 	vars: TVars;
 	/**
-	 * @deprecated Actor KV is deprecated. Use embedded SQLite (`db` / `sql`)
+	 * @deprecated Actor KV is deprecated. Use embedded SQLite (`c.db`)
 	 * or actor state instead.
 	 */
 	readonly kv: ActorKv;
@@ -397,6 +408,8 @@ export interface ActorContext<
 	readonly schedule: ActorSchedule;
 	readonly cron: ActorCron;
 	readonly queue: ActorQueue<TQueues>;
+	/** @experimental */
+	readonly run: ActorRun;
 	readonly actorId: string;
 	readonly name: string;
 	readonly key: string[];
@@ -432,6 +445,11 @@ export interface ActorContext<
 	destroy(): void;
 	client<T = any>(): ActorClientFor<T>;
 	[key: string]: any;
+}
+
+export interface ActorRun {
+	/** @experimental Sets or clears the durable deadline that restarts this actor's run handler. */
+	setWakeAt(timestamp: number | null): Promise<void>;
 }
 
 export type ActionContext<
@@ -821,20 +839,27 @@ const zActionTree = z
 
 export type InspectorUnsubscribe = () => void;
 
+/** @experimental */
 export interface WorkflowInspectorConfig<THistory = unknown> {
 	getHistory: () => THistory | null;
+	getState?: () => Promise<WorkflowState | null>;
 	onHistoryUpdated?: (
 		listener: (history: THistory) => void,
 	) => InspectorUnsubscribe;
 	replayFromStep?: (entryId?: string) => Promise<THistory | null>;
 }
 
+/** @experimental */
 export interface RunInspectorConfig<THistory = unknown> {
 	workflow?: WorkflowInspectorConfig<THistory>;
 }
 
 const WorkflowInspectorConfigSchema = z.object({
 	getHistory: zFunction<WorkflowInspectorConfig<unknown>["getHistory"]>(),
+	getState:
+		zFunction<
+			NonNullable<WorkflowInspectorConfig<unknown>["getState"]>
+		>().optional(),
 	onHistoryUpdated:
 		zFunction<
 			NonNullable<WorkflowInspectorConfig<unknown>["onHistoryUpdated"]>
@@ -981,9 +1006,70 @@ type AnyRunConfig = RunConfig<
 	any
 >;
 
-export const RUN_FUNCTION_CONFIG_SYMBOL = Symbol.for(
-	"rivetkit.run_function_config",
-);
+const RUN_FUNCTION_CONFIG_SYMBOL = Symbol.for("rivetkit.run_function_config");
+
+export type RunInspectorKind = "workflow";
+
+export interface RunWithInactiveOptions {
+	/** Restart the run handler before releasing the exclusive gate on success. */
+	restartOnSuccess?: boolean;
+}
+
+/** @experimental */
+export interface RunControl {
+	run: {
+		/**
+		 * Executes only while no run handler is active or waiting to start.
+		 *
+		 * This is a non-blocking acquisition: concurrent replay/control requests
+		 * fail instead of waiting behind an active run.
+		 */
+		withInactive<T>(
+			options: RunWithInactiveOptions,
+			callback: () => T | Promise<T>,
+		): Promise<T>;
+	};
+}
+
+/** @experimental */
+export interface RunInspectorFactoryContext {
+	actorId: string;
+	control: RunControl;
+}
+
+/** @experimental */
+export interface RunInspectorFactoryResult<THistory = unknown> {
+	inspector: {
+		workflow: Required<WorkflowInspectorConfig<THistory>> & {
+			getState: () => Promise<WorkflowState | null>;
+		};
+	};
+	/** Releases actor-specific listeners and encoded history. */
+	dispose?: () => void;
+}
+
+interface RunHandlerDisplayOptions {
+	name?: string;
+	icon?: string;
+}
+
+/** @experimental */
+export type DefineRunHandlerOptions<THistory = unknown> =
+	RunHandlerDisplayOptions &
+		(
+			| {
+					inspectorKind?: never;
+					createInspector?: never;
+			  }
+			| {
+					/** Static metadata used to install Inspector callbacks at registry build time. */
+					inspectorKind: RunInspectorKind;
+					/** Creates one Inspector adapter for each live actor. */
+					createInspector: (
+						context: RunInspectorFactoryContext,
+					) => RunInspectorFactoryResult<THistory>;
+			  }
+		);
 
 interface RunFunctionConfig {
 	name?: string;
@@ -992,11 +1078,68 @@ interface RunFunctionConfig {
 	inspectorFactory?: (actor: unknown) => RunInspectorConfig | undefined;
 	/** Release any per-actor inspector state held for this actor id. */
 	disposeInspector?: (actorId: string) => void;
+	inspectorKind?: RunInspectorKind;
+	createInspector?: (
+		context: RunInspectorFactoryContext,
+	) => RunInspectorFactoryResult;
 }
 
 type RunFunctionWithConfig = ((...args: any[]) => any) & {
 	[RUN_FUNCTION_CONFIG_SYMBOL]?: RunFunctionConfig;
 };
+
+/**
+ * @experimental Adds supported RivetKit run metadata while preserving the function's exact
+ * callable type.
+ */
+export function defineRunHandler<
+	TRun extends (...args: any[]) => any,
+	THistory = unknown,
+>(run: TRun, options: DefineRunHandlerOptions<THistory>): TRun {
+	if (
+		(options.inspectorKind === undefined) !==
+		(options.createInspector === undefined)
+	) {
+		throw new TypeError(
+			"defineRunHandler requires inspectorKind and createInspector together",
+		);
+	}
+
+	Object.defineProperty(run, RUN_FUNCTION_CONFIG_SYMBOL, {
+		configurable: false,
+		enumerable: false,
+		writable: false,
+		value: {
+			name: options.name,
+			icon: options.icon,
+			inspectorKind: options.inspectorKind,
+			createInspector:
+				options.createInspector as RunFunctionConfig["createInspector"],
+		} satisfies RunFunctionConfig,
+	});
+
+	return run;
+}
+
+/** @internal */
+export function getRunInspectorKind(
+	run: ((...args: any[]) => any) | AnyRunConfig | undefined,
+): RunInspectorKind | undefined {
+	if (!run || typeof run !== "function") return undefined;
+	return (run as RunFunctionWithConfig)[RUN_FUNCTION_CONFIG_SYMBOL]
+		?.inspectorKind;
+}
+
+/** @internal */
+export function createRunInspector(
+	run: ((...args: any[]) => any) | AnyRunConfig | undefined,
+	context: RunInspectorFactoryContext,
+): RunInspectorFactoryResult | undefined {
+	if (!run || typeof run !== "function") return undefined;
+	return (run as RunFunctionWithConfig)[
+		RUN_FUNCTION_CONFIG_SYMBOL
+	]?.createInspector?.(context);
+}
 
 // Run can be either a function or an object with name/icon/run
 const zRunHandler = z.union([zFunction(), RunConfigSchema]).optional();
@@ -1040,6 +1183,21 @@ export function getRunInspectorConfig(
 			: config?.inspector;
 	}
 	return run.inspector;
+}
+
+/** @internal */
+export function hasRunInspectorConfig(
+	run: ((...args: any[]) => any) | AnyRunConfig | undefined,
+): boolean {
+	if (!run) return false;
+	if (typeof run !== "function") return run.inspector !== undefined;
+	const config = (run as RunFunctionWithConfig)[RUN_FUNCTION_CONFIG_SYMBOL];
+	return (
+		config?.inspectorKind !== undefined ||
+		config?.createInspector !== undefined ||
+		config?.inspector !== undefined ||
+		config?.inspectorFactory !== undefined
+	);
 }
 
 /** Release per-actor inspector state for a destroyed actor, if the run handler registered a disposer. */

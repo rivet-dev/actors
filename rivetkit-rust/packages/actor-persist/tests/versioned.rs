@@ -27,3 +27,15 @@ fn actor_decodes_legacy_raw_v4_when_current_v4_accepts_bytes() {
 
 	assert_eq!(decoded.scheduled_events[0].args, Some(vec![0x01, 0x99]));
 }
+
+#[test]
+fn run_wake_deadline_round_trips_with_embedded_version() {
+	let encoded = versioned::RunWakeAt::wrap_latest(Some(1_725_000_000_123))
+		.serialize_with_embedded_version(1)
+		.expect("encode run wake deadline");
+	assert_eq!(&encoded[..2], &[1, 0]);
+
+	let decoded = versioned::RunWakeAt::deserialize_with_embedded_version(&encoded)
+		.expect("decode run wake deadline");
+	assert_eq!(decoded, Some(1_725_000_000_123));
+}

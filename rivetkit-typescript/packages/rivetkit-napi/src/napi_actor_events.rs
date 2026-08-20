@@ -730,6 +730,12 @@ pub(crate) async fn dispatch_event(
 				call_workflow_replay(&callback, &ctx, entry_id).await
 			});
 		}
+		ActorEvent::RunWake { reply } => {
+			reply.send(
+				ctx.restart_run_handler()
+					.map_err(|error| anyhow::anyhow!(error.to_string())),
+			);
+		}
 	}
 }
 

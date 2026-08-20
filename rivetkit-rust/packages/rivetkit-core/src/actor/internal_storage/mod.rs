@@ -2,12 +2,16 @@ use std::collections::{BTreeSet, HashMap};
 use std::io::Cursor;
 
 use anyhow::{Context, Result, bail};
+use rivetkit_actor_persist::versioned as persist_versioned;
 
 use crate::actor::connection::{
 	PersistedConnection, PersistedSubscription, encode_persisted_connection,
 };
 use crate::actor::keys::make_workflow_key;
 use crate::actor::messages::WorkflowKvWrite;
+use crate::actor::persist::{
+	decode_latest_with_embedded_version, encode_latest_with_embedded_version,
+};
 use crate::actor::queue::{PersistedQueueMessage, QueueMetadata};
 use crate::actor::state::PersistedActor;
 use crate::error::KvRuntimeError;
@@ -28,6 +32,8 @@ pub(crate) const USER_KV_BATCH_GET_MAX_KEYS: usize = 128;
 const QUEUE_METADATA_PAGE_ROWS: usize = 128;
 const QUEUE_MESSAGE_IDS_PER_QUERY: usize = 128;
 const WORKFLOW_KV_VALUE_LIMIT: usize = 256 * 1024;
+pub(crate) const RUN_WAKE_AT_META_KEY: &str = "run_wake_at";
+const RUN_WAKE_AT_VERSION: u16 = 1;
 
 /// Depot rejects SQLite commits that dirty more than `MAX_COMMIT_RAW_DIRTY_BYTES`
 /// (320 pages * 4 KiB = 1.3 MiB) in `engine/packages/depot/src/conveyer/constants.rs`.
@@ -72,6 +78,7 @@ where
 pub(crate) struct InternalActorSnapshot {
 	pub actor: PersistedActor,
 	pub last_pushed_alarm: Option<i64>,
+	pub run_wake_at: Option<i64>,
 }
 
 pub(crate) async fn load_actor_snapshot(db: &SqliteDb) -> Result<Option<InternalActorSnapshot>> {
@@ -87,6 +94,7 @@ pub(crate) async fn load_actor_snapshot(db: &SqliteDb) -> Result<Option<Internal
 	let input = read_optional_blob(row, 1, "input")?;
 	let state = read_blob(row, 2, "state")?;
 	let last_pushed_alarm = load_last_pushed_alarm(db).await?;
+	let run_wake_at = load_run_wake_at(db).await?;
 
 	Ok(Some(InternalActorSnapshot {
 		actor: PersistedActor {
@@ -96,6 +104,7 @@ pub(crate) async fn load_actor_snapshot(db: &SqliteDb) -> Result<Option<Internal
 			scheduled_events: Vec::new(),
 		},
 		last_pushed_alarm,
+		run_wake_at,
 	}))
 }
 
@@ -209,7 +218,7 @@ pub(crate) async fn persist_actor_core_connections_and_workflow(
 	Ok(())
 }
 
-fn build_actor_core_and_connection_statements(
+pub(crate) fn build_actor_core_and_connection_statements(
 	actor: Option<&PersistedActor>,
 	connections: &[PersistedConnection],
 	removed_connections: &[String],
@@ -475,6 +484,21 @@ pub(crate) async fn load_queue_messages(db: &SqliteDb) -> Result<Vec<QueueMessag
 		.await
 		.context("load internal queue messages")?;
 	decode_queue_message_rows(&result.rows)
+}
+
+pub(crate) async fn load_queue_message_name(db: &SqliteDb, id: u64) -> Result<Option<String>> {
+	let id = i64::try_from(id).context("queue message id exceeds sqlite integer range")?;
+	let result = db
+		.query(
+			LOAD_QUEUE_MESSAGE_NAME_SQL,
+			Some(vec![BindParam::Integer(id)]),
+		)
+		.await
+		.context("load internal queue message name")?;
+	let Some(row) = result.rows.first() else {
+		return Ok(None);
+	};
+	Ok(Some(read_text(row, 0, "queue message name")?))
 }
 
 pub(crate) async fn load_queue_messages_matching(
@@ -855,14 +879,17 @@ fn build_workflow_kv_statements(writes: &[WorkflowKvWrite]) -> Result<Vec<Sqlite
 
 fn validate_atomic_workflow_flush(statements: &[SqliteBatchStatement]) -> Result<()> {
 	let row_count = statements.len();
-	let payload_bytes = statements
-		.iter()
-		.flat_map(|statement| statement.params.iter().flatten())
-		.map(bind_param_payload_len)
-		.fold(0usize, usize::saturating_add);
+	let payload_bytes = statement_bind_payload_len(statements);
+	validate_atomic_state_transaction_budget(row_count, payload_bytes)
+}
+
+pub(crate) fn validate_atomic_state_transaction_budget(
+	row_count: usize,
+	payload_bytes: usize,
+) -> Result<()> {
 	if row_count > KV_TX_MAX_ROWS || payload_bytes > KV_TX_MAX_PAYLOAD_BYTES {
 		bail!(
-			"atomic actor state and workflow flush exceeds sqlite transaction budget: {row_count} rows and {payload_bytes} bytes (limits: {} rows and {} bytes)",
+			"atomic SQLite and actor state transaction exceeds transaction budget: {row_count} rows and {payload_bytes} bytes (limits: {} rows and {} bytes)",
 			KV_TX_MAX_ROWS,
 			KV_TX_MAX_PAYLOAD_BYTES
 		);
@@ -870,7 +897,15 @@ fn validate_atomic_workflow_flush(statements: &[SqliteBatchStatement]) -> Result
 	Ok(())
 }
 
-fn bind_param_payload_len(param: &BindParam) -> usize {
+pub(crate) fn statement_bind_payload_len(statements: &[SqliteBatchStatement]) -> usize {
+	statements
+		.iter()
+		.flat_map(|statement| statement.params.iter().flatten())
+		.map(bind_param_payload_len)
+		.fold(0usize, usize::saturating_add)
+}
+
+pub(crate) fn bind_param_payload_len(param: &BindParam) -> usize {
 	match param {
 		BindParam::Null => 0,
 		BindParam::Integer(_) | BindParam::Float(_) => 8,
@@ -992,6 +1027,42 @@ pub(crate) async fn persist_last_pushed_alarm(db: &SqliteDb, alarm_ts: Option<i6
 	)
 	.await
 	.context("persist internal last pushed alarm")?;
+	Ok(())
+}
+
+pub(crate) async fn load_run_wake_at(db: &SqliteDb) -> Result<Option<i64>> {
+	let result = db
+		.query(
+			LOAD_RUN_WAKE_AT_SQL,
+			Some(vec![BindParam::Text(RUN_WAKE_AT_META_KEY.to_owned())]),
+		)
+		.await
+		.context("load internal run wake deadline")?;
+	let Some(row) = result.rows.first() else {
+		return Ok(None);
+	};
+	let payload = read_blob(row, 0, "run wake deadline")?;
+	decode_latest_with_embedded_version::<persist_versioned::RunWakeAt>(
+		&payload,
+		"run wake deadline",
+	)
+}
+
+pub(crate) async fn persist_run_wake_at(db: &SqliteDb, wake_at: Option<i64>) -> Result<()> {
+	let payload = encode_latest_with_embedded_version::<persist_versioned::RunWakeAt>(
+		wake_at,
+		RUN_WAKE_AT_VERSION,
+		"run wake deadline",
+	)?;
+	db.execute(
+		UPSERT_RUN_WAKE_AT_SQL,
+		Some(vec![
+			BindParam::Text(RUN_WAKE_AT_META_KEY.to_owned()),
+			BindParam::Blob(payload),
+		]),
+	)
+	.await
+	.context("persist internal run wake deadline")?;
 	Ok(())
 }
 
