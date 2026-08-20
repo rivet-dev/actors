@@ -64,7 +64,7 @@ type ActorKvListOptions<
 type ActorClientFor<T> = T extends Registry<any> ? Client<T> : T;
 
 /**
- * @deprecated Actor KV is deprecated. Use embedded SQLite (`c.db` / `c.sql`)
+ * @deprecated Actor KV is deprecated. Use embedded SQLite (`c.db`)
  * or actor state instead.
  */
 export interface ActorKv {
@@ -399,7 +399,7 @@ export interface ActorContext<
 	state: TState;
 	vars: TVars;
 	/**
-	 * @deprecated Actor KV is deprecated. Use embedded SQLite (`db` / `sql`)
+	 * @deprecated Actor KV is deprecated. Use embedded SQLite (`c.db`)
 	 * or actor state instead.
 	 */
 	readonly kv: ActorKv;

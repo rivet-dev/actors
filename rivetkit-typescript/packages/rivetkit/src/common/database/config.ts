@@ -9,7 +9,7 @@ export interface ActorMetricsLike {
 export type InferDatabaseClient<DBProvider extends AnyDatabaseProvider> =
 	DBProvider extends DatabaseProvider<any>
 		? Awaited<ReturnType<DBProvider["createClient"]>>
-		: never;
+		: RawAccess;
 
 export type SqliteBindings = unknown[] | Record<string, unknown>;
 
@@ -165,7 +165,17 @@ export type RawAccess = {
 	/** Runs a callback in an isolated SQLite transaction. */
 	transaction: <T>(
 		callback: (tx: RawAccess) => Promise<T> | T,
-		options?: { timeout?: number },
+		options?: {
+			timeout?: number;
+			/** @experimental */
+			experimental?: {
+				/**
+				 * Atomically includes actor and hibernatable connection state.
+				 * Only single-statement `execute` calls are supported in the transaction.
+				 */
+				includeState?: boolean;
+			};
+		},
 	) => Promise<T>;
 	/**
 	 * Returns native SQLite metrics when the active runtime supports them.

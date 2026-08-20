@@ -15,6 +15,7 @@ export class ActorContext {
 	abortSignal(): any;
 	connectConn(params: Uint8Array, request: any): Promise<ConnHandle>;
 	requestSave(opts: any): void;
+	beginStateTransaction(timeout_ms?: number | null): Promise<ActorStateTransaction>;
 	registerTask(promise: Promise<any>): void;
 	runtimeState(): any;
 	endKeepAwake(region_id: number): void;
@@ -188,6 +189,15 @@ export class SqliteTransaction {
 	free(): void;
 	exec(sql: string): Promise<any>;
 	execute(sql: string, params: any): Promise<any>;
+	rollback(): Promise<void>;
+}
+
+export class ActorStateTransaction {
+	private constructor();
+	free(): void;
+	exec(sql: string): Promise<any>;
+	execute(sql: string, params: any): Promise<any>;
+	commit(payload: any): Promise<void>;
 	commit(): Promise<void>;
 	rollback(): Promise<void>;
 }

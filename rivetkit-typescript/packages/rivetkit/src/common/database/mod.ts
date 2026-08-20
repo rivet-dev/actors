@@ -1,5 +1,6 @@
 import { getLogger } from "@/common/log";
 import type {
+	NativeDatabaseProvider,
 	DatabaseProvider,
 	RawAccess,
 	SqliteDatabase,
@@ -19,6 +20,27 @@ interface DatabaseFactoryConfig {
 	onMigrate?: (db: RawAccess) => Promise<void> | void;
 	warnOnManualTransactions?: boolean;
 }
+const builtInDatabaseProviders = new WeakSet<object>();
+const nativeStateTransactionOpeners = new WeakMap<
+	NativeDatabaseProvider,
+	(timeoutMs?: number) => Promise<SqliteTransactionDatabase>
+>();
+
+/** @internal */
+export function registerNativeStateTransactionOpener<
+	T extends NativeDatabaseProvider,
+>(
+	provider: T,
+	opener: (timeoutMs?: number) => Promise<SqliteTransactionDatabase>,
+): T {
+	nativeStateTransactionOpeners.set(provider, opener);
+	return provider;
+}
+
+/** @internal */
+export function isBuiltInDatabaseProvider(provider: object): boolean {
+	return builtInDatabaseProviders.has(provider);
+}
 
 function hasMultipleStatements(query: string): boolean {
 	const trimmed = query.trim().replace(/;+$/, "").trimEnd();
@@ -29,7 +51,7 @@ export function db({
 	onMigrate,
 	warnOnManualTransactions = true,
 }: DatabaseFactoryConfig = {}): DatabaseProvider<RawAccess> {
-	return {
+	const provider: DatabaseProvider<RawAccess> = {
 		createClient: async (ctx) => {
 			const nativeDatabaseProvider = ctx.nativeDatabaseProvider;
 			if (!nativeDatabaseProvider) {
@@ -128,12 +150,35 @@ export function db({
 				},
 				transaction: async <T>(
 					callback: (tx: RawAccess) => Promise<T> | T,
-					options?: { timeout?: number },
+					options?: {
+						timeout?: number;
+						experimental?: { includeState?: boolean };
+					},
 				): Promise<T> => {
 					validateTransactionTimeout(options?.timeout);
-					const transaction = await db.beginTransaction(
-						options?.timeout,
-					);
+					if (
+						transactionScoped &&
+						options?.experimental?.includeState
+					) {
+						throw new Error(
+							"experimental.includeState is not supported for nested transactions",
+						);
+					}
+					const transaction = options?.experimental?.includeState
+						? await (() => {
+								const beginStateTransaction =
+									ctx.nativeDatabaseProvider &&
+									nativeStateTransactionOpeners.get(
+										ctx.nativeDatabaseProvider,
+									);
+								if (!beginStateTransaction) {
+									throw new Error(
+										"experimental.includeState is only supported by RivetKit's embedded database provider",
+									);
+								}
+								return beginStateTransaction(options?.timeout);
+							})()
+						: await db.beginTransaction(options?.timeout);
 					const tx = createClient(transaction, true);
 					try {
 						const result = await callback(tx);
@@ -167,6 +212,8 @@ export function db({
 			}
 		},
 	};
+	builtInDatabaseProviders.add(provider);
+	return provider;
 }
 
 function rowToObject<TRow extends Record<string, unknown>>(

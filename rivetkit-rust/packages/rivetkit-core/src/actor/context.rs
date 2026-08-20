@@ -88,7 +88,7 @@ pub(crate) struct ActorContextInner {
 	pub(super) last_save_at: Mutex<Option<crate::time::Instant>>,
 	pub(super) pending_save: Mutex<Option<PendingSave>>,
 	pub(super) tracked_persist: Mutex<Option<JoinHandle<()>>>,
-	pub(super) save_guard: AsyncMutex<()>,
+	pub(super) save_guard: Arc<AsyncMutex<()>>,
 	pub(super) in_flight_state_writes: AtomicUsize,
 	pub(super) state_write_completion: Notify,
 	pub(super) on_state_change_in_flight: AtomicUsize,
@@ -309,7 +309,7 @@ impl ActorContext {
 			last_save_at: Mutex::new(None),
 			pending_save: Mutex::new(None),
 			tracked_persist: Mutex::new(None),
-			save_guard: AsyncMutex::new(()),
+			save_guard: Arc::new(AsyncMutex::new(())),
 			in_flight_state_writes: AtomicUsize::new(0),
 			state_write_completion: Notify::new(),
 			on_state_change_in_flight: AtomicUsize::new(0),
@@ -1123,7 +1123,7 @@ impl ActorContext {
 		*self.0.hibernated_connection_liveness_override.write() = Some(pairs.into_iter().collect());
 	}
 
-	fn prepare_state_deltas(
+	pub(super) fn prepare_state_deltas(
 		&self,
 		deltas: Vec<StateDelta>,
 	) -> Result<(Vec<StateDelta>, PendingHibernationChanges)> {

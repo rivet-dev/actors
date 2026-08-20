@@ -43,8 +43,13 @@ import {
 	createClientWithDriver,
 } from "@/client/client";
 import { convertRegistryConfigToClientConfig } from "@/client/config";
-import { HEADER_CONN_PARAMS } from "@/common/actor-router-consts";
 import type { AnyDatabaseProvider } from "@/common/database/config";
+import { HEADER_CONN_PARAMS } from "@/common/actor-router-consts";
+import {
+	db as defaultDb,
+	isBuiltInDatabaseProvider,
+	registerNativeStateTransactionOpener,
+} from "@/common/database/mod";
 import { wrapJsNativeDatabase } from "@/common/database/native-database";
 import { assertJsonCompatValue, type JsonCompatValue } from "@/common/encoding";
 import { isResponseLike, type ResponseLike } from "@/common/fetch-like";
@@ -388,6 +393,29 @@ function databaseClientNotReadyError(): RivetError {
 		{ public: true },
 	);
 }
+function guardCustomDatabaseStateTransactions<T extends object>(client: T): T {
+	const transaction = Reflect.get(client, "transaction");
+	if (typeof transaction !== "function") {
+		return client;
+	}
+	const guardedTransaction = (
+		callback: unknown,
+		options?: { experimental?: { includeState?: boolean } },
+	) => {
+		if (options?.experimental?.includeState) {
+			throw new Error(
+				"experimental.includeState is only supported by RivetKit's embedded database provider",
+			);
+		}
+		return Reflect.apply(transaction, client, [callback, options]);
+	};
+	return new Proxy(client, {
+		get(target, property, receiver) {
+			if (property === "transaction") return guardedTransaction;
+			return Reflect.get(target, property, receiver);
+		},
+	});
+}
 
 function stateNotEnabledError(): RivetError {
 	return new RivetError(
@@ -528,6 +556,7 @@ async function closeNativeDatabaseClient(
 function getOrCreateNativeSqlDatabase(
 	runtime: CoreRuntime,
 	ctx: ActorContextHandle,
+	serializeState: () => RuntimeStateDeltaPayload,
 ): ReturnType<typeof wrapJsNativeDatabase> {
 	const runtimeState = getNativeRuntimeState(runtime, ctx);
 	const cachedDatabase = runtimeState.sql;
@@ -557,6 +586,29 @@ function getOrCreateNativeSqlDatabase(
 				commit: () => runtime.actorSqlTransactionCommit(transaction),
 				rollback: () =>
 					runtime.actorSqlTransactionRollback(transaction),
+			};
+		},
+		beginStateTransaction: async (timeoutMs) => {
+			const transaction = await runtime.actorBeginStateTransaction(
+				ctx,
+				timeoutMs,
+			);
+			return {
+				exec: (sql) =>
+					runtime.actorStateTransactionExec(transaction, sql),
+				execute: (sql, params) =>
+					runtime.actorStateTransactionExecute(
+						transaction,
+						sql,
+						params,
+					),
+				commit: () =>
+					runtime.actorStateTransactionCommit(
+						transaction,
+						serializeState(),
+					),
+				rollback: () =>
+					runtime.actorStateTransactionRollback(transaction),
 			};
 		},
 		query: (sql, params) => runtime.actorSqlQuery(ctx, sql, params),
@@ -2634,7 +2686,7 @@ export class ActorContextHandleAdapter {
 	#queue?: NativeQueueAdapter;
 	#request?: Request;
 	#schedule?: NativeScheduleAdapter;
-	#sql?: ReturnType<typeof wrapJsNativeDatabase>;
+	#run?: { setWakeAt(timestamp: number | null): Promise<void> };
 	#runHandlerActiveProvider?: () => boolean;
 	#onStateChange?: NativeOnStateChangeHandler;
 	#stateEnabled: boolean;
@@ -2677,13 +2729,6 @@ export class ActorContextHandleAdapter {
 			this.#kv = new NativeKvAdapter(this.#runtime, this.#ctx);
 		}
 		return this.#kv;
-	}
-
-	get sql() {
-		if (!this.#sql) {
-			this.#sql = getOrCreateNativeSqlDatabase(this.#runtime, this.#ctx);
-		}
-		return this.#sql;
 	}
 
 	async actorRuntimeSocket(): Promise<{ path: string }> {
@@ -2920,7 +2965,7 @@ export class ActorContextHandleAdapter {
 		}
 
 		const actorId = this.actorId;
-		const client = await this.#databaseProvider.createClient({
+		const createdClient = await this.#databaseProvider.createClient({
 			actorId,
 			kv: {
 				batchPut: async (entries) => {
@@ -2941,16 +2986,28 @@ export class ActorContextHandleAdapter {
 			log: {
 				debug: (obj) => logger().debug(obj),
 			},
-			nativeDatabaseProvider: {
-				open: async (requestedActorId) => {
-					void requestedActorId;
-					return getOrCreateNativeSqlDatabase(
+			nativeDatabaseProvider: registerNativeStateTransactionOpener(
+				{
+					open: async (requestedActorId) => {
+						void requestedActorId;
+						return getOrCreateNativeSqlDatabase(
+							this.#runtime,
+							this.#ctx,
+							() => this.serializeForTick("save"),
+						);
+					},
+				},
+				async (timeoutMs) =>
+					await getOrCreateNativeSqlDatabase(
 						this.#runtime,
 						this.#ctx,
-					);
-				},
-			},
+						() => this.serializeForTick("save"),
+					).beginStateTransaction(timeoutMs),
+			),
 		});
+		const client = isBuiltInDatabaseProvider(this.#databaseProvider)
+			? createdClient
+			: guardCustomDatabaseStateTransactions(createdClient as object);
 		runtimeState.databaseClient = {
 			client,
 		};
@@ -2978,7 +3035,6 @@ export class ActorContextHandleAdapter {
 
 	async closeDatabase(): Promise<void> {
 		this.#db = undefined;
-		this.#sql = undefined;
 		await closeNativeDatabaseClient(this.#runtime, this.#ctx);
 		await closeNativeSqlDatabase(this.#runtime, this.#ctx);
 	}
@@ -3200,7 +3256,6 @@ export class ActorContextHandleAdapter {
 		// down so the request-save and onStateChange always run.
 		this.#flushStateChange();
 		this.#abortSignalCleanup?.();
-		this.#sql = undefined;
 	}
 
 	#createActorAbortSignal(): AbortSignal {
@@ -3560,7 +3615,7 @@ function buildActorConfig(
 	return {
 		name: options.name as string | undefined,
 		icon: options.icon as string | undefined,
-		hasDatabase: config.db !== undefined || usesRemoteSqlite,
+		hasDatabase: true,
 		remoteSqlite: usesRemoteSqlite,
 		enableActorRuntimeSocket: options.enableActorRuntimeSocket === true,
 		hasState:
@@ -3706,7 +3761,10 @@ export function buildNativeFactory(
 	definition: AnyActorDefinition,
 ): ActorFactoryHandle {
 	const config = definition.config as Record<string, any>;
-	const databaseProvider = config.db as AnyDatabaseProvider;
+	const databaseProvider = (config.db ?? defaultDb()) as Exclude<
+		AnyDatabaseProvider,
+		undefined
+	>;
 	const actionHandlers = flattenActionHandlers(config.actions);
 	const schemaConfig: NativeValidationConfig = {
 		actionInputSchemas: flattenActionInputSchemas(
@@ -3855,6 +3913,9 @@ export function buildNativeFactory(
 		const workflowState = async () =>
 			(await getNativeWorkflowInspector(ctx)?.getState?.()) ?? null;
 		const actorCtx = makeActorCtx(ctx, jsRequest);
+		const sql = getOrCreateNativeSqlDatabase(runtime, ctx, () =>
+			actorCtx.serializeForTick("save"),
+		);
 		try {
 			if (
 				url.pathname === "/inspector/state" &&
@@ -4026,7 +4087,7 @@ export function buildNativeFactory(
 				url.pathname === "/inspector/database/schema" &&
 				jsRequest.method === "GET"
 			) {
-				const db = actorCtx.sql;
+				const db = sql;
 				const tables = queryRows(
 					await db.query(
 						"SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '__drizzle_%' ORDER BY name",
@@ -4080,7 +4141,7 @@ export function buildNativeFactory(
 				);
 				const quoted = `"${table.replace(/"/g, '""')}"`;
 				const rows = queryRows(
-					await actorCtx.sql.query(
+					await sql.query(
 						`SELECT * FROM ${quoted} LIMIT ? OFFSET ?`,
 						[
 							Math.max(0, Math.min(limit, 500)),
@@ -4123,15 +4184,11 @@ export function buildNativeFactory(
 					const bindings = normalizeSqlitePropertyBindings(
 						body.properties as Record<string, unknown>,
 					);
-					const rows = queryRows(
-						await actorCtx.sql.query(body.sql, bindings),
-					);
+					const rows = queryRows(await sql.query(body.sql, bindings));
 					return jsonResponse({ rows: jsonSafe(rows) });
 				}
 				const args = Array.isArray(body.args) ? body.args : [];
-				const rows = queryRows(
-					await actorCtx.sql.query(body.sql, args),
-				);
+				const rows = queryRows(await sql.query(body.sql, args));
 				return jsonResponse({ rows: jsonSafe(rows) });
 			}
 			if (
@@ -4160,7 +4217,7 @@ export function buildNativeFactory(
 					rpcs: Object.keys(actionHandlers).sort(),
 					queueSize: inspectorSnapshot.queueSize,
 					isStateEnabled: stateEnabled,
-					isDatabaseEnabled: databaseProvider !== undefined,
+					isDatabaseEnabled: true,
 					isWorkflowEnabled:
 						getNativeWorkflowInspector(ctx) !== undefined,
 					workflowState: await workflowState(),

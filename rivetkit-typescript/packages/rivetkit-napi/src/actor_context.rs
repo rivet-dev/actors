@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken as CoreCancellationToken;
 
 use crate::actor_factory::BridgeRivetErrorContext;
 use crate::connection::ConnHandle;
-use crate::database::JsNativeDatabase;
+use crate::database::{JsActorStateTransaction, JsNativeDatabase, transaction_timeout};
 use crate::kv::Kv;
 use crate::queue::Queue;
 use crate::schedule::Schedule;
@@ -410,6 +410,19 @@ impl ActorContext {
 		self.inner
 			.save_state(state_deltas_from_payload(payload))
 			.await
+			.map_err(napi_anyhow_error)
+	}
+
+	#[napi]
+	pub async fn begin_state_transaction(
+		&self,
+		timeout_ms: Option<f64>,
+	) -> napi::Result<JsActorStateTransaction> {
+		let timeout = timeout_ms.map(transaction_timeout).transpose()?;
+		self.inner
+			.begin_state_transaction(timeout)
+			.await
+			.map(JsActorStateTransaction::new)
 			.map_err(napi_anyhow_error)
 	}
 

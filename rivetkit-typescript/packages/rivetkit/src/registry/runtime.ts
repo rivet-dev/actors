@@ -15,6 +15,7 @@ export type ActorContextHandle = OpaqueHandle<"actorContext">;
 export type ConnHandle = OpaqueHandle<"conn">;
 export type WebSocketHandle = OpaqueHandle<"webSocket">;
 export type CancellationTokenHandle = OpaqueHandle<"cancellationToken">;
+export type ActorStateTransactionHandle = OpaqueHandle<"actorStateTransaction">;
 export type SqliteTransactionHandle = OpaqueHandle<"sqliteTransaction">;
 
 export type RuntimeBytes = Uint8Array;
@@ -616,6 +617,26 @@ export interface CoreRuntime {
 	): Promise<void>;
 	actorSqlTransactionRollback(
 		transaction: SqliteTransactionHandle,
+	): Promise<void>;
+	actorBeginStateTransaction(
+		ctx: ActorContextHandle,
+		timeoutMs?: number,
+	): Promise<ActorStateTransactionHandle>;
+	actorStateTransactionExec(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+	): Promise<RuntimeSqlExecResult>;
+	actorStateTransactionExecute(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): Promise<RuntimeSqlExecuteResult>;
+	actorStateTransactionCommit(
+		transaction: ActorStateTransactionHandle,
+		payload: RuntimeStateDeltaPayload,
+	): Promise<void>;
+	actorStateTransactionRollback(
+		transaction: ActorStateTransactionHandle,
 	): Promise<void>;
 	actorSqlQuery(
 		ctx: ActorContextHandle,

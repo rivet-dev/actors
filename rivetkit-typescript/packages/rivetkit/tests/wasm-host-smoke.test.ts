@@ -459,7 +459,7 @@ async function runHostSmoke(kind: HostKind): Promise<SmokeHost> {
 				scenario.actionReconnect.markStarted();
 				await scenario.actionReconnect.released;
 
-				await c.sql.execute(
+				await c.db.execute(
 					"INSERT INTO smoke_events (host) VALUES (?)",
 					[label],
 				);
@@ -467,11 +467,11 @@ async function runHostSmoke(kind: HostKind): Promise<SmokeHost> {
 				scenario.remoteWriteReconnect.markStarted();
 				await scenario.remoteWriteReconnect.released;
 
-				await c.sql.execute(
+				await c.db.execute(
 					"UPDATE smoke_events SET host = ? WHERE id = ?",
 					[label, 1],
 				);
-				const rows = await c.sql.query(
+				const rows = await c.db.execute(
 					"SELECT host FROM smoke_events WHERE host = ?",
 					[label],
 				);

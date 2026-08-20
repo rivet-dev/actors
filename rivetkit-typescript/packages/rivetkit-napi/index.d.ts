@@ -298,6 +298,7 @@ export declare class ActorContext {
   hasPendingHibernationChanges(): boolean
   takePendingHibernationChanges(): Array<string>
   dirtyHibernatableConns(): Array<ConnHandle>
+  beginStateTransaction(timeoutMs?: number | undefined | null): Promise<JsActorStateTransaction>
   saveState(payload: StateDeltaPayload): Promise<void>
   saveStateAndWorkflowBatch(writes: Array<WorkflowKvWritePayload>): Promise<void>
   actorId(): string
@@ -365,6 +366,12 @@ export declare class JsSqliteTransaction {
   exec(sql: string): Promise<QueryResult>
   commit(): Promise<void>
   rollback(): Promise<void>
+export declare class JsActorStateTransaction {
+  execute(sql: string, params?: Array<JsBindParam> | undefined | null): Promise<NativeExecuteResult>
+  exec(sql: string): Promise<QueryResult>
+  commit(payload: StateDeltaPayload): Promise<void>
+  rollback(): Promise<void>
+}
 }
 export declare class Kv {
   get(key: Buffer): Promise<Buffer | null>

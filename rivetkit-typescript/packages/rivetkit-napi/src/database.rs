@@ -1,7 +1,9 @@
 use std::time::Duration;
 
+use crate::actor_context::{StateDeltaPayload, state_deltas_from_payload};
 use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
+use rivetkit_core::ActorStateTransaction as CoreActorStateTransaction;
 use rivetkit_core::sqlite::{
 	BindParam, ColumnValue, ExecuteResult as CoreExecuteResult, QueryResult as CoreQueryResult,
 	SqliteBatchStatement as CoreSqliteBatchStatement, SqliteDb as CoreSqliteDb,
@@ -20,6 +22,17 @@ pub struct JsNativeDatabase {
 #[derive(Clone)]
 pub struct JsSqliteTransaction {
 	transaction: CoreSqliteTransaction,
+}
+#[napi]
+#[derive(Clone)]
+pub struct JsActorStateTransaction {
+	transaction: CoreActorStateTransaction,
+}
+
+impl JsActorStateTransaction {
+	pub(crate) fn new(transaction: CoreActorStateTransaction) -> Self {
+		Self { transaction }
+	}
 }
 
 impl JsNativeDatabase {
@@ -245,7 +258,49 @@ impl JsSqliteTransaction {
 	}
 }
 
-fn transaction_timeout(timeout_ms: f64) -> napi::Result<Duration> {
+#[napi]
+impl JsActorStateTransaction {
+	#[napi]
+	pub async fn execute(
+		&self,
+		sql: String,
+		params: Option<Vec<JsBindParam>>,
+	) -> napi::Result<NativeExecuteResult> {
+		let params = params.map(js_bind_params_to_core).transpose()?;
+		self.transaction
+			.execute(sql, params)
+			.await
+			.map(core_execute_result_to_js)
+			.map_err(crate::napi_anyhow_error)
+	}
+
+	#[napi]
+	pub async fn exec(&self, sql: String) -> napi::Result<QueryResult> {
+		self.transaction
+			.exec(sql)
+			.await
+			.map(core_query_result_to_js)
+			.map_err(crate::napi_anyhow_error)
+	}
+
+	#[napi]
+	pub async fn commit(&self, payload: StateDeltaPayload) -> napi::Result<()> {
+		self.transaction
+			.commit(state_deltas_from_payload(payload))
+			.await
+			.map_err(crate::napi_anyhow_error)
+	}
+
+	#[napi]
+	pub async fn rollback(&self) -> napi::Result<()> {
+		self.transaction
+			.rollback()
+			.await
+			.map_err(crate::napi_anyhow_error)
+	}
+}
+
+pub(crate) fn transaction_timeout(timeout_ms: f64) -> napi::Result<Duration> {
 	if !timeout_ms.is_finite() || timeout_ms <= 0.0 {
 		return Err(napi_anyhow_error(
 			NapiInvalidArgument {

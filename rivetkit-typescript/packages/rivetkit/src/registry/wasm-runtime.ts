@@ -13,6 +13,7 @@ import type {
 	WasmRuntimeInitInput,
 } from "./config";
 import type {
+	ActorStateTransactionHandle,
 	ActorContextHandle,
 	ActorFactoryHandle,
 	CancellationTokenHandle,
@@ -795,6 +796,74 @@ export class WasmCoreRuntime implements CoreRuntime {
 
 	async actorSqlTransactionRollback(
 		transaction: SqliteTransactionHandle,
+	): Promise<void> {
+		await callWasm(() =>
+			(
+				transaction as unknown as { rollback(): Promise<void> }
+			).rollback(),
+		);
+	}
+	async actorBeginStateTransaction(
+		ctx: ActorContextHandle,
+		timeoutMs?: number,
+	): Promise<ActorStateTransactionHandle> {
+		return (await callWasm(() =>
+			(
+				asWasmActorContext(ctx) as unknown as {
+					beginStateTransaction(
+						timeoutMs?: number,
+					): Promise<ActorStateTransactionHandle>;
+				}
+			).beginStateTransaction(timeoutMs),
+		)) as ActorStateTransactionHandle;
+	}
+
+	async actorStateTransactionExec(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+	): Promise<RuntimeSqlExecResult> {
+		return await callWasm(() =>
+			(
+				transaction as unknown as {
+					exec(sql: string): Promise<RuntimeSqlExecResult>;
+				}
+			).exec(sql),
+		);
+	}
+
+	async actorStateTransactionExecute(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): Promise<RuntimeSqlExecuteResult> {
+		const result = await callWasm(() =>
+			(
+				transaction as unknown as {
+					execute(
+						sql: string,
+						params?: RuntimeSqlBindParams,
+					): Promise<RuntimeSqlExecuteResult>;
+				}
+			).execute(sql, params),
+		);
+		return normalizeRuntimeSqlExecuteResult(result);
+	}
+
+	async actorStateTransactionCommit(
+		transaction: ActorStateTransactionHandle,
+		payload: RuntimeStateDeltaPayload,
+	): Promise<void> {
+		await callWasm(() =>
+			(
+				transaction as unknown as {
+					commit(payload: RuntimeStateDeltaPayload): Promise<void>;
+				}
+			).commit(payload),
+		);
+	}
+
+	async actorStateTransactionRollback(
+		transaction: ActorStateTransactionHandle,
 	): Promise<void> {
 		await callWasm(() =>
 			(

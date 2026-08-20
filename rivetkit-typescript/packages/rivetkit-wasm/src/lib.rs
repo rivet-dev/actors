@@ -1291,6 +1291,18 @@ impl WasmActorContext {
 			.await
 			.map_err(anyhow_to_js_error)
 	}
+	#[wasm_bindgen(js_name = beginStateTransaction)]
+	pub async fn begin_state_transaction(
+		&self,
+		timeout_ms: Option<f64>,
+	) -> Result<WasmActorStateTransaction, JsValue> {
+		let timeout = timeout_ms.map(transaction_timeout).transpose()?;
+		self.inner
+			.begin_state_transaction(timeout)
+			.await
+			.map(|inner| WasmActorStateTransaction { inner })
+			.map_err(anyhow_to_js_error)
+	}
 
 	#[wasm_bindgen(js_name = saveStateAndWorkflowBatch)]
 	pub async fn save_state_and_workflow_batch(&self, writes: JsValue) -> Result<(), JsValue> {
@@ -2238,8 +2250,43 @@ impl WasmSqliteTransaction {
 	}
 
 	#[wasm_bindgen]
-	pub async fn commit(&self) -> Result<(), JsValue> {
-		self.inner.commit().await.map_err(anyhow_to_js_error)
+	pub async fn commit(&self) -> Result<(), JsValue> {}
+
+	#[wasm_bindgen]
+	pub async fn rollback(&self) -> Result<(), JsValue> {
+		self.inner.rollback().await.map_err(anyhow_to_js_error)
+	}
+}
+
+#[wasm_bindgen(js_name = ActorStateTransaction)]
+pub struct WasmActorStateTransaction {
+	inner: rivetkit_core::ActorStateTransaction,
+}
+
+#[wasm_bindgen(js_class = ActorStateTransaction)]
+impl WasmActorStateTransaction {
+	#[wasm_bindgen]
+	pub async fn exec(&self, sql: String) -> Result<JsValue, JsValue> {
+		self.inner
+			.exec(sql)
+			.await
+			.map(query_result_to_js)
+			.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen]
+	pub async fn execute(&self, sql: String, params: JsValue) -> Result<JsValue, JsValue> {
+		self.inner
+			.execute(sql, bind_params_from_js(params)?)
+			.await
+			.map(execute_result_to_js)
+			.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen]
+	pub async fn commit(&self, payload: JsValue) -> Result<(), JsValue> {
+		let deltas = state_delta_payload_from_js(payload).map_err(anyhow_to_js_error)?;
+		self.inner.commit(deltas).await.map_err(anyhow_to_js_error)
 	}
 
 	#[wasm_bindgen]

@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rivetkit_actor_persist::{generated::v4 as persist_v4, versioned as persist_versioned};
 #[cfg(not(feature = "wasm-runtime"))]
 use tokio::runtime::Handle;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard, mpsc, oneshot};
 use tokio::task::JoinHandle;
 #[cfg(test)]
 use tokio::time::timeout;
@@ -28,6 +28,7 @@ use crate::actor::task_types::StateMutationReason;
 use crate::error::ActorRuntime;
 #[cfg(feature = "wasm-runtime")]
 use crate::runtime::RuntimeSpawner;
+use crate::sqlite::{BindParam, ExecuteResult, QueryResult, SqliteTransaction};
 use crate::types::SaveStateOpts;
 
 #[cfg(test)]
@@ -83,6 +84,135 @@ pub(super) struct PendingSave {
 pub struct OnStateChangeGuard {
 	ctx: Option<ActorContext>,
 }
+/// A SQLite transaction that owns the actor state-save exclusion until it is
+/// committed or rolled back.
+#[derive(Clone)]
+pub struct ActorStateTransaction {
+	owner: Arc<AsyncMutex<ActorStateTransactionOwner>>,
+}
+
+struct ActorStateTransactionOwner {
+	ctx: ActorContext,
+	transaction: SqliteTransaction,
+	save_guard: Option<OwnedMutexGuard<()>>,
+	write_guard: Option<InFlightWrite>,
+	finalized: bool,
+	committed: bool,
+	save_request_revision: u64,
+	statement_count: usize,
+	bind_payload_bytes: usize,
+}
+
+impl Drop for ActorStateTransactionOwner {
+	fn drop(&mut self) {
+		if !self.finalized {
+			let transaction = self.transaction.clone();
+			#[cfg(not(feature = "wasm-runtime"))]
+			if let Ok(handle) = Handle::try_current() {
+				handle.spawn(async move {
+					if let Err(error) = transaction.rollback().await {
+						tracing::debug!(?error, "dropped actor state transaction rollback failed");
+					}
+				});
+			}
+			#[cfg(feature = "wasm-runtime")]
+			RuntimeSpawner::spawn(async move {
+				if let Err(error) = transaction.rollback().await {
+					tracing::debug!(?error, "dropped actor state transaction rollback failed");
+				}
+			});
+		}
+		if !self.committed {
+			self.ctx.schedule_save(None);
+		}
+	}
+}
+
+impl ActorStateTransaction {
+	pub async fn exec(&self, _sql: impl Into<String>) -> Result<QueryResult> {
+		let owner = self.owner.lock().await;
+		if owner.finalized {
+			return Err(anyhow::anyhow!(
+				"actor state transaction is already finalized"
+			));
+		}
+		Err(anyhow::anyhow!(
+			"actor state transactions only support single-statement execute calls"
+		))
+	}
+
+	pub async fn execute(
+		&self,
+		sql: impl Into<String>,
+		params: Option<Vec<BindParam>>,
+	) -> Result<ExecuteResult> {
+		let mut owner = self.owner.lock().await;
+		if owner.finalized {
+			return Err(anyhow::anyhow!(
+				"actor state transaction is already finalized"
+			));
+		}
+		let sql = sql.into();
+		let payload_bytes = match params.as_deref() {
+			Some(params) => params
+				.iter()
+				.map(internal_storage::bind_param_payload_len)
+				.fold(0usize, usize::saturating_add),
+			None => sql.len(),
+		};
+		let result = owner.transaction.execute(sql, params).await?;
+		owner.statement_count = owner.statement_count.saturating_add(1);
+		owner.bind_payload_bytes = owner.bind_payload_bytes.saturating_add(payload_bytes);
+		Ok(result)
+	}
+
+	pub async fn commit(&self, deltas: Vec<StateDelta>) -> Result<()> {
+		let mut owner = self.owner.lock().await;
+		if owner.finalized {
+			return Err(anyhow::anyhow!(
+				"actor state transaction is already finalized"
+			));
+		}
+
+		let save_request_revision = owner.save_request_revision;
+		let transaction = owner.transaction.clone();
+		let statement_count = owner.statement_count;
+		let bind_payload_bytes = owner.bind_payload_bytes;
+		let result = owner
+			.ctx
+			.commit_state_transaction(
+				&transaction,
+				deltas,
+				save_request_revision,
+				statement_count,
+				bind_payload_bytes,
+			)
+			.await;
+		owner.finalized = true;
+		owner.committed = result.is_ok();
+		owner.write_guard.take();
+		owner.save_guard.take();
+		if result.is_err() {
+			owner.ctx.schedule_save(None);
+		}
+		result
+	}
+
+	pub async fn rollback(&self) -> Result<()> {
+		let mut owner = self.owner.lock().await;
+		if owner.finalized {
+			return Err(anyhow::anyhow!(
+				"actor state transaction is already finalized"
+			));
+		}
+		let result = owner.transaction.rollback().await;
+		owner.finalized = true;
+		owner.write_guard.take();
+		owner.save_guard.take();
+		owner.ctx.schedule_save(None);
+		result
+	}
+}
 
 impl OnStateChangeGuard {
 	fn new(ctx: ActorContext) -> Self {
@@ -100,6 +230,37 @@ impl Drop for OnStateChangeGuard {
 }
 
 impl ActorContext {
+	pub async fn begin_state_transaction(
+		&self,
+		timeout: Option<Duration>,
+	) -> Result<ActorStateTransaction> {
+		self.clear_pending_save();
+		let save_guard = Arc::clone(&self.0.save_guard).lock_owned().await;
+		self.wait_for_in_flight_writes().await;
+		let transaction = match self.sql().begin_transaction(timeout).await {
+			Ok(transaction) => transaction,
+			Err(error) => {
+				drop(save_guard);
+				self.schedule_save(None);
+				return Err(error);
+			}
+		};
+		let write_guard = self.begin_write();
+		let save_request_revision = self.save_request_revision();
+		Ok(ActorStateTransaction {
+			owner: Arc::new(AsyncMutex::new(ActorStateTransactionOwner {
+				ctx: self.clone(),
+				transaction,
+				save_guard: Some(save_guard),
+				write_guard: Some(write_guard),
+				finalized: false,
+				committed: false,
+				save_request_revision,
+				statement_count: 0,
+				bind_payload_bytes: 0,
+			})),
+		})
+	}
 	pub fn state(&self) -> Vec<u8> {
 		self.0.current_state.read().clone()
 	}
@@ -476,6 +637,98 @@ impl ActorContext {
 			save_request_revision,
 			"actor state deltas applied"
 		);
+		Ok(())
+	}
+	async fn commit_state_transaction(
+		&self,
+		transaction: &SqliteTransaction,
+		deltas: Vec<StateDelta>,
+		save_request_revision: u64,
+		statement_count: usize,
+		bind_payload_bytes: usize,
+	) -> Result<()> {
+		let (deltas, pending_hibernation_changes) = match self.prepare_state_deltas(deltas) {
+			Ok(prepared) => prepared,
+			Err(error) => {
+				let _ = transaction.rollback().await;
+				return Err(error);
+			}
+		};
+		let commit_result = async {
+			let revision = self.0.state_revision.load(Ordering::SeqCst);
+			let mut persisted = self.persisted();
+			let mut next_state = None;
+			let mut actor_to_persist = None;
+			let mut connections_to_persist: Vec<PersistedConnection> = Vec::new();
+			let mut connections_to_delete = Vec::new();
+
+			for delta in deltas {
+				match delta {
+					StateDelta::ActorState(bytes) => {
+						next_state = Some(bytes.clone());
+						persisted.state = bytes;
+					}
+					StateDelta::ConnHibernation { conn: _, bytes } => {
+						connections_to_persist.push(
+							decode_persisted_connection(&bytes)
+								.context("decode hibernatable connection state delta")?,
+						);
+					}
+					StateDelta::ConnHibernationRemoved(conn) => {
+						connections_to_delete.push(conn);
+					}
+				}
+			}
+
+			if next_state.is_some() {
+				actor_to_persist = Some(persisted);
+			}
+			let statements = internal_storage::build_actor_core_and_connection_statements(
+				actor_to_persist.as_ref(),
+				&connections_to_persist,
+				&connections_to_delete,
+			)?;
+			internal_storage::validate_atomic_state_transaction_budget(
+				statement_count.saturating_add(statements.len()),
+				bind_payload_bytes
+					.saturating_add(internal_storage::statement_bind_payload_len(&statements)),
+			)?;
+			for statement in statements {
+				transaction
+					.execute(statement.sql, statement.params)
+					.await
+					.context("persist actor state inside sqlite transaction")?;
+			}
+			transaction
+				.commit()
+				.await
+				.context("commit sqlite transaction with actor state")?;
+
+			if let Some(state) = next_state {
+				self.0.persisted.write().state = state.clone();
+				*self.0.current_state.write() = state;
+			}
+			for connection in &connections_to_persist {
+				if let Some(handle) = self.connection(&connection.id) {
+					handle.set_state_initial(connection.state.clone());
+				}
+			}
+			*self.0.last_save_at.lock() = Some(StdInstant::now());
+			if self.0.state_revision.load(Ordering::SeqCst) == revision {
+				self.0.state_dirty.store(false, Ordering::SeqCst);
+			}
+			self.mark_save_request_completed(save_request_revision);
+			self.finish_save_request(save_request_revision);
+			self.record_state_updated();
+			Ok(())
+		}
+		.await;
+
+		if let Err(error) = commit_result {
+			self.restore_pending_hibernation_changes(pending_hibernation_changes);
+			let _ = transaction.rollback().await;
+			return Err(error);
+		}
 		Ok(())
 	}
 

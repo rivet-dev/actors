@@ -209,7 +209,7 @@ pub(crate) async fn persist_actor_core_connections_and_workflow(
 	Ok(())
 }
 
-fn build_actor_core_and_connection_statements(
+pub(crate) fn build_actor_core_and_connection_statements(
 	actor: Option<&PersistedActor>,
 	connections: &[PersistedConnection],
 	removed_connections: &[String],
@@ -869,14 +869,17 @@ fn build_workflow_kv_statements(writes: &[WorkflowKvWrite]) -> Result<Vec<Sqlite
 
 fn validate_atomic_workflow_flush(statements: &[SqliteBatchStatement]) -> Result<()> {
 	let row_count = statements.len();
-	let payload_bytes = statements
-		.iter()
-		.flat_map(|statement| statement.params.iter().flatten())
-		.map(bind_param_payload_len)
-		.fold(0usize, usize::saturating_add);
+	let payload_bytes = statement_bind_payload_len(statements);
+	validate_atomic_state_transaction_budget(row_count, payload_bytes)
+}
+
+pub(crate) fn validate_atomic_state_transaction_budget(
+	row_count: usize,
+	payload_bytes: usize,
+) -> Result<()> {
 	if row_count > KV_TX_MAX_ROWS || payload_bytes > KV_TX_MAX_PAYLOAD_BYTES {
 		bail!(
-			"atomic actor state and workflow flush exceeds sqlite transaction budget: {row_count} rows and {payload_bytes} bytes (limits: {} rows and {} bytes)",
+			"atomic SQLite and actor state transaction exceeds transaction budget: {row_count} rows and {payload_bytes} bytes (limits: {} rows and {} bytes)",
 			KV_TX_MAX_ROWS,
 			KV_TX_MAX_PAYLOAD_BYTES
 		);
@@ -884,7 +887,15 @@ fn validate_atomic_workflow_flush(statements: &[SqliteBatchStatement]) -> Result
 	Ok(())
 }
 
-fn bind_param_payload_len(param: &BindParam) -> usize {
+pub(crate) fn statement_bind_payload_len(statements: &[SqliteBatchStatement]) -> usize {
+	statements
+		.iter()
+		.flat_map(|statement| statement.params.iter().flatten())
+		.map(bind_param_payload_len)
+		.fold(0usize, usize::saturating_add)
+}
+
+pub(crate) fn bind_param_payload_len(param: &BindParam) -> usize {
 	match param {
 		BindParam::Null => 0,
 		BindParam::Integer(_) | BindParam::Float(_) => 8,
