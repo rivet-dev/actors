@@ -136,6 +136,16 @@
 				"default": "./dist/tsup/inspector/mod.cjs"
 			}
 		},
+		"./experimental/inspector/workflow": {
+			"import": {
+				"types": "./dist/tsup/inspector/workflow.d.ts",
+				"default": "./dist/tsup/inspector/workflow.js"
+			},
+			"require": {
+				"types": "./dist/tsup/inspector/workflow.d.cts",
+				"default": "./dist/tsup/inspector/workflow.cjs"
+			}
+		},
 		"./inspector-tab": {
 			"import": {
 				"types": "./dist/tsup/inspector-tab/mod.d.ts",
@@ -181,7 +191,7 @@
 		"./dist/tsup/chunk-*.cjs"
 	],
 	"scripts": {
-		"build": "tsup src/mod.ts src/client/mod.ts src/common/log.ts src/common/websocket.ts src/actor/errors.ts src/utils.ts src/workflow/mod.ts src/test/mod.ts src/inspector/mod.ts src/inspector-tab/mod.ts src/db/mod.ts src/db/drizzle.ts src/dynamic/mod.ts src/unstable/migrations.ts && tsup src/agent-os/index.ts --no-clean --out-dir dist/tsup/agent-os && node scripts/check-built-commonjs.mjs",
+		"build": "tsup src/mod.ts src/client/mod.ts src/common/log.ts src/common/websocket.ts src/actor/errors.ts src/utils.ts src/workflow/mod.ts src/test/mod.ts src/inspector/mod.ts src/inspector/workflow.ts src/inspector-tab/mod.ts src/db/mod.ts src/db/drizzle.ts src/dynamic/mod.ts src/unstable/migrations.ts && tsup src/agent-os/index.ts --no-clean --out-dir dist/tsup/agent-os && node scripts/check-built-commonjs.mjs",
 		"build:browser": "tsup --config tsup.browser.config.ts",
 		"check-types": "tsc --noEmit",
 		"lint": "biome check . && pnpm run check:test-skips && pnpm run check:wait-for-comments",
