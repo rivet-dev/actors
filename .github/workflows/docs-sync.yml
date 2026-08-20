@@ -11,6 +11,7 @@ on:
 
 jobs:
   sync:
+    if: github.repository == 'rivet-dev/actors'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
