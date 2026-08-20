@@ -226,7 +226,8 @@ impl ActorContext {
 		}
 	}
 
-	pub(crate) fn run_handler_active(&self) -> bool {
+	#[doc(hidden)]
+	pub fn run_handler_active(&self) -> bool {
 		self.0.sleep.run_handler_active_count.load(Ordering::SeqCst) > 0
 	}
 

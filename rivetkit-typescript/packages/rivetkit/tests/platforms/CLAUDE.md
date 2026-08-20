@@ -7,7 +7,7 @@
 - Cloudflare Workers, Supabase Functions, and Deno fixtures should share the same docs-shaped SQLite counter actor source with only platform bootstrapping differences.
 - Use `buildPlatformSqliteCounterActorSource()` for the shared actor in package-based fixtures (Cloudflare/Supabase); use `buildPlatformSqliteCounterRegistrySource(...)` for the raw-`setup()` Deno fixture.
 - Do not use lower-level registry builders, private generated wasm paths, or repo-local `pkg*` imports in platform app code.
-- Raw `ctx.sql` platform fixtures still need a `db` provider so runtime SQLite is enabled.
+- Raw SQLite platform fixtures use an explicit `db` provider that returns the runtime-native client through `ctx.db`.
 - Cloudflare Workers need a fetch-upgrade `WebSocket` shim for wasm envoy connections; it lives inside `@rivetkit/cloudflare-workers` (installed on `globalThis` by the package), so fixtures and user code must not hand-roll one.
 - Deno fixtures need `--allow-sys` because public `rivetkit` imports `pino`, which reads `os.hostname()`.
 - Deno fixtures should load wasm bytes from the public `@rivetkit/rivetkit-wasm/rivetkit_wasm_bg.wasm` export with `import.meta.resolve` plus `Deno.readFile`.

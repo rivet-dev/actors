@@ -7,7 +7,7 @@ use rivetkit_actor_persist::versioned as persist_versioned;
 use crate::actor::connection::{
 	PersistedConnection, PersistedSubscription, encode_persisted_connection,
 };
-use crate::actor::keys::{WORKFLOW_STORAGE_PREFIX, make_workflow_key};
+use crate::actor::keys::make_workflow_key;
 use crate::actor::messages::WorkflowKvWrite;
 use crate::actor::persist::{
 	decode_latest_with_embedded_version, encode_latest_with_embedded_version,
@@ -218,7 +218,7 @@ pub(crate) async fn persist_actor_core_connections_and_workflow(
 	Ok(())
 }
 
-fn build_actor_core_and_connection_statements(
+pub(crate) fn build_actor_core_and_connection_statements(
 	actor: Option<&PersistedActor>,
 	connections: &[PersistedConnection],
 	removed_connections: &[String],
@@ -855,128 +855,6 @@ pub(crate) async fn workflow_kv_batch_put(db: &SqliteDb, entries: &[(&[u8], &[u8
 	Ok(())
 }
 
-pub(crate) async fn workflow_storage_get(db: &SqliteDb, key: &[u8]) -> Result<Option<Vec<u8>>> {
-	let result = db
-		.query(
-			LOAD_WORKFLOW_KV_SQL,
-			Some(vec![BindParam::Blob(make_workflow_key(key))]),
-		)
-		.await
-		.context("get workflow storage value from sqlite")?;
-	let Some(row) = result.rows.first() else {
-		return Ok(None);
-	};
-	Ok(Some(read_blob(row, 0, "workflow storage value")?))
-}
-
-pub(crate) async fn workflow_storage_batch_put(
-	db: &SqliteDb,
-	entries: &[(&[u8], &[u8])],
-) -> Result<()> {
-	let prefixed = entries
-		.iter()
-		.map(|(key, value)| (make_workflow_key(key), (*value).to_vec()))
-		.collect::<Vec<_>>();
-	let row_count = prefixed.len();
-	let payload_bytes = prefixed
-		.iter()
-		.map(|(key, value)| key.len().saturating_add(value.len()))
-		.fold(0usize, usize::saturating_add);
-	if row_count > KV_TX_MAX_ROWS || payload_bytes > KV_TX_MAX_PAYLOAD_BYTES {
-		bail!(
-			"workflow storage batch exceeds sqlite transaction budget: {row_count} rows and {payload_bytes} bytes (limits: {} rows and {} bytes)",
-			KV_TX_MAX_ROWS,
-			KV_TX_MAX_PAYLOAD_BYTES,
-		);
-	}
-	let refs = prefixed
-		.iter()
-		.map(|(key, value)| (key.as_slice(), value.as_slice()))
-		.collect::<Vec<_>>();
-	workflow_kv_batch_put(db, &refs).await
-}
-
-pub(crate) async fn workflow_storage_delete(db: &SqliteDb, key: &[u8]) -> Result<()> {
-	db.execute(
-		DELETE_WORKFLOW_KV_SQL,
-		Some(vec![BindParam::Blob(make_workflow_key(key))]),
-	)
-	.await
-	.context("delete workflow storage value from sqlite")?;
-	Ok(())
-}
-
-pub(crate) async fn workflow_storage_delete_prefix(db: &SqliteDb, prefix: &[u8]) -> Result<()> {
-	let start = make_workflow_key(prefix);
-	let end = prefix_upper_bound(&start)
-		.expect("the workflow namespace prefix always has a finite upper bound");
-	workflow_storage_delete_prefixed_range(db, &start, &end).await
-}
-
-pub(crate) async fn workflow_storage_delete_range(
-	db: &SqliteDb,
-	start: &[u8],
-	end: &[u8],
-) -> Result<()> {
-	workflow_storage_delete_prefixed_range(db, &make_workflow_key(start), &make_workflow_key(end))
-		.await
-}
-
-async fn workflow_storage_delete_prefixed_range(
-	db: &SqliteDb,
-	start: &[u8],
-	end: &[u8],
-) -> Result<()> {
-	db.execute(
-		DELETE_WORKFLOW_KV_RANGE_SQL,
-		Some(vec![
-			BindParam::Blob(start.to_vec()),
-			BindParam::Blob(end.to_vec()),
-		]),
-	)
-	.await
-	.context("delete workflow storage range from sqlite")?;
-	Ok(())
-}
-
-pub(crate) async fn workflow_storage_list(
-	db: &SqliteDb,
-	prefix: &[u8],
-) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-	let start = make_workflow_key(prefix);
-	let upper_bound = prefix_upper_bound(&start);
-	let result = match upper_bound {
-		Some(end) => {
-			db.query(
-				LIST_WORKFLOW_KV_RANGE_SQL,
-				Some(vec![BindParam::Blob(start), BindParam::Blob(end)]),
-			)
-			.await
-		}
-		None => {
-			db.query(
-				LIST_WORKFLOW_KV_FROM_SQL,
-				Some(vec![BindParam::Blob(start)]),
-			)
-			.await
-		}
-	}
-	.context("list workflow storage values from sqlite")?;
-	result
-		.rows
-		.iter()
-		.map(|row| {
-			let key = read_blob(row, 0, "workflow storage key")?;
-			let value = read_blob(row, 1, "workflow storage value")?;
-			let key = key
-				.strip_prefix(&WORKFLOW_STORAGE_PREFIX)
-				.context("workflow storage row escaped its namespace")?
-				.to_vec();
-			Ok((key, value))
-		})
-		.collect()
-}
-
 fn build_workflow_kv_statements(writes: &[WorkflowKvWrite]) -> Result<Vec<SqliteBatchStatement>> {
 	writes
 		.iter()
@@ -1001,14 +879,17 @@ fn build_workflow_kv_statements(writes: &[WorkflowKvWrite]) -> Result<Vec<Sqlite
 
 fn validate_atomic_workflow_flush(statements: &[SqliteBatchStatement]) -> Result<()> {
 	let row_count = statements.len();
-	let payload_bytes = statements
-		.iter()
-		.flat_map(|statement| statement.params.iter().flatten())
-		.map(bind_param_payload_len)
-		.fold(0usize, usize::saturating_add);
+	let payload_bytes = statement_bind_payload_len(statements);
+	validate_atomic_state_transaction_budget(row_count, payload_bytes)
+}
+
+pub(crate) fn validate_atomic_state_transaction_budget(
+	row_count: usize,
+	payload_bytes: usize,
+) -> Result<()> {
 	if row_count > KV_TX_MAX_ROWS || payload_bytes > KV_TX_MAX_PAYLOAD_BYTES {
 		bail!(
-			"atomic actor state and workflow flush exceeds sqlite transaction budget: {row_count} rows and {payload_bytes} bytes (limits: {} rows and {} bytes)",
+			"atomic SQLite and actor state transaction exceeds transaction budget: {row_count} rows and {payload_bytes} bytes (limits: {} rows and {} bytes)",
 			KV_TX_MAX_ROWS,
 			KV_TX_MAX_PAYLOAD_BYTES
 		);
@@ -1016,7 +897,15 @@ fn validate_atomic_workflow_flush(statements: &[SqliteBatchStatement]) -> Result
 	Ok(())
 }
 
-fn bind_param_payload_len(param: &BindParam) -> usize {
+pub(crate) fn statement_bind_payload_len(statements: &[SqliteBatchStatement]) -> usize {
+	statements
+		.iter()
+		.flat_map(|statement| statement.params.iter().flatten())
+		.map(bind_param_payload_len)
+		.fold(0usize, usize::saturating_add)
+}
+
+pub(crate) fn bind_param_payload_len(param: &BindParam) -> usize {
 	match param {
 		BindParam::Null => 0,
 		BindParam::Integer(_) | BindParam::Float(_) => 8,

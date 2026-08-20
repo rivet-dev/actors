@@ -8,6 +8,7 @@ import type {
 } from "@rivetkit/rivetkit-napi";
 import type {
 	ActorContextHandle,
+	ActorStateTransactionHandle,
 	ActorFactoryHandle,
 	CancellationTokenHandle,
 	ConnHandle,
@@ -59,6 +60,9 @@ type NapiSqlBatchStatement = Parameters<
 type NapiSqlTransaction = Awaited<
 	ReturnType<NapiSqlDatabase["beginTransaction"]>
 >;
+type NapiActorStateTransaction = Awaited<
+	ReturnType<NativeActorContext["beginStateTransaction"]>
+>;
 
 function asNativeRegistry(handle: RegistryHandle): NativeCoreRegistry {
 	return handle as unknown as NativeCoreRegistry;
@@ -84,6 +88,12 @@ function asNativeSqlTransaction(
 	handle: SqliteTransactionHandle,
 ): NapiSqlTransaction {
 	return handle as unknown as NapiSqlTransaction;
+}
+
+function asNativeActorStateTransaction(
+	handle: ActorStateTransactionHandle,
+): NapiActorStateTransaction {
+	return handle as unknown as NapiActorStateTransaction;
 }
 
 function asNativeCancellationToken(
@@ -512,73 +522,6 @@ export class NapiCoreRuntime implements CoreRuntime {
 		);
 	}
 
-	async actorWorkflowStorageGet(ctx: ActorContextHandle, key: RuntimeBytes) {
-		return await asNativeActorContext(ctx)
-			.workflowStorage()
-			.get(toNapiBuffer(key));
-	}
-
-	async actorWorkflowStorageSet(
-		ctx: ActorContextHandle,
-		key: RuntimeBytes,
-		value: RuntimeBytes,
-	): Promise<void> {
-		await asNativeActorContext(ctx)
-			.workflowStorage()
-			.set(toNapiBuffer(key), toNapiBuffer(value));
-	}
-
-	async actorWorkflowStorageDelete(
-		ctx: ActorContextHandle,
-		key: RuntimeBytes,
-	): Promise<void> {
-		await asNativeActorContext(ctx)
-			.workflowStorage()
-			.delete(toNapiBuffer(key));
-	}
-
-	async actorWorkflowStorageDeletePrefix(
-		ctx: ActorContextHandle,
-		prefix: RuntimeBytes,
-	): Promise<void> {
-		await asNativeActorContext(ctx)
-			.workflowStorage()
-			.deletePrefix(toNapiBuffer(prefix));
-	}
-
-	async actorWorkflowStorageDeleteRange(
-		ctx: ActorContextHandle,
-		start: RuntimeBytes,
-		end: RuntimeBytes,
-	): Promise<void> {
-		await asNativeActorContext(ctx)
-			.workflowStorage()
-			.deleteRange(toNapiBuffer(start), toNapiBuffer(end));
-	}
-
-	async actorWorkflowStorageList(
-		ctx: ActorContextHandle,
-		prefix: RuntimeBytes,
-	): Promise<RuntimeWorkflowKvWrite[]> {
-		return await asNativeActorContext(ctx)
-			.workflowStorage()
-			.list(toNapiBuffer(prefix));
-	}
-
-	async actorWorkflowStorageBatch(
-		ctx: ActorContextHandle,
-		writes: RuntimeWorkflowKvWrite[],
-	): Promise<void> {
-		await asNativeActorContext(ctx)
-			.workflowStorage()
-			.batch(
-				writes.map(({ key, value }) => ({
-					key: toNapiBuffer(key),
-					value: toNapiBuffer(value),
-				})),
-			);
-	}
-
 	actorId(ctx: ActorContextHandle): string {
 		return asNativeActorContext(ctx).actorId();
 	}
@@ -836,6 +779,49 @@ export class NapiCoreRuntime implements CoreRuntime {
 		await asNativeSqlTransaction(transaction).rollback();
 	}
 
+	async actorBeginStateTransaction(
+		ctx: ActorContextHandle,
+		timeoutMs?: number,
+	): Promise<ActorStateTransactionHandle> {
+		return (await asNativeActorContext(ctx).beginStateTransaction(
+			timeoutMs,
+		)) as unknown as ActorStateTransactionHandle;
+	}
+
+	async actorStateTransactionExec(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+	): Promise<RuntimeSqlExecResult> {
+		return await asNativeActorStateTransaction(transaction).exec(sql);
+	}
+
+	async actorStateTransactionExecute(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): Promise<RuntimeSqlExecuteResult> {
+		const result = await asNativeActorStateTransaction(transaction).execute(
+			sql,
+			toNapiSqlBindParams(params),
+		);
+		return normalizeRuntimeSqlExecuteResult(result);
+	}
+
+	async actorStateTransactionCommit(
+		transaction: ActorStateTransactionHandle,
+		payload: RuntimeStateDeltaPayload,
+	): Promise<void> {
+		await asNativeActorStateTransaction(transaction).commit(
+			toNapiStateDeltaPayload(payload),
+		);
+	}
+
+	async actorStateTransactionRollback(
+		transaction: ActorStateTransactionHandle,
+	): Promise<void> {
+		await asNativeActorStateTransaction(transaction).rollback();
+	}
+
 	async actorSqlQuery(
 		ctx: ActorContextHandle,
 		sql: string,
@@ -949,16 +935,6 @@ export class NapiCoreRuntime implements CoreRuntime {
 				expectedName,
 				response == null ? response : toNapiBuffer(response),
 			);
-	}
-
-	async actorQueueVerifyPersistedIdentity(
-		ctx: ActorContextHandle,
-		messageId: bigint,
-		expectedName: string,
-	): Promise<string | null> {
-		return await asNativeActorContext(ctx)
-			.queue()
-			.verifyPersistedIdentity(messageId, expectedName);
 	}
 
 	async actorQueueEnqueueAndWait(

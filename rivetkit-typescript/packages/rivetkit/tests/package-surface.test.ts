@@ -38,7 +38,7 @@ import {
 	decodeWorkflowHistoryTransport as decodePublicWorkflowHistory,
 	encodeWorkflowHistoryTransport as encodePublicWorkflowHistory,
 	WorkflowEntryStatus,
-} from "rivetkit/inspector/workflow";
+} from "rivetkit/experimental/inspector/workflow";
 import { setupTest } from "rivetkit/test";
 import { jsonParseCompat, jsonStringifyCompat } from "rivetkit/utils";
 import { describe, expect, test } from "vitest";
@@ -96,8 +96,9 @@ describe("package surface", () => {
 	test("restores supported package entrypoints", () => {
 		expect(packageJson.exports).toHaveProperty("./test");
 		expect(packageJson.exports).toHaveProperty("./inspector");
-		expect(packageJson.exports).toHaveProperty("./inspector/workflow");
-		expect(packageJson.exports).toHaveProperty("./storage");
+		expect(packageJson.exports).toHaveProperty(
+			"./experimental/inspector/workflow",
+		);
 		expect(packageJson.exports).toHaveProperty("./inspector/client");
 		expect(packageJson.exports).toHaveProperty("./db");
 		expect(packageJson.exports).toHaveProperty("./db/drizzle");

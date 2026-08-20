@@ -722,6 +722,7 @@ export const actorRuntimeSocketWithoutDb = actor({
 		getActorRuntimeSocketPath: async (c) => {
 			return (await c.actorRuntimeSocket()).path;
 		},
+		destroy: (c) => c.destroy(),
 	},
 	options: {
 		enableActorRuntimeSocket: true,

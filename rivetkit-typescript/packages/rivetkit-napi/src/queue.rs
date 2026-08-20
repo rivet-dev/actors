@@ -171,28 +171,6 @@ impl Queue {
 	}
 
 	#[napi]
-	pub async fn verify_persisted_identity(
-		&self,
-		message_id: BigInt,
-		expected_name: String,
-	) -> napi::Result<Option<String>> {
-		let (negative, message_id, lossless) = message_id.get_u64();
-		if negative || !lossless {
-			return Err(napi_anyhow_error(
-				NapiInvalidArgument {
-					argument: "messageId".to_owned(),
-					reason: "must be a non-negative 64-bit bigint".to_owned(),
-				}
-				.build(),
-			));
-		}
-		self.inner
-			.verify_persisted_message_identity(message_id, &expected_name)
-			.await
-			.map_err(napi_anyhow_error)
-	}
-
-	#[napi]
 	pub async fn complete_persisted(
 		&self,
 		message_id: BigInt,

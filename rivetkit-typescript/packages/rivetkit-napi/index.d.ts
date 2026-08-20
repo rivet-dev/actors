@@ -277,17 +277,12 @@ export interface JsKvEntry {
   key: Buffer
   value: Buffer
 }
-export interface WorkflowStorageEntry {
-  key: Buffer
-  value: Buffer
-}
 /** N-API wrapper around `rivetkit-core::ActorContext`. */
 export declare class ActorContext {
   state(): Buffer
   beginOnStateChange(): void
   endOnStateChange(): void
   kv(): Kv
-  workflowStorage(): WorkflowStorage
   sql(): JsNativeDatabase
   provisionActorRuntimeSocket(): Promise<JsActorRuntimeSocketEndpointInfo>
   schedule(): Schedule
@@ -304,6 +299,7 @@ export declare class ActorContext {
   takePendingHibernationChanges(): Array<string>
   dirtyHibernatableConns(): Array<ConnHandle>
   saveState(payload: StateDeltaPayload): Promise<void>
+  beginStateTransaction(timeoutMs?: number | undefined | null): Promise<JsActorStateTransaction>
   saveStateAndWorkflowBatch(writes: Array<WorkflowKvWritePayload>): Promise<void>
   actorId(): string
   name(): string
@@ -372,6 +368,12 @@ export declare class JsSqliteTransaction {
   commit(): Promise<void>
   rollback(): Promise<void>
 }
+export declare class JsActorStateTransaction {
+  execute(sql: string, params?: Array<JsBindParam> | undefined | null): Promise<NativeExecuteResult>
+  exec(sql: string): Promise<QueryResult>
+  commit(payload: StateDeltaPayload): Promise<void>
+  rollback(): Promise<void>
+}
 export declare class Kv {
   get(key: Buffer): Promise<Buffer | null>
   put(key: Buffer, value: Buffer): Promise<void>
@@ -389,7 +391,6 @@ export declare class Queue {
   nextBatch(options?: JsQueueNextBatchOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<Array<QueueMessage>>
   waitForNames(names: Array<string>, options?: JsQueueWaitOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<QueueMessage>
   waitForNamesAvailable(names: Array<string>, options?: JsQueueWaitOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<void>
-  verifyPersistedIdentity(messageId: bigint, expectedName: string): Promise<string | null>
   completePersisted(messageId: bigint, expectedName: string, response?: Buffer | undefined | null): Promise<boolean>
   enqueueAndWait(name: string, body: Buffer, options?: JsQueueEnqueueAndWaitOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<Buffer | null>
   tryNext(options?: JsQueueTryNextOptions | undefined | null): QueueMessage | null
@@ -450,18 +451,4 @@ export declare class WebSocket {
   send(data: Buffer, binary: boolean): void
   close(code?: number | undefined | null, reason?: string | undefined | null): Promise<void>
   setEventCallback(callback: (...args: any[]) => any): void
-}
-/**
- * N-API binding for RivetKit's closed workflow-storage capability. It exposes
- * byte operations only; physical table and namespace details stay in core.
- */
-export declare class WorkflowStorage {
-  get(key: Buffer): Promise<Buffer | null>
-  set(key: Buffer, value: Buffer): Promise<void>
-  delete(key: Buffer): Promise<void>
-  deletePrefix(prefix: Buffer): Promise<void>
-  deleteRange(start: Buffer, end: Buffer): Promise<void>
-  list(prefix: Buffer): Promise<Array<WorkflowStorageEntry>>
-  batch(entries: Array<WorkflowStorageEntry>): Promise<void>
-  flushWithState(writes: Array<WorkflowKvWritePayload>): Promise<void>
 }

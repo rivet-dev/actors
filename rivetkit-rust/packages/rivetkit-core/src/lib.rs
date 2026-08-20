@@ -124,7 +124,6 @@ pub use actor::config::{
 pub use actor::connection::ConnHandle;
 pub use actor::context::{
 	ActorContext, ActorKv, ActorWorkRegion, KeepAwakeRegion, WebSocketCallbackRegion,
-	WorkflowStorage,
 };
 pub use actor::factory::{ActorEntryFn, ActorFactory};
 pub use actor::lifecycle_hooks::{ActorEvents, ActorStart, Reply};
@@ -140,7 +139,7 @@ pub use actor::sqlite::{
 	BindParam, ColumnValue, ExecResult, ExecuteResult, QueryResult, SqliteBackend,
 	SqliteBatchStatement, SqliteDb, SqliteTransaction,
 };
-pub use actor::state::RequestSaveOpts;
+pub use actor::state::{ActorStateTransaction, RequestSaveOpts};
 pub use actor::task::{
 	ActionDispatchResult, ActorTask, DispatchCommand, HttpDispatchResult, LifecycleCommand,
 	LifecycleEvent, LifecycleState,

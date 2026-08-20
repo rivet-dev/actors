@@ -730,14 +730,11 @@ pub(crate) async fn dispatch_event(
 				call_workflow_replay(&callback, &ctx, entry_id).await
 			});
 		}
-		ActorEvent::RunWake => {
-			if let Err(error) = ctx.restart_run_handler() {
-				tracing::error!(
-					actor_id = %ctx.inner().actor_id(),
-					?error,
-					"failed to restart run handler for due run wake",
-				);
-			}
+		ActorEvent::RunWake { reply } => {
+			reply.send(
+				ctx.restart_run_handler()
+					.map_err(|error| anyhow::anyhow!(error.to_string())),
+			);
 		}
 	}
 }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use rivetkit_core::{
 	ActorContext, EnqueueAndWaitOpts, QueueMessage as CoreQueueMessage, QueueNextBatchOpts,
-	QueueNextOpts, QueueTryNextBatchOpts, QueueTryNextOpts, QueueWaitOpts,
+	QueueNextOpts, QueueTryNextBatchOpts, QueueTryNextOpts,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -284,23 +284,6 @@ impl<'a, A: Actor> Queue<'a, A> {
 	/// Lists the currently persisted queue messages without consuming them.
 	pub async fn inspect_messages(&self) -> Result<Vec<CoreQueueMessage>> {
 		self.inner.inspect_messages().await
-	}
-
-	/// Waits for a matching persisted message without reserving or consuming it.
-	pub async fn wait_for_available(&self, names: Vec<String>, opts: QueueWaitOpts) -> Result<()> {
-		self.inner.wait_for_names_available(names, opts).await
-	}
-
-	/// Completes a persisted queue message by stable ID and expected name.
-	pub async fn complete_persisted(
-		&self,
-		message_id: u64,
-		expected_name: &str,
-		response: Option<Vec<u8>>,
-	) -> Result<bool> {
-		self.inner
-			.complete_persisted_message(message_id, expected_name, response)
-			.await
 	}
 
 	/// Returns the configured maximum queue size.

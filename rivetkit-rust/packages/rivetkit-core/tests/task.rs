@@ -2789,8 +2789,9 @@ pub(crate) mod moved_tests {
 					let mut events = start.events;
 					while let Some(event) = events.recv().await {
 						match event {
-							ActorEvent::RunWake => {
+							ActorEvent::RunWake { reply } => {
 								wake_count.fetch_add(1, Ordering::SeqCst);
+								reply.send(Ok(()));
 							}
 							ActorEvent::BeginSleep => {}
 							ActorEvent::FinalizeSleep { reply } | ActorEvent::Destroy { reply } => {
@@ -2943,7 +2944,10 @@ pub(crate) mod moved_tests {
 
 		let mut task = new_task(ctx.clone());
 		task.lifecycle = LifecycleState::Started;
-		task.fire_due_alarms().await.expect("dispatch due alarms");
+		let fire = tokio::spawn(async move {
+			let result = task.fire_due_alarms().await;
+			(task, result)
+		});
 
 		let mut saw_action = false;
 		let mut saw_run_wake = false;
@@ -2953,12 +2957,17 @@ pub(crate) mod moved_tests {
 					saw_action = true;
 					reply.send(Ok(Vec::new()));
 				}
-				ActorEvent::RunWake => saw_run_wake = true,
+				ActorEvent::RunWake { reply } => {
+					saw_run_wake = true;
+					reply.send(Ok(()));
+				}
 				other => panic!("unexpected due event {}", other.kind()),
 			}
 		}
 		assert!(saw_action);
 		assert!(saw_run_wake);
+		let (mut task, fire_result) = fire.await.expect("alarm task should not panic");
+		fire_result.expect("dispatch due alarms");
 		assert_eq!(ctx.run_wake_at(), None);
 
 		task.fire_due_alarms()
@@ -2968,6 +2977,46 @@ pub(crate) mod moved_tests {
 			events_rx.try_recv(),
 			Err(mpsc::error::TryRecvError::Empty)
 		));
+	}
+
+	#[tokio::test]
+	async fn failed_run_wake_restart_restores_the_logical_deadline() {
+		let ctx = new_with_kv(
+			"actor-run-wake-restart-retry",
+			"task-run-wake-restart-retry",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+		ctx.configure_actor_events(Some(events_tx));
+		ctx.set_schedule_time_for_tests(100);
+		ctx.set_run_wake_at(Some(100))
+			.await
+			.expect("persist run wake");
+
+		let mut task = new_task(ctx.clone());
+		task.lifecycle = LifecycleState::Started;
+		let fire = tokio::spawn(async move { task.fire_due_alarms().await });
+		match events_rx.recv().await.expect("due run wake event") {
+			ActorEvent::RunWake { reply } => {
+				reply.send(Err(anyhow::anyhow!("runtime restart unavailable")));
+			}
+			other => panic!("expected run wake, got {}", other.kind()),
+		}
+
+		let error = fire
+			.await
+			.expect("alarm task should not panic")
+			.expect_err("failed restart should fail alarm dispatch");
+		assert!(format!("{error:#}").contains("restart run handler for due wake"));
+		assert_eq!(ctx.run_wake_at(), Some(100));
+		assert_eq!(
+			crate::actor::internal_storage::load_run_wake_at(ctx.sql())
+				.await
+				.expect("load restored run wake"),
+			Some(100),
+		);
 	}
 
 	#[tokio::test]

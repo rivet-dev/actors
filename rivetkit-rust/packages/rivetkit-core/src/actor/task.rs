@@ -1434,16 +1434,28 @@ impl ActorTask {
 		if self.lifecycle == LifecycleState::DestroyGrace {
 			return Ok(());
 		}
-		if let Some(wake_at) = due_run_wake
-			&& let Err(error) = self
-				.ctx
-				.try_send_actor_event(ActorEvent::RunWake, "run_wake")
-		{
-			// The workflow history remains idempotent, so retaining the logical
-			// deadline for a later retry is safer than losing a wake whose runtime
-			// inbox was temporarily unavailable.
-			self.ctx.set_run_wake_at(Some(wake_at)).await?;
-			return Err(error).context("dispatch due run wake");
+		if let Some(wake_at) = due_run_wake {
+			let (reply_tx, reply_rx) = oneshot::channel();
+			if let Err(error) = self.ctx.try_send_actor_event(
+				ActorEvent::RunWake {
+					reply: Reply::from(reply_tx),
+				},
+				"run_wake",
+			) {
+				self.ctx.set_run_wake_at(Some(wake_at)).await?;
+				return Err(error).context("dispatch due run wake");
+			}
+			let restart_result = match reply_rx.await {
+				Ok(result) => result,
+				Err(error) => {
+					self.ctx.set_run_wake_at(Some(wake_at)).await?;
+					return Err(error).context("receive due run wake restart reply");
+				}
+			};
+			if let Err(error) = restart_result {
+				self.ctx.set_run_wake_at(Some(wake_at)).await?;
+				return Err(error).context("restart run handler for due wake");
+			}
 		}
 		Ok(())
 	}

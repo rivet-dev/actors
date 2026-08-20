@@ -46,6 +46,11 @@ import {
 import { convertRegistryConfigToClientConfig } from "@/client/config";
 import { HEADER_CONN_PARAMS } from "@/common/actor-router-consts";
 import type { AnyDatabaseProvider } from "@/common/database/config";
+import {
+	db as defaultDb,
+	isBuiltInDatabaseProvider,
+	registerNativeStateTransactionOpener,
+} from "@/common/database/mod";
 import { wrapJsNativeDatabase } from "@/common/database/native-database";
 import { assertJsonCompatValue, type JsonCompatValue } from "@/common/encoding";
 import { isResponseLike, type ResponseLike } from "@/common/fetch-like";
@@ -66,12 +71,6 @@ import type {
 } from "@/registry/config";
 import { decodeCborCompat, encodeCborCompat } from "@/serde";
 import { getEnvUniversal, VERSION } from "@/utils";
-import {
-	WORKFLOW_STORAGE_V1,
-	type ActorStorage,
-	type WorkflowStorageHandle,
-	type WorkflowStorageV1,
-} from "@/storage";
 import {
 	getNodeFsSync,
 	getNodePath,
@@ -387,6 +386,30 @@ function databaseClientNotReadyError(): RivetError {
 	);
 }
 
+function guardCustomDatabaseStateTransactions<T extends object>(client: T): T {
+	const transaction = Reflect.get(client, "transaction");
+	if (typeof transaction !== "function") {
+		return client;
+	}
+	const guardedTransaction = (
+		callback: unknown,
+		options?: { experimental?: { includeState?: boolean } },
+	) => {
+		if (options?.experimental?.includeState) {
+			throw new Error(
+				"experimental.includeState is only supported by RivetKit's embedded database provider",
+			);
+		}
+		return Reflect.apply(transaction, client, [callback, options]);
+	};
+	return new Proxy(client, {
+		get(target, property, receiver) {
+			if (property === "transaction") return guardedTransaction;
+			return Reflect.get(target, property, receiver);
+		},
+	});
+}
+
 function stateNotEnabledError(): RivetError {
 	return new RivetError(
 		"actor",
@@ -526,6 +549,7 @@ async function closeNativeDatabaseClient(
 function getOrCreateNativeSqlDatabase(
 	runtime: CoreRuntime,
 	ctx: ActorContextHandle,
+	serializeState: () => RuntimeStateDeltaPayload,
 ): ReturnType<typeof wrapJsNativeDatabase> {
 	const runtimeState = getNativeRuntimeState(runtime, ctx);
 	const cachedDatabase = runtimeState.sql;
@@ -555,6 +579,29 @@ function getOrCreateNativeSqlDatabase(
 				commit: () => runtime.actorSqlTransactionCommit(transaction),
 				rollback: () =>
 					runtime.actorSqlTransactionRollback(transaction),
+			};
+		},
+		beginStateTransaction: async (timeoutMs) => {
+			const transaction = await runtime.actorBeginStateTransaction(
+				ctx,
+				timeoutMs,
+			);
+			return {
+				exec: (sql) =>
+					runtime.actorStateTransactionExec(transaction, sql),
+				execute: (sql, params) =>
+					runtime.actorStateTransactionExecute(
+						transaction,
+						sql,
+						params,
+					),
+				commit: () =>
+					runtime.actorStateTransactionCommit(
+						transaction,
+						serializeState(),
+					),
+				rollback: () =>
+					runtime.actorStateTransactionRollback(transaction),
 			};
 		},
 		query: (sql, params) => runtime.actorSqlQuery(ctx, sql, params),
@@ -1893,19 +1940,9 @@ class NativeQueueAdapter {
 		message: { id: bigint; name: string },
 		response?: unknown,
 	): Promise<void> {
-		const verifiedName = await callNative(() =>
-			this.#runtime.actorQueueVerifyPersistedIdentity(
-				this.#ctx,
-				message.id,
-				message.name,
-			),
-		);
-		if (verifiedName === null) {
-			return;
-		}
 		const validatedResponse = validateQueueComplete(
 			this.#schemas,
-			verifiedName,
+			message.name,
 			response,
 		);
 		await callNative(() =>
@@ -2607,9 +2644,7 @@ export class ActorContextHandleAdapter {
 	#queue?: NativeQueueAdapter;
 	#request?: Request;
 	#schedule?: NativeScheduleAdapter;
-	#storage?: ActorStorage;
 	#run?: { setWakeAt(timestamp: number | null): Promise<void> };
-	#sql?: ReturnType<typeof wrapJsNativeDatabase>;
 	#runHandlerActiveProvider?: () => boolean;
 	#onStateChange?: NativeOnStateChangeHandler;
 	#stateEnabled: boolean;
@@ -2652,13 +2687,6 @@ export class ActorContextHandleAdapter {
 			this.#kv = new NativeKvAdapter(this.#runtime, this.#ctx);
 		}
 		return this.#kv;
-	}
-
-	get sql() {
-		if (!this.#sql) {
-			this.#sql = getOrCreateNativeSqlDatabase(this.#runtime, this.#ctx);
-		}
-		return this.#sql;
 	}
 
 	async actorRuntimeSocket(): Promise<{ path: string }> {
@@ -2764,80 +2792,6 @@ export class ActorContextHandleAdapter {
 			);
 		}
 		return this.#queue;
-	}
-
-	get storage(): ActorStorage {
-		if (!this.#storage) {
-			const handle: WorkflowStorageHandle = {
-				get: async (key) =>
-					await callNative(() =>
-						this.#runtime.actorWorkflowStorageGet(this.#ctx, key),
-					),
-				set: async (key, value) => {
-					await callNative(() =>
-						this.#runtime.actorWorkflowStorageSet(
-							this.#ctx,
-							key,
-							value,
-						),
-					);
-				},
-				delete: async (key) => {
-					await callNative(() =>
-						this.#runtime.actorWorkflowStorageDelete(
-							this.#ctx,
-							key,
-						),
-					);
-				},
-				deletePrefix: async (prefix) => {
-					await callNative(() =>
-						this.#runtime.actorWorkflowStorageDeletePrefix(
-							this.#ctx,
-							prefix,
-						),
-					);
-				},
-				deleteRange: async (start, end) => {
-					await callNative(() =>
-						this.#runtime.actorWorkflowStorageDeleteRange(
-							this.#ctx,
-							start,
-							end,
-						),
-					);
-				},
-				list: async (prefix) =>
-					await callNative(() =>
-						this.#runtime.actorWorkflowStorageList(
-							this.#ctx,
-							prefix,
-						),
-					),
-				batch: async (writes) => {
-					await callNative(() =>
-						this.#runtime.actorWorkflowStorageBatch(
-							this.#ctx,
-							writes,
-						),
-					);
-				},
-				flushWithState: async (writes) => {
-					await this.saveStateAndWorkflowBatch(writes);
-				},
-			};
-			this.#storage = {
-				open: (token: WorkflowStorageV1) => {
-					if (token !== WORKFLOW_STORAGE_V1) {
-						throw new TypeError(
-							"Unsupported RivetKit storage capability",
-						);
-					}
-					return handle;
-				},
-			};
-		}
-		return this.#storage;
 	}
 
 	get run() {
@@ -2987,7 +2941,7 @@ export class ActorContextHandleAdapter {
 		}
 
 		const actorId = this.actorId;
-		const client = await this.#databaseProvider.createClient({
+		const createdClient = await this.#databaseProvider.createClient({
 			actorId,
 			kv: {
 				batchPut: async (entries) => {
@@ -3008,16 +2962,28 @@ export class ActorContextHandleAdapter {
 			log: {
 				debug: (obj) => logger().debug(obj),
 			},
-			nativeDatabaseProvider: {
-				open: async (requestedActorId) => {
-					void requestedActorId;
-					return getOrCreateNativeSqlDatabase(
+			nativeDatabaseProvider: registerNativeStateTransactionOpener(
+				{
+					open: async (requestedActorId) => {
+						void requestedActorId;
+						return getOrCreateNativeSqlDatabase(
+							this.#runtime,
+							this.#ctx,
+							() => this.serializeForTick("save"),
+						);
+					},
+				},
+				async (timeoutMs) =>
+					await getOrCreateNativeSqlDatabase(
 						this.#runtime,
 						this.#ctx,
-					);
-				},
-			},
+						() => this.serializeForTick("save"),
+					).beginStateTransaction(timeoutMs),
+			),
 		});
+		const client = isBuiltInDatabaseProvider(this.#databaseProvider)
+			? createdClient
+			: guardCustomDatabaseStateTransactions(createdClient as object);
 		runtimeState.databaseClient = {
 			client,
 		};
@@ -3045,7 +3011,6 @@ export class ActorContextHandleAdapter {
 
 	async closeDatabase(): Promise<void> {
 		this.#db = undefined;
-		this.#sql = undefined;
 		await closeNativeDatabaseClient(this.#runtime, this.#ctx);
 		await closeNativeSqlDatabase(this.#runtime, this.#ctx);
 	}
@@ -3267,7 +3232,6 @@ export class ActorContextHandleAdapter {
 		// down so the request-save and onStateChange always run.
 		this.#flushStateChange();
 		this.#abortSignalCleanup?.();
-		this.#sql = undefined;
 	}
 
 	#createActorAbortSignal(): AbortSignal {
@@ -3627,7 +3591,7 @@ function buildActorConfig(
 	return {
 		name: options.name as string | undefined,
 		icon: options.icon as string | undefined,
-		hasDatabase: config.db !== undefined || usesRemoteSqlite,
+		hasDatabase: true,
 		remoteSqlite: usesRemoteSqlite,
 		enableActorRuntimeSocket: options.enableActorRuntimeSocket === true,
 		hasState:
@@ -3773,7 +3737,10 @@ export function buildNativeFactory(
 	definition: AnyActorDefinition,
 ): ActorFactoryHandle {
 	const config = definition.config as Record<string, any>;
-	const databaseProvider = config.db as AnyDatabaseProvider;
+	const databaseProvider = (config.db ?? defaultDb()) as Exclude<
+		AnyDatabaseProvider,
+		undefined
+	>;
 	const actionHandlers = flattenActionHandlers(config.actions);
 	const schemaConfig: NativeValidationConfig = {
 		actionInputSchemas: flattenActionInputSchemas(
@@ -3792,7 +3759,9 @@ export function buildNativeFactory(
 			{ encoding: "bare" },
 		);
 	const nativeRunHandlerActiveByActorId = new Map<string, boolean>();
-	const runHandlerCoordinator = new RunHandlerCoordinator(config.run);
+	const runHandlerCoordinator = hasRunInspectorConfig(config.run)
+		? new RunHandlerCoordinator(config.run)
+		: undefined;
 	const isNativeRunHandlerActive = (ctx: ActorContextHandle) =>
 		nativeRunHandlerActiveByActorId.get(
 			callNativeSync(() => runtime.actorId(ctx)),
@@ -3801,7 +3770,7 @@ export function buildNativeFactory(
 		const actorId = callNativeSync(() => runtime.actorId(ctx));
 		const restart = () =>
 			callNativeSync(() => runtime.actorRestartRunHandler(ctx));
-		return (runHandlerCoordinator.getInspector(actorId, restart)
+		return (runHandlerCoordinator?.getInspector(actorId, restart)
 			?.workflow ??
 			getRunInspectorConfig(config.run, actorId)?.workflow) as
 			| NativeWorkflowInspectorConfig
@@ -3928,6 +3897,9 @@ export function buildNativeFactory(
 		const workflowState = async () =>
 			(await getNativeWorkflowInspector(ctx)?.getState?.()) ?? null;
 		const actorCtx = makeActorCtx(ctx, jsRequest);
+		const sql = getOrCreateNativeSqlDatabase(runtime, ctx, () =>
+			actorCtx.serializeForTick("save"),
+		);
 		try {
 			if (
 				url.pathname === "/inspector/state" &&
@@ -4099,7 +4071,7 @@ export function buildNativeFactory(
 				url.pathname === "/inspector/database/schema" &&
 				jsRequest.method === "GET"
 			) {
-				const db = actorCtx.sql;
+				const db = sql;
 				const tables = queryRows(
 					await db.query(
 						"SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '__drizzle_%' ORDER BY name",
@@ -4153,7 +4125,7 @@ export function buildNativeFactory(
 				);
 				const quoted = `"${table.replace(/"/g, '""')}"`;
 				const rows = queryRows(
-					await actorCtx.sql.query(
+					await sql.query(
 						`SELECT * FROM ${quoted} LIMIT ? OFFSET ?`,
 						[
 							Math.max(0, Math.min(limit, 500)),
@@ -4197,13 +4169,13 @@ export function buildNativeFactory(
 						body.properties as Record<string, unknown>,
 					);
 					const rows = queryRows(
-						await actorCtx.sql.query(body.sql, bindings),
+						await sql.query(body.sql, bindings),
 					);
 					return jsonResponse({ rows: jsonSafe(rows) });
 				}
 				const args = Array.isArray(body.args) ? body.args : [];
 				const rows = queryRows(
-					await actorCtx.sql.query(body.sql, args),
+					await sql.query(body.sql, args),
 				);
 				return jsonResponse({ rows: jsonSafe(rows) });
 			}
@@ -4233,7 +4205,7 @@ export function buildNativeFactory(
 					rpcs: Object.keys(actionHandlers).sort(),
 					queueSize: inspectorSnapshot.queueSize,
 					isStateEnabled: stateEnabled,
-					isDatabaseEnabled: databaseProvider !== undefined,
+					isDatabaseEnabled: true,
 					isWorkflowEnabled:
 						getNativeWorkflowInspector(ctx) !== undefined,
 					workflowState: await workflowState(),
@@ -4489,6 +4461,7 @@ export function buildNativeFactory(
 			async (error: unknown, payload: { ctx: ActorContextHandle }) => {
 				const { ctx } = unwrapTsfnPayload(error, payload);
 				const actorCtx = makeActorCtx(ctx);
+				const actorId = callNativeSync(() => runtime.actorId(ctx));
 				// TODO: Move this save hook into cleanupNativeSleepRuntimeState
 				// so immediate and deferred sleep cleanup share one save-state
 				// path instead of passing a callback through cleanup.
@@ -4519,6 +4492,9 @@ export function buildNativeFactory(
 							saveActorState,
 						);
 					} finally {
+						nativeRunHandlerActiveByActorId.delete(actorId);
+						runHandlerCoordinator?.destroy(actorId);
+						disposeRunInspector(config.run, actorId);
 						await actorCtx.dispose();
 					}
 				}
@@ -4532,7 +4508,7 @@ export function buildNativeFactory(
 				// Close run control before user cleanup so replay cannot race actor
 				// destruction. Recreating this actor id receives a fresh controller.
 				nativeRunHandlerActiveByActorId.delete(actorId);
-				runHandlerCoordinator.destroy(actorId);
+				runHandlerCoordinator?.destroy(actorId);
 				disposeRunInspector(config.run, actorId);
 				try {
 					if (typeof config.onDestroy === "function") {
@@ -4937,27 +4913,28 @@ export function buildNativeFactory(
 				) => {
 					const { ctx } = unwrapTsfnPayload(error, payload);
 					const actorId = callNativeSync(() => runtime.actorId(ctx));
-					await runHandlerCoordinator.run(
-						actorId,
-						() =>
-							callNativeSync(() =>
-								runtime.actorRestartRunHandler(ctx),
-							),
-						async () => {
-							const actorCtx = makeActorCtx(ctx);
-							nativeRunHandlerActiveByActorId.set(actorId, true);
-							try {
-								await run(actorCtx);
-							} finally {
-								// Delete rather than set(false): an absent entry already
-								// reads as inactive, and deleting keeps this map bounded
-								// to currently-running handlers instead of accumulating an
-								// entry per actor id forever.
-								nativeRunHandlerActiveByActorId.delete(actorId);
-								await actorCtx.dispose();
-							}
-						},
-					);
+					const executeRun = async () => {
+						const actorCtx = makeActorCtx(ctx);
+						nativeRunHandlerActiveByActorId.set(actorId, true);
+						try {
+							await run(actorCtx);
+						} finally {
+							nativeRunHandlerActiveByActorId.delete(actorId);
+							await actorCtx.dispose();
+						}
+					};
+					if (runHandlerCoordinator) {
+						await runHandlerCoordinator.run(
+							actorId,
+							() =>
+								callNativeSync(() =>
+									runtime.actorRestartRunHandler(ctx),
+								),
+							executeRun,
+						);
+					} else {
+						await executeRun();
+					}
 				},
 			);
 		})(),

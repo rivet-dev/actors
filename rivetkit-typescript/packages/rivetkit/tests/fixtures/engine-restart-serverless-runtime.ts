@@ -42,10 +42,12 @@ interface HeartbeatVars {
 }
 
 const rawSqlDatabaseProvider = {
-	createClient: async () => ({
-		execute: async () => [],
-		close: async () => {},
-	}),
+	createClient: async (ctx: any) => {
+		if (!ctx.nativeDatabaseProvider) {
+			throw new Error("native SQLite is required");
+		}
+		return await ctx.nativeDatabaseProvider.open(ctx.actorId);
+	},
 	onMigrate: async () => {},
 };
 
@@ -203,7 +205,7 @@ const sqliteCounter = actor({
 			return;
 		}
 
-		const database = ctx.sql as SqliteDatabase;
+		const database = ctx.db as SqliteDatabase;
 		vars.heartbeatSeq = 0;
 		logRuntimeEvent("heartbeat_on_wake", {
 			actorId: ctx.actorId,
@@ -300,7 +302,7 @@ const sqliteCounter = actor({
 	},
 	actions: {
 		tick: async (ctx, payloadBytes = 4096) => {
-			const database = ctx.sql as SqliteDatabase;
+			const database = ctx.db as SqliteDatabase;
 			const payload = "x".repeat(Math.max(0, Math.trunc(payloadBytes)));
 			const now = Date.now();
 
@@ -352,7 +354,7 @@ const sqliteCounter = actor({
 			}
 		},
 		getCount: async (ctx) => {
-			const database = ctx.sql as SqliteDatabase;
+			const database = ctx.db as SqliteDatabase;
 			await ensureTables(database);
 			const rows = await database.query(
 				"SELECT count FROM restart_counter WHERE id = ?",
@@ -368,7 +370,7 @@ const sqliteCounter = actor({
 				payloadBytes?: number;
 			},
 		) => {
-			const database = ctx.sql as SqliteDatabase;
+			const database = ctx.db as SqliteDatabase;
 			const payload = "x".repeat(
 				Math.max(0, Math.trunc(input.payloadBytes ?? 8192)),
 			);

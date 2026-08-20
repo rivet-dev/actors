@@ -64,15 +64,6 @@ pub struct ActorKv {
 	sql: SqliteDb,
 }
 
-/// Opaque access to RivetKit-owned workflow storage version 1.
-///
-/// RivetKit owns the physical table, namespace prefix, and migrations. Clients
-/// must treat keys and values as opaque bytes and must not recreate the schema.
-#[derive(Clone)]
-pub struct WorkflowStorage {
-	ctx: ActorContext,
-}
-
 pub(crate) struct ActorContextInner {
 	pub(super) legacy_kv: LegacyActorKv,
 	user_kv: ActorKv,
@@ -98,7 +89,7 @@ pub(crate) struct ActorContextInner {
 	pub(super) last_save_at: Mutex<Option<crate::time::Instant>>,
 	pub(super) pending_save: Mutex<Option<PendingSave>>,
 	pub(super) tracked_persist: Mutex<Option<JoinHandle<()>>>,
-	pub(super) save_guard: AsyncMutex<()>,
+	pub(super) save_guard: Arc<AsyncMutex<()>>,
 	pub(super) in_flight_state_writes: AtomicUsize,
 	pub(super) state_write_completion: Notify,
 	pub(super) on_state_change_in_flight: AtomicUsize,
@@ -243,43 +234,6 @@ impl ActorKv {
 	}
 }
 
-impl WorkflowStorage {
-	pub async fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-		internal_storage::workflow_storage_get(self.ctx.sql(), key).await
-	}
-
-	pub async fn set(&self, key: &[u8], value: &[u8]) -> Result<()> {
-		self.batch(&[(key, value)]).await
-	}
-
-	pub async fn delete(&self, key: &[u8]) -> Result<()> {
-		internal_storage::workflow_storage_delete(self.ctx.sql(), key).await
-	}
-
-	pub async fn delete_prefix(&self, prefix: &[u8]) -> Result<()> {
-		internal_storage::workflow_storage_delete_prefix(self.ctx.sql(), prefix).await
-	}
-
-	pub async fn delete_range(&self, start: &[u8], end: &[u8]) -> Result<()> {
-		internal_storage::workflow_storage_delete_range(self.ctx.sql(), start, end).await
-	}
-
-	pub async fn list(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-		internal_storage::workflow_storage_list(self.ctx.sql(), prefix).await
-	}
-
-	/// Executes one storage-only transaction. The batch is rejected rather than
-	/// split when it exceeds the atomic workflow transaction budget.
-	pub async fn batch(&self, entries: &[(&[u8], &[u8])]) -> Result<()> {
-		internal_storage::workflow_storage_batch_put(self.ctx.sql(), entries).await
-	}
-
-	/// Commits workflow values atomically with lifecycle-owned actor state.
-	pub async fn flush_with_state(&self, writes: Vec<WorkflowKvWrite>) -> Result<()> {
-		self.ctx.save_state_and_workflow_batch(writes).await
-	}
-}
-
 impl ActorContext {
 	#[cfg(test)]
 	pub(crate) fn new(
@@ -358,7 +312,7 @@ impl ActorContext {
 			last_save_at: Mutex::new(None),
 			pending_save: Mutex::new(None),
 			tracked_persist: Mutex::new(None),
-			save_guard: AsyncMutex::new(()),
+			save_guard: Arc::new(AsyncMutex::new(())),
 			in_flight_state_writes: AtomicUsize::new(0),
 			state_write_completion: Notify::new(),
 			on_state_change_in_flight: AtomicUsize::new(0),
@@ -496,10 +450,6 @@ impl ActorContext {
 
 	pub fn sql(&self) -> &SqliteDb {
 		&self.0.sql
-	}
-
-	pub fn workflow_storage(&self) -> WorkflowStorage {
-		WorkflowStorage { ctx: self.clone() }
 	}
 
 	#[cfg(feature = "sqlite-local")]
@@ -1177,7 +1127,7 @@ impl ActorContext {
 		*self.0.hibernated_connection_liveness_override.write() = Some(pairs.into_iter().collect());
 	}
 
-	fn prepare_state_deltas(
+	pub(super) fn prepare_state_deltas(
 		&self,
 		deltas: Vec<StateDelta>,
 	) -> Result<(Vec<StateDelta>, PendingHibernationChanges)> {

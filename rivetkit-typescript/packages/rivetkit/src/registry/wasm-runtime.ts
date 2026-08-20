@@ -14,6 +14,7 @@ import type {
 } from "./config";
 import type {
 	ActorContextHandle,
+	ActorStateTransactionHandle,
 	ActorFactoryHandle,
 	CancellationTokenHandle,
 	ConnHandle,
@@ -509,61 +510,6 @@ export class WasmCoreRuntime implements CoreRuntime {
 		);
 	}
 
-	async actorWorkflowStorageGet(ctx: ActorContextHandle, key: RuntimeBytes) {
-		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
-		return optionalBytes(await callHandleAsync(storage, "get", key));
-	}
-
-	async actorWorkflowStorageSet(
-		ctx: ActorContextHandle,
-		key: RuntimeBytes,
-		value: RuntimeBytes,
-	): Promise<void> {
-		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
-		await callHandleAsync(storage, "set", key, value);
-	}
-
-	async actorWorkflowStorageDelete(
-		ctx: ActorContextHandle,
-		key: RuntimeBytes,
-	): Promise<void> {
-		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
-		await callHandleAsync(storage, "delete", key);
-	}
-
-	async actorWorkflowStorageDeletePrefix(
-		ctx: ActorContextHandle,
-		prefix: RuntimeBytes,
-	): Promise<void> {
-		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
-		await callHandleAsync(storage, "deletePrefix", prefix);
-	}
-
-	async actorWorkflowStorageDeleteRange(
-		ctx: ActorContextHandle,
-		start: RuntimeBytes,
-		end: RuntimeBytes,
-	): Promise<void> {
-		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
-		await callHandleAsync(storage, "deleteRange", start, end);
-	}
-
-	async actorWorkflowStorageList(
-		ctx: ActorContextHandle,
-		prefix: RuntimeBytes,
-	): Promise<RuntimeWorkflowKvWrite[]> {
-		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
-		return await callHandleAsync(storage, "list", prefix);
-	}
-
-	async actorWorkflowStorageBatch(
-		ctx: ActorContextHandle,
-		writes: RuntimeWorkflowKvWrite[],
-	): Promise<void> {
-		const storage = childHandle(asWasmActorContext(ctx), "workflowStorage");
-		await callHandleAsync(storage, "batch", writes);
-	}
-
 	actorId(ctx: ActorContextHandle): string {
 		return callHandle(asWasmActorContext(ctx), "actorId");
 	}
@@ -869,6 +815,75 @@ export class WasmCoreRuntime implements CoreRuntime {
 		);
 	}
 
+	async actorBeginStateTransaction(
+		ctx: ActorContextHandle,
+		timeoutMs?: number,
+	): Promise<ActorStateTransactionHandle> {
+		return (await callWasm(() =>
+			(
+				asWasmActorContext(ctx) as unknown as {
+					beginStateTransaction(
+						timeoutMs?: number,
+					): Promise<ActorStateTransactionHandle>;
+				}
+			).beginStateTransaction(timeoutMs),
+		)) as ActorStateTransactionHandle;
+	}
+
+	async actorStateTransactionExec(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+	): Promise<RuntimeSqlExecResult> {
+		return await callWasm(() =>
+			(
+				transaction as unknown as {
+					exec(sql: string): Promise<RuntimeSqlExecResult>;
+				}
+			).exec(sql),
+		);
+	}
+
+	async actorStateTransactionExecute(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): Promise<RuntimeSqlExecuteResult> {
+		const result = await callWasm(() =>
+			(
+				transaction as unknown as {
+					execute(
+						sql: string,
+						params?: RuntimeSqlBindParams,
+					): Promise<RuntimeSqlExecuteResult>;
+				}
+			).execute(sql, params),
+		);
+		return normalizeRuntimeSqlExecuteResult(result);
+	}
+
+	async actorStateTransactionCommit(
+		transaction: ActorStateTransactionHandle,
+		payload: RuntimeStateDeltaPayload,
+	): Promise<void> {
+		await callWasm(() =>
+			(
+				transaction as unknown as {
+					commit(payload: RuntimeStateDeltaPayload): Promise<void>;
+				}
+			).commit(payload),
+		);
+	}
+
+	async actorStateTransactionRollback(
+		transaction: ActorStateTransactionHandle,
+	): Promise<void> {
+		await callWasm(() =>
+			(
+				transaction as unknown as { rollback(): Promise<void> }
+			).rollback(),
+		);
+	}
+
 	async actorSqlQuery(
 		ctx: ActorContextHandle,
 		sql: string,
@@ -991,20 +1006,6 @@ export class WasmCoreRuntime implements CoreRuntime {
 			messageId,
 			expectedName,
 			response,
-		);
-	}
-
-	async actorQueueVerifyPersistedIdentity(
-		ctx: ActorContextHandle,
-		messageId: bigint,
-		expectedName: string,
-	): Promise<string | null> {
-		const queue = childHandle(asWasmActorContext(ctx), "queue");
-		return await callHandleAsync(
-			queue,
-			"verifyPersistedIdentity",
-			messageId,
-			expectedName,
 		);
 	}
 

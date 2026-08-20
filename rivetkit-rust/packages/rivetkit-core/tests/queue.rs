@@ -1,7 +1,7 @@
 use super::*;
 
 mod moved_tests {
-	use super::{QueueNextBatchOpts, QueueNextOpts, QueueTryNextBatchOpts, QueueWaitOpts};
+	use super::{QueueNextBatchOpts, QueueNextOpts, QueueWaitOpts};
 
 	use crate::actor::context::ActorContext;
 	use crate::actor::keys::{
@@ -105,18 +105,10 @@ mod moved_tests {
 			.send("expected", b"body")
 			.await
 			.expect("send queue message");
-		assert_eq!(
-			queue
-				.verify_persisted_message_identity(message.id, "expected")
-				.await
-				.expect("verify persisted identity"),
-			Some("expected".to_owned()),
-		);
-
 		let error = queue
-			.verify_persisted_message_identity(message.id, "wrong")
+			.complete_persisted_message(message.id, "wrong", None)
 			.await
-			.expect_err("wrong name must fail before response validation");
+			.expect_err("wrong name must fail while completing");
 		let error = rivet_error::RivetError::extract(&error);
 		assert_eq!(error.group(), "queue");
 		assert_eq!(error.code(), "message_identity_mismatch");
@@ -134,28 +126,6 @@ mod moved_tests {
 				.await
 				.expect("repeat completion is an idempotent miss")
 		);
-		assert_eq!(
-			queue
-				.verify_persisted_message_identity(message.id, "expected")
-				.await
-				.expect("missing identity is idempotent"),
-			None,
-		);
-	}
-
-	#[tokio::test(flavor = "multi_thread")]
-	async fn empty_completable_try_next_batch_returns_empty() {
-		let queue = test_queue();
-		crate::actor::internal_storage::schema::ensure_internal_schema(queue.sql())
-			.await
-			.expect("initialize queue storage");
-		let messages = queue
-			.try_next_batch(QueueTryNextBatchOpts {
-				completable: true,
-				..Default::default()
-			})
-			.expect("empty completable receive should not time out");
-		assert!(messages.is_empty());
 	}
 
 	#[tokio::test]

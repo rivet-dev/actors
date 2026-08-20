@@ -231,7 +231,7 @@ describeDriverMatrix(
 					driverTestConfig.runtime !== "native" ||
 						driverTestConfig.sqliteBackend !== "local",
 				)(
-					"rejects Actor Runtime Socket provisioning when opt-in or SQLite is missing",
+					"requires opt-in and provisions the default embedded database",
 					async (c) => {
 						const { client } = await setupDriverTest(
 							c,
@@ -252,12 +252,11 @@ describeDriverMatrix(
 							client.actorRuntimeSocketWithoutDb.getOrCreate([
 								`runtime-socket-without-db-${crypto.randomUUID()}`,
 							]);
-						await expect(
-							withoutDb.getActorRuntimeSocketPath(),
-						).rejects.toMatchObject({
-							group: "actor_runtime_socket",
-							code: "database_unavailable",
-						});
+						const path = await withoutDb.getActorRuntimeSocketPath();
+						expect(path).toBeTruthy();
+						expect(existsSync(path)).toBe(true);
+						await withoutDb.destroy();
+						await vi.waitFor(() => expect(existsSync(path)).toBe(false));
 					},
 					dbTestTimeout,
 				);

@@ -500,18 +500,6 @@ impl ActorContext {
 		}
 	}
 
-	/// Verifies the durable name before foreign-runtime response validation.
-	pub async fn verify_persisted_message_identity(
-		&self,
-		message_id: u64,
-		expected_name: &str,
-	) -> Result<Option<String>> {
-		self.ensure_initialized().await?;
-		let _receive_guard = self.0.queue_receive_lock.lock().await;
-		self.verify_persisted_message_identity_unlocked(message_id, expected_name)
-			.await
-	}
-
 	/// Completes a persisted message by durable identity. Missing or already
 	/// completed IDs are idempotent; an expected-name mismatch leaves the row
 	/// untouched.

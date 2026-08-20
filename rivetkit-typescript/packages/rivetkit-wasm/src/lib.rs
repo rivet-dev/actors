@@ -574,7 +574,9 @@ async fn run_actor_adapter(callbacks: WasmCallbacks, start: ActorStart) -> Resul
 		);
 	}
 	preamble?;
-	start_run_handler(&callbacks, &ctx);
+	if callbacks.run.is_some() {
+		start_run_handler(&callbacks, &ctx)?;
+	}
 
 	while let Some(event) = events.recv().await {
 		dispatch_event(&callbacks, &ctx, event).await;
@@ -583,10 +585,13 @@ async fn run_actor_adapter(callbacks: WasmCallbacks, start: ActorStart) -> Resul
 	Ok(())
 }
 
-fn start_run_handler(callbacks: &WasmCallbacks, ctx: &WasmActorContext) {
+fn start_run_handler(callbacks: &WasmCallbacks, ctx: &WasmActorContext) -> Result<()> {
 	let Some(callback) = callbacks.run.clone() else {
-		return;
+		return Err(anyhow!("wasm run handler is not configured"));
 	};
+	if ctx.inner.run_handler_active() {
+		return Err(anyhow!("wasm run handler is already active"));
+	}
 	let ctx = ctx.clone();
 	ctx.inner.begin_run_handler();
 	spawn_local(async move {
@@ -602,6 +607,7 @@ fn start_run_handler(callbacks: &WasmCallbacks, ctx: &WasmActorContext) {
 		}
 		ctx.inner.end_run_handler();
 	});
+	Ok(())
 }
 
 async fn run_preamble(
@@ -801,7 +807,9 @@ async fn dispatch_event(callbacks: &WasmCallbacks, ctx: &WasmActorContext, event
 			}
 			reply.send(result);
 		}
-		ActorEvent::RunWake => start_run_handler(callbacks, ctx),
+		ActorEvent::RunWake { reply } => {
+			reply.send(start_run_handler(callbacks, ctx));
+		}
 		ActorEvent::HttpRequest { request, reply } => {
 			let callback = callbacks.on_request.clone();
 			let ctx = ctx.clone();
@@ -1208,13 +1216,6 @@ impl WasmActorContext {
 		}
 	}
 
-	#[wasm_bindgen(js_name = workflowStorage)]
-	pub fn workflow_storage(&self) -> WasmWorkflowStorage {
-		WasmWorkflowStorage {
-			inner: self.inner.clone(),
-		}
-	}
-
 	#[wasm_bindgen(js_name = actorId)]
 	pub fn actor_id(&self) -> String {
 		self.inner.actor_id().to_owned()
@@ -1297,6 +1298,19 @@ impl WasmActorContext {
 		self.inner
 			.save_state(deltas)
 			.await
+			.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen(js_name = beginStateTransaction)]
+	pub async fn begin_state_transaction(
+		&self,
+		timeout_ms: Option<f64>,
+	) -> Result<WasmActorStateTransaction, JsValue> {
+		let timeout = timeout_ms.map(transaction_timeout).transpose()?;
+		self.inner
+			.begin_state_transaction(timeout)
+			.await
+			.map(|inner| WasmActorStateTransaction { inner })
 			.map_err(anyhow_to_js_error)
 	}
 
@@ -1511,8 +1525,8 @@ impl WasmActorContext {
 	}
 
 	#[wasm_bindgen(js_name = restartRunHandler)]
-	pub fn restart_run_handler(&self) {
-		start_run_handler(&self.callbacks, self);
+	pub fn restart_run_handler(&self) -> Result<(), JsValue> {
+		start_run_handler(&self.callbacks, self).map_err(anyhow_to_js_error)
 	}
 
 	#[wasm_bindgen(js_name = beginKeepAwake)]
@@ -1941,88 +1955,6 @@ impl WasmKv {
 	}
 }
 
-#[wasm_bindgen(js_name = WorkflowStorage)]
-pub struct WasmWorkflowStorage {
-	inner: rivetkit_core::ActorContext,
-}
-
-#[wasm_bindgen(js_class = WorkflowStorage)]
-impl WasmWorkflowStorage {
-	#[wasm_bindgen]
-	pub async fn get(&self, key: Vec<u8>) -> Result<JsValue, JsValue> {
-		self.inner
-			.workflow_storage()
-			.get(&key)
-			.await
-			.map(|value| {
-				value
-					.map(|value| bytes_to_js(&value))
-					.unwrap_or(JsValue::NULL)
-			})
-			.map_err(anyhow_to_js_error)
-	}
-
-	#[wasm_bindgen]
-	pub async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> Result<(), JsValue> {
-		self.inner
-			.workflow_storage()
-			.set(&key, &value)
-			.await
-			.map_err(anyhow_to_js_error)
-	}
-
-	#[wasm_bindgen(js_name = delete)]
-	pub async fn delete_key(&self, key: Vec<u8>) -> Result<(), JsValue> {
-		self.inner
-			.workflow_storage()
-			.delete(&key)
-			.await
-			.map_err(anyhow_to_js_error)
-	}
-
-	#[wasm_bindgen(js_name = deletePrefix)]
-	pub async fn delete_prefix(&self, prefix: Vec<u8>) -> Result<(), JsValue> {
-		self.inner
-			.workflow_storage()
-			.delete_prefix(&prefix)
-			.await
-			.map_err(anyhow_to_js_error)
-	}
-
-	#[wasm_bindgen(js_name = deleteRange)]
-	pub async fn delete_range(&self, start: Vec<u8>, end: Vec<u8>) -> Result<(), JsValue> {
-		self.inner
-			.workflow_storage()
-			.delete_range(&start, &end)
-			.await
-			.map_err(anyhow_to_js_error)
-	}
-
-	#[wasm_bindgen]
-	pub async fn list(&self, prefix: Vec<u8>) -> Result<JsValue, JsValue> {
-		self.inner
-			.workflow_storage()
-			.list(&prefix)
-			.await
-			.map(kv_entries_to_js)
-			.map_err(anyhow_to_js_error)
-	}
-
-	#[wasm_bindgen]
-	pub async fn batch(&self, entries: Array) -> Result<(), JsValue> {
-		let entries = kv_entries_from_js(entries)?;
-		let refs = entries
-			.iter()
-			.map(|(key, value)| (key.as_slice(), value.as_slice()))
-			.collect::<Vec<_>>();
-		self.inner
-			.workflow_storage()
-			.batch(&refs)
-			.await
-			.map_err(anyhow_to_js_error)
-	}
-}
-
 #[wasm_bindgen(js_name = Queue)]
 pub struct WasmQueue {
 	inner: rivetkit_core::ActorContext,
@@ -2084,18 +2016,6 @@ impl WasmQueue {
 			.await
 			.map_err(anyhow_to_js_error)?;
 		Ok(())
-	}
-
-	#[wasm_bindgen(js_name = verifyPersistedIdentity)]
-	pub async fn verify_persisted_identity(
-		&self,
-		message_id: u64,
-		expected_name: String,
-	) -> Result<Option<String>, JsValue> {
-		self.inner
-			.verify_persisted_message_identity(message_id, &expected_name)
-			.await
-			.map_err(anyhow_to_js_error)
 	}
 
 	#[wasm_bindgen(js_name = completePersisted)]
@@ -2354,6 +2274,43 @@ impl WasmSqliteTransaction {
 	#[wasm_bindgen]
 	pub async fn commit(&self) -> Result<(), JsValue> {
 		self.inner.commit().await.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen]
+	pub async fn rollback(&self) -> Result<(), JsValue> {
+		self.inner.rollback().await.map_err(anyhow_to_js_error)
+	}
+}
+
+#[wasm_bindgen(js_name = ActorStateTransaction)]
+pub struct WasmActorStateTransaction {
+	inner: rivetkit_core::ActorStateTransaction,
+}
+
+#[wasm_bindgen(js_class = ActorStateTransaction)]
+impl WasmActorStateTransaction {
+	#[wasm_bindgen]
+	pub async fn exec(&self, sql: String) -> Result<JsValue, JsValue> {
+		self.inner
+			.exec(sql)
+			.await
+			.map(query_result_to_js)
+			.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen]
+	pub async fn execute(&self, sql: String, params: JsValue) -> Result<JsValue, JsValue> {
+		self.inner
+			.execute(sql, bind_params_from_js(params)?)
+			.await
+			.map(execute_result_to_js)
+			.map_err(anyhow_to_js_error)
+	}
+
+	#[wasm_bindgen]
+	pub async fn commit(&self, payload: JsValue) -> Result<(), JsValue> {
+		let deltas = state_delta_payload_from_js(payload).map_err(anyhow_to_js_error)?;
+		self.inner.commit(deltas).await.map_err(anyhow_to_js_error)
 	}
 
 	#[wasm_bindgen]

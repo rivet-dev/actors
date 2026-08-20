@@ -116,9 +116,6 @@ fn fixture(row_count: usize) -> Connection {
 	let mut user_kv_insert = tx
 		.prepare("INSERT INTO _rivet_user_kv (key, value) VALUES (?, x'01')")
 		.expect("prepare user kv seed");
-	let mut workflow_kv_insert = tx
-		.prepare("INSERT INTO _rivet_wf_kv (key, value) VALUES (?, x'01')")
-		.expect("prepare workflow kv seed");
 	let mut schedule_insert = tx
 		.prepare("INSERT INTO _rivet_schedule_events (event_id, trigger_at, action, args, kind, cron_expression, timezone, interval_ms, last_started_at, max_history) VALUES (?, ?, 'run', x'01', ?, NULL, NULL, NULL, NULL, 100)")
 		.expect("prepare schedule seed");
@@ -137,9 +134,6 @@ fn fixture(row_count: usize) -> Connection {
 		user_kv_insert
 			.execute([key.as_bytes()])
 			.expect("seed user kv");
-		workflow_kv_insert
-			.execute([key.as_bytes()])
-			.expect("seed workflow kv");
 		let event_id = if index % 3 == 0 {
 			format!("at:{key}")
 		} else {
@@ -163,7 +157,6 @@ fn fixture(row_count: usize) -> Connection {
 	drop(conn_state_insert);
 	drop(queue_insert);
 	drop(user_kv_insert);
-	drop(workflow_kv_insert);
 	drop(schedule_insert);
 	drop(history_insert);
 	tx.commit().expect("commit fixture seed");
@@ -274,7 +267,6 @@ fn query_catalog() -> Vec<QueryCase> {
 	let all_schedules = &["_rivet_schedule_events"];
 	let all_history = &["_rivet_schedule_history"];
 	let all_user_kv = &["_rivet_user_kv"];
-	let all_workflow_kv = &["_rivet_wf_kv"];
 	vec![
 		QueryCase {
 			id: "actor.snapshot",
@@ -453,42 +445,6 @@ fn query_catalog() -> Vec<QueryCase> {
 				reason: "the explicit list-all API returns the complete actor KV namespace in primary-key order",
 				bound: "callers can set ListOpts.limit when they do not want to materialize the complete namespace",
 			}]),
-		},
-		QueryCase {
-			id: "workflow_kv.get",
-			sql: internal_storage::LOAD_WORKFLOW_KV_SQL.into(),
-			params: vec![Value::Blob(b"00000001".to_vec())],
-			expectation: indexed(None, all_workflow_kv),
-		},
-		QueryCase {
-			id: "workflow_kv.delete",
-			sql: internal_storage::DELETE_WORKFLOW_KV_SQL.into(),
-			params: vec![Value::Blob(b"00000001".to_vec())],
-			expectation: indexed(None, all_workflow_kv),
-		},
-		QueryCase {
-			id: "workflow_kv.delete_range",
-			sql: internal_storage::DELETE_WORKFLOW_KV_RANGE_SQL.into(),
-			params: vec![
-				Value::Blob(b"00000010".to_vec()),
-				Value::Blob(b"00000020".to_vec()),
-			],
-			expectation: indexed(None, all_workflow_kv),
-		},
-		QueryCase {
-			id: "workflow_kv.list_range",
-			sql: internal_storage::LIST_WORKFLOW_KV_RANGE_SQL.into(),
-			params: vec![
-				Value::Blob(b"00000010".to_vec()),
-				Value::Blob(b"00000100".to_vec()),
-			],
-			expectation: indexed(None, all_workflow_kv),
-		},
-		QueryCase {
-			id: "workflow_kv.list_from",
-			sql: internal_storage::LIST_WORKFLOW_KV_FROM_SQL.into(),
-			params: vec![Value::Blob(b"00009900".to_vec())],
-			expectation: indexed(None, all_workflow_kv),
 		},
 		QueryCase {
 			id: "connection.delete_state",

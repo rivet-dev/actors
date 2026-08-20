@@ -8,7 +8,7 @@ import type {
 import type { RunContext } from "@/actor/config";
 import type { AnyStaticActorInstance } from "@/actor/definition";
 import { makeWorkflowKey, workflowStoragePrefix } from "@/actor/keys";
-import type { SqliteDatabase } from "@/common/database/config";
+import type { RawAccess } from "@/common/database/config";
 
 const WORKFLOW_STORAGE_PREFIX = workflowStoragePrefix();
 // Keep workflow flushes below depot's 320-dirty-page commit ceiling. The
@@ -68,52 +68,40 @@ function normalizeSqlBlob(value: unknown): Uint8Array {
 	throw new Error("workflow sqlite value was not a blob");
 }
 
-function runtimeSqlFromContext(
+function runtimeDbFromContext(
 	runCtx?: RunContext<any, any, any, any, any, any, any, any>,
-): SqliteDatabase | undefined {
-	const sql = (runCtx as unknown as { sql?: unknown } | undefined)?.sql;
+): RawAccess | undefined {
+	const db = (runCtx as unknown as { db?: unknown } | undefined)?.db;
 	if (
-		sql &&
-		typeof sql === "object" &&
-		"query" in sql &&
-		"execute" in sql &&
-		"executeBatch" in sql &&
-		"run" in sql
+		db &&
+		typeof db === "object" &&
+		"execute" in db &&
+		"transaction" in db
 	) {
-		return sql as SqliteDatabase;
+		return db as RawAccess;
 	}
 	return undefined;
 }
 
-type WorkflowSqliteDatabase = SqliteDatabase &
-	Required<Pick<SqliteDatabase, "executeBatch">>;
-
 class WorkflowStorage {
-	#sql: WorkflowSqliteDatabase;
+	#db: RawAccess;
 
-	constructor(sql?: SqliteDatabase) {
-		if (!sql) {
+	constructor(db?: RawAccess) {
+		if (!db) {
 			throw new Error(
 				"workflow storage requires embedded SQLite; actor KV workflow storage is no longer supported",
 			);
 		}
-		if (!sql.executeBatch) {
-			throw new Error(
-				"workflow storage requires a SQLite database with executeBatch support",
-			);
-		}
-		this.#sql = sql as WorkflowSqliteDatabase;
+		this.#db = db;
 	}
 
 	async get(key: Uint8Array): Promise<Uint8Array | null> {
 		const prefixed = makeWorkflowKey(key);
-		const result = await this.#sql.query(
+		const rows = await this.#db.execute<{ value: unknown }>(
 			"SELECT value FROM _rivet_wf_kv WHERE key = ?",
-			[prefixed],
+			prefixed,
 		);
-		return result.rows[0]?.[0] == null
-			? null
-			: normalizeSqlBlob(result.rows[0][0]);
+		return rows[0]?.value == null ? null : normalizeSqlBlob(rows[0].value);
 	}
 
 	async set(key: Uint8Array, value: Uint8Array): Promise<void> {
@@ -122,18 +110,20 @@ class WorkflowStorage {
 
 	async delete(key: Uint8Array): Promise<void> {
 		const prefixed = makeWorkflowKey(key);
-		await this.#sql.run("DELETE FROM _rivet_wf_kv WHERE key = ?", [
+		await this.#db.execute(
+			"DELETE FROM _rivet_wf_kv WHERE key = ?",
 			prefixed,
-		]);
+		);
 	}
 
 	async deletePrefix(prefix: Uint8Array): Promise<void> {
 		const start = makeWorkflowKey(prefix);
 		const end = computeUpperBound(start);
 		if (end) {
-			await this.#sql.run(
+			await this.#db.execute(
 				"DELETE FROM _rivet_wf_kv WHERE key >= ? AND key < ?",
-				[start, end],
+				start,
+				end,
 			);
 			return;
 		}
@@ -148,9 +138,10 @@ class WorkflowStorage {
 	async deleteRange(start: Uint8Array, end: Uint8Array): Promise<void> {
 		const prefixedStart = makeWorkflowKey(start);
 		const prefixedEnd = makeWorkflowKey(end);
-		await this.#sql.run(
+		await this.#db.execute(
 			"DELETE FROM _rivet_wf_kv WHERE key >= ? AND key < ?",
-			[prefixedStart, prefixedEnd],
+			prefixedStart,
+			prefixedEnd,
 		);
 	}
 
@@ -168,29 +159,33 @@ class WorkflowStorage {
 	async batch(writes: KVWrite[]): Promise<void> {
 		if (writes.length === 0) return;
 		for (const chunk of chunkWorkflowWrites(writes)) {
-			await this.#sql.executeBatch(
-				chunk.map(({ key, value }) => ({
-					sql: "INSERT INTO _rivet_wf_kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-					params: [makeWorkflowKey(key), value],
-				})),
-			);
+			await this.#db.transaction(async (tx) => {
+				for (const { key, value } of chunk) {
+					await tx.execute(
+						"INSERT INTO _rivet_wf_kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+						makeWorkflowKey(key),
+						value,
+					);
+				}
+			});
 		}
 	}
 
 	async listRaw(prefix: Uint8Array): Promise<KVEntryTuple[]> {
 		const end = computeUpperBound(prefix);
-		const result = end
-			? await this.#sql.query(
+		const rows = end
+			? await this.#db.execute<{ key: unknown; value: unknown }>(
 					"SELECT key, value FROM _rivet_wf_kv WHERE key >= ? AND key < ? ORDER BY key ASC",
-					[prefix, end],
+					prefix,
+					end,
 				)
-			: await this.#sql.query(
+			: await this.#db.execute<{ key: unknown; value: unknown }>(
 					"SELECT key, value FROM _rivet_wf_kv WHERE key >= ? ORDER BY key ASC",
-					[prefix],
+					prefix,
 				);
-		return result.rows.map((row) => [
-			normalizeSqlBlob(row[0]),
-			normalizeSqlBlob(row[1]),
+		return rows.map((row) => [
+			normalizeSqlBlob(row.key),
+			normalizeSqlBlob(row.value),
 		]);
 	}
 
@@ -200,14 +195,17 @@ class WorkflowStorage {
 			start < keys.length;
 			start += WORKFLOW_SQLITE_MAX_BATCH_ROWS
 		) {
-			await this.#sql.executeBatch(
-				keys
-					.slice(start, start + WORKFLOW_SQLITE_MAX_BATCH_ROWS)
-					.map((key) => ({
-						sql: "DELETE FROM _rivet_wf_kv WHERE key = ?",
-						params: [key],
-					})),
-			);
+			await this.#db.transaction(async (tx) => {
+				for (const key of keys.slice(
+					start,
+					start + WORKFLOW_SQLITE_MAX_BATCH_ROWS,
+				)) {
+					await tx.execute(
+						"DELETE FROM _rivet_wf_kv WHERE key = ?",
+						key,
+					);
+				}
+			});
 		}
 	}
 }
@@ -331,7 +329,7 @@ export class ActorWorkflowDriver implements EngineDriver {
 		this.#actor = actor;
 		this.#runCtx = runCtx;
 		this.messageDriver = new ActorWorkflowMessageDriver(actor, runCtx);
-		this.#storage = new WorkflowStorage(runtimeSqlFromContext(runCtx));
+		this.#storage = new WorkflowStorage(runtimeDbFromContext(runCtx));
 	}
 
 	async get(key: Uint8Array): Promise<Uint8Array | null> {
@@ -425,7 +423,7 @@ export class ActorWorkflowControlDriver implements EngineDriver {
 		runCtx?: RunContext<any, any, any, any, any, any, any, any>,
 	) {
 		this.#actor = actor;
-		this.#storage = new WorkflowStorage(runtimeSqlFromContext(runCtx));
+		this.#storage = new WorkflowStorage(runtimeDbFromContext(runCtx));
 	}
 
 	async get(key: Uint8Array): Promise<Uint8Array | null> {

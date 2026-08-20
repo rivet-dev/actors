@@ -19,7 +19,7 @@ function bytes(value: ArrayBuffer): Uint8Array {
 	return new Uint8Array(value);
 }
 
-describe("rivetkit/inspector/workflow", () => {
+describe("rivetkit/experimental/inspector/workflow", () => {
 	test("preserves the existing raw BARE history bytes", () => {
 		const history: WorkflowHistory = {
 			nameRegistry: ["root", "delay"],

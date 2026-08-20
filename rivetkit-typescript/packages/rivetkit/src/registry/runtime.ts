@@ -16,6 +16,7 @@ export type ConnHandle = OpaqueHandle<"conn">;
 export type WebSocketHandle = OpaqueHandle<"webSocket">;
 export type CancellationTokenHandle = OpaqueHandle<"cancellationToken">;
 export type SqliteTransactionHandle = OpaqueHandle<"sqliteTransaction">;
+export type ActorStateTransactionHandle = OpaqueHandle<"actorStateTransaction">;
 
 export type RuntimeBytes = Uint8Array;
 
@@ -517,36 +518,6 @@ export interface CoreRuntime {
 		ctx: ActorContextHandle,
 		writes: RuntimeWorkflowKvWrite[],
 	): Promise<void>;
-	actorWorkflowStorageGet(
-		ctx: ActorContextHandle,
-		key: RuntimeBytes,
-	): Promise<RuntimeBytes | null>;
-	actorWorkflowStorageSet(
-		ctx: ActorContextHandle,
-		key: RuntimeBytes,
-		value: RuntimeBytes,
-	): Promise<void>;
-	actorWorkflowStorageDelete(
-		ctx: ActorContextHandle,
-		key: RuntimeBytes,
-	): Promise<void>;
-	actorWorkflowStorageDeletePrefix(
-		ctx: ActorContextHandle,
-		prefix: RuntimeBytes,
-	): Promise<void>;
-	actorWorkflowStorageDeleteRange(
-		ctx: ActorContextHandle,
-		start: RuntimeBytes,
-		end: RuntimeBytes,
-	): Promise<void>;
-	actorWorkflowStorageList(
-		ctx: ActorContextHandle,
-		prefix: RuntimeBytes,
-	): Promise<RuntimeWorkflowKvWrite[]>;
-	actorWorkflowStorageBatch(
-		ctx: ActorContextHandle,
-		writes: RuntimeWorkflowKvWrite[],
-	): Promise<void>;
 	actorId(ctx: ActorContextHandle): string;
 	actorName(ctx: ActorContextHandle): string;
 	actorKey(ctx: ActorContextHandle): RuntimeActorKeySegment[];
@@ -651,6 +622,26 @@ export interface CoreRuntime {
 	actorSqlTransactionRollback(
 		transaction: SqliteTransactionHandle,
 	): Promise<void>;
+	actorBeginStateTransaction(
+		ctx: ActorContextHandle,
+		timeoutMs?: number,
+	): Promise<ActorStateTransactionHandle>;
+	actorStateTransactionExec(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+	): Promise<RuntimeSqlExecResult>;
+	actorStateTransactionExecute(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): Promise<RuntimeSqlExecuteResult>;
+	actorStateTransactionCommit(
+		transaction: ActorStateTransactionHandle,
+		payload: RuntimeStateDeltaPayload,
+	): Promise<void>;
+	actorStateTransactionRollback(
+		transaction: ActorStateTransactionHandle,
+	): Promise<void>;
 	actorSqlQuery(
 		ctx: ActorContextHandle,
 		sql: string,
@@ -690,11 +681,6 @@ export interface CoreRuntime {
 		options?: RuntimeQueueWaitOptions | undefined | null,
 		signal?: CancellationTokenHandle | undefined | null,
 	): Promise<void>;
-	actorQueueVerifyPersistedIdentity(
-		ctx: ActorContextHandle,
-		messageId: bigint,
-		expectedName: string,
-	): Promise<string | null>;
 	actorQueueCompletePersisted(
 		ctx: ActorContextHandle,
 		messageId: bigint,

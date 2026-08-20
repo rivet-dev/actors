@@ -34,9 +34,7 @@ pub use action::ActionDispatchError;
 pub use actor_runtime_socket::ActorRuntimeSocketEndpointInfo;
 pub use config::{ActionDefinition, ActorConfig, ActorConfigOverrides, CanHibernateWebSocket};
 pub use connection::ConnHandle;
-pub use context::{
-	ActorContext, ActorWorkRegion, KeepAwakeRegion, WebSocketCallbackRegion, WorkflowStorage,
-};
+pub use context::{ActorContext, ActorWorkRegion, KeepAwakeRegion, WebSocketCallbackRegion};
 pub use factory::{ActorEntryFn, ActorFactory};
 pub use lifecycle_hooks::{ActorEvents, ActorStart, Reply};
 pub use messages::{
@@ -50,7 +48,7 @@ pub use sqlite::{
 	BindParam, ColumnValue, ExecResult, ExecuteResult, QueryResult, SqliteBackend,
 	SqliteBatchStatement, SqliteDb, SqliteTransaction,
 };
-pub use state::RequestSaveOpts;
+pub use state::{ActorStateTransaction, RequestSaveOpts};
 pub use task::{
 	ActionDispatchResult, ActorTask, DispatchCommand, HttpDispatchResult, LifecycleCommand,
 	LifecycleEvent, LifecycleState,

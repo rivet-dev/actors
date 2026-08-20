@@ -33,7 +33,7 @@ export {
 	encodeWorkflowHistoryTransport,
 } from "@/common/inspector-transport";
 
-/** State exposed by a durable workflow run handler to the Inspector. */
+/** @experimental State exposed by a durable workflow run handler to the Inspector. */
 export type WorkflowState =
 	| "pending"
 	| "running"
@@ -43,7 +43,7 @@ export type WorkflowState =
 	| "cancelled"
 	| "rolling_back";
 
-/** The raw workflow Inspector adapter consumed by RivetKit's transport. */
+/** @experimental The raw workflow Inspector adapter consumed by RivetKit's transport. */
 export interface WorkflowInspectorAdapter {
 	getHistory: () => ArrayBuffer | null;
 	getState: () => Promise<WorkflowState | null>;
@@ -51,7 +51,7 @@ export interface WorkflowInspectorAdapter {
 	replayFromStep: (entryId?: string) => Promise<ArrayBuffer | null>;
 }
 
-/** Encodes a workflow Inspector value with RivetKit's CBOR-compatible codec. */
+/** @experimental Encodes a workflow Inspector value with RivetKit's CBOR-compatible codec. */
 export function encodeWorkflowInspectorValue(value: unknown): ArrayBuffer {
 	return bufferToArrayBuffer(encodeCborCompat(value as JsonCompatValue));
 }

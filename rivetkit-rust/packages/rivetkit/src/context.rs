@@ -20,7 +20,7 @@ use rivetkit_core::actor::schedule::{
 use rivetkit_core::actor::state::OnStateChangeGuard;
 use rivetkit_core::{
 	ActorContext, ActorKey, ActorKv, ConnHandle, ConnId, KeepAwakeRegion, RequestSaveOpts,
-	SqliteDb, StateDelta, WorkflowStorage, actor::connection::ConnHandles, error::ActorRuntime,
+	SqliteDb, StateDelta, actor::connection::ConnHandles, error::ActorRuntime,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use tokio_util::sync::CancellationToken;
@@ -260,10 +260,6 @@ impl<A: Actor> Ctx<A> {
 
 	pub fn sql(&self) -> &SqliteDb {
 		self.inner.sql()
-	}
-
-	pub fn workflow_storage(&self) -> WorkflowStorage {
-		self.inner.workflow_storage()
 	}
 
 	pub fn queue(&self) -> Queue<'_, A> {

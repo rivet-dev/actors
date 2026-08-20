@@ -6,7 +6,7 @@ import type {
 } from "@/common/database/config";
 import type { UniversalWebSocket } from "@/common/websocket-interface";
 import type { Registry } from "@/registry";
-import type { ActorStorage } from "@/storage";
+import type { WorkflowState } from "@/inspector/workflow";
 import { flattenActionHandlers } from "./actions";
 import type { BaseActorDefinition } from "./definition";
 import type {
@@ -65,7 +65,7 @@ type ActorKvListOptions<
 type ActorClientFor<T> = T extends Registry<any> ? Client<T> : T;
 
 /**
- * @deprecated Actor KV is deprecated. Use embedded SQLite (`c.db` / `c.sql`)
+ * @deprecated Actor KV is deprecated. Use embedded SQLite (`c.db`)
  * or actor state instead.
  */
 export interface ActorKv {
@@ -333,10 +333,12 @@ export interface ActorQueue<
 		names: readonly TName[],
 		opts?: QueueWaitOptions<TCompletable>,
 	): Promise<any>;
+	/** @experimental */
 	waitForAvailable<const TName extends QueueFilterName<TQueues>>(
 		names?: readonly TName[],
 		opts?: Omit<QueueWaitOptions<false>, "completable">,
 	): Promise<void>;
+	/** @experimental */
 	complete<const TName extends QueueFilterName<TQueues>>(
 		message: { id: bigint; name: TName },
 		...args: QueueCompleteArgsForName<TQueues, TName>
@@ -398,7 +400,7 @@ export interface ActorContext<
 	state: TState;
 	vars: TVars;
 	/**
-	 * @deprecated Actor KV is deprecated. Use embedded SQLite (`db` / `sql`)
+	 * @deprecated Actor KV is deprecated. Use embedded SQLite (`c.db`)
 	 * or actor state instead.
 	 */
 	readonly kv: ActorKv;
@@ -406,7 +408,7 @@ export interface ActorContext<
 	readonly schedule: ActorSchedule;
 	readonly cron: ActorCron;
 	readonly queue: ActorQueue<TQueues>;
-	readonly storage: ActorStorage;
+	/** @experimental */
 	readonly run: ActorRun;
 	readonly actorId: string;
 	readonly name: string;
@@ -446,7 +448,7 @@ export interface ActorContext<
 }
 
 export interface ActorRun {
-	/** Sets or clears the durable deadline that restarts this actor's run handler. */
+	/** @experimental Sets or clears the durable deadline that restarts this actor's run handler. */
 	setWakeAt(timestamp: number | null): Promise<void>;
 }
 
@@ -837,6 +839,7 @@ const zActionTree = z
 
 export type InspectorUnsubscribe = () => void;
 
+/** @experimental */
 export interface WorkflowInspectorConfig<THistory = unknown> {
 	getHistory: () => THistory | null;
 	getState?: () => Promise<WorkflowState | null>;
@@ -846,16 +849,7 @@ export interface WorkflowInspectorConfig<THistory = unknown> {
 	replayFromStep?: (entryId?: string) => Promise<THistory | null>;
 }
 
-/** State exposed by a durable workflow run handler to the Inspector. */
-export type WorkflowState =
-	| "pending"
-	| "running"
-	| "sleeping"
-	| "failed"
-	| "completed"
-	| "cancelled"
-	| "rolling_back";
-
+/** @experimental */
 export interface RunInspectorConfig<THistory = unknown> {
 	workflow?: WorkflowInspectorConfig<THistory>;
 }
@@ -1021,6 +1015,7 @@ export interface RunWithInactiveOptions {
 	restartOnSuccess?: boolean;
 }
 
+/** @experimental */
 export interface RunControl {
 	run: {
 		/**
@@ -1036,11 +1031,13 @@ export interface RunControl {
 	};
 }
 
+/** @experimental */
 export interface RunInspectorFactoryContext {
 	actorId: string;
 	control: RunControl;
 }
 
+/** @experimental */
 export interface RunInspectorFactoryResult<THistory = unknown> {
 	inspector: {
 		workflow: Required<WorkflowInspectorConfig<THistory>> & {
@@ -1056,6 +1053,7 @@ interface RunHandlerDisplayOptions {
 	icon?: string;
 }
 
+/** @experimental */
 export type DefineRunHandlerOptions<THistory = unknown> =
 	RunHandlerDisplayOptions &
 		(
@@ -1091,7 +1089,7 @@ type RunFunctionWithConfig = ((...args: any[]) => any) & {
 };
 
 /**
- * Adds supported RivetKit run metadata while preserving the function's exact
+ * @experimental Adds supported RivetKit run metadata while preserving the function's exact
  * callable type.
  */
 export function defineRunHandler<
@@ -1191,9 +1189,14 @@ export function getRunInspectorConfig(
 export function hasRunInspectorConfig(
 	run: ((...args: any[]) => any) | AnyRunConfig | undefined,
 ): boolean {
+	if (!run) return false;
+	if (typeof run !== "function") return run.inspector !== undefined;
+	const config = (run as RunFunctionWithConfig)[RUN_FUNCTION_CONFIG_SYMBOL];
 	return (
-		getRunInspectorKind(run) !== undefined ||
-		getRunInspectorConfig(run) !== undefined
+		config?.inspectorKind !== undefined ||
+		config?.createInspector !== undefined ||
+		config?.inspector !== undefined ||
+		config?.inspectorFactory !== undefined
 	);
 }
 

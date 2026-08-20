@@ -27,11 +27,10 @@ use tokio_util::sync::CancellationToken as CoreCancellationToken;
 
 use crate::actor_factory::BridgeRivetErrorContext;
 use crate::connection::ConnHandle;
-use crate::database::JsNativeDatabase;
+use crate::database::{JsActorStateTransaction, JsNativeDatabase, transaction_timeout};
 use crate::kv::Kv;
 use crate::queue::Queue;
 use crate::schedule::Schedule;
-use crate::workflow_storage::WorkflowStorage;
 use crate::{NapiInvalidArgument, NapiInvalidState, napi_anyhow_error};
 
 type AbortSignalTsfn = ThreadsafeFunction<(), ErrorStrategy::CalleeHandled>;
@@ -272,11 +271,6 @@ impl ActorContext {
 	}
 
 	#[napi]
-	pub fn workflow_storage(&self) -> WorkflowStorage {
-		WorkflowStorage::new(self.inner.clone())
-	}
-
-	#[napi]
 	pub fn sql(&self) -> JsNativeDatabase {
 		JsNativeDatabase::new(
 			self.inner.sql().clone(),
@@ -416,6 +410,19 @@ impl ActorContext {
 		self.inner
 			.save_state(state_deltas_from_payload(payload))
 			.await
+			.map_err(napi_anyhow_error)
+	}
+
+	#[napi]
+	pub async fn begin_state_transaction(
+		&self,
+		timeout_ms: Option<f64>,
+	) -> napi::Result<JsActorStateTransaction> {
+		let timeout = timeout_ms.map(transaction_timeout).transpose()?;
+		self.inner
+			.begin_state_transaction(timeout)
+			.await
+			.map(JsActorStateTransaction::new)
 			.map_err(napi_anyhow_error)
 	}
 

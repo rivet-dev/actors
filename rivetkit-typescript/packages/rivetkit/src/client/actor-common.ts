@@ -48,20 +48,11 @@ type ActorActionMap<R> = {
 			: never;
 };
 
-type ActionsOf<AD extends AnyActorDefinition> =
-	AD extends BaseActorDefinition<
-		any,
-		any,
-		any,
-		any,
-		any,
-		any,
-		any,
-		any,
-		infer R
-	>
-		? R
-		: never;
+type ActionsOf<AD extends AnyActorDefinition> = AD["config"] extends {
+	actions?: infer R;
+}
+	? R
+	: never;
 
 export interface ActorGatewayOptions {
 	skipReadyWait?: boolean;

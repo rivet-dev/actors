@@ -107,10 +107,10 @@ const PLATFORM_SQLITE_COUNTER_ACTOR_BODY = `interface SqliteDatabase {
 const COUNTER_ID = 1;
 
 const rawSqlDatabaseProvider = {
-\tcreateClient: async () => ({
-\t\texecute: async () => [],
-\t\tclose: async () => {},
-\t}),
+\tcreateClient: async (ctx: any) => {
+\t\tif (!ctx.nativeDatabaseProvider) throw new Error("native SQLite is required");
+\t\treturn await ctx.nativeDatabaseProvider.open(ctx.actorId);
+\t},
 \tonMigrate: async () => {},
 };
 
@@ -164,14 +164,14 @@ async function readLifecycleCounts(db: SqliteDatabase): Promise<{
 export const sqliteCounter = actor({
 \tdb: rawSqlDatabaseProvider,
 \tonWake: async (ctx) => {
-\t\tawait recordLifecycleEvent(ctx.sql as SqliteDatabase, "wake");
+\t\tawait recordLifecycleEvent(ctx.db as SqliteDatabase, "wake");
 \t},
 \tonSleep: async (ctx) => {
-\t\tawait recordLifecycleEvent(ctx.sql as SqliteDatabase, "sleep");
+\t\tawait recordLifecycleEvent(ctx.db as SqliteDatabase, "sleep");
 \t},
 \tactions: {
 \t\tincrement: async (ctx, amount = 1) => {
-\t\t\tconst db = ctx.sql as SqliteDatabase;
+\t\t\tconst db = ctx.db as SqliteDatabase;
 \t\t\tawait ensureCounterTable(db);
 \t\t\tawait db.run(
 \t\t\t\t"INSERT INTO platform_counter (id, count) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET count = count + excluded.count",
@@ -181,13 +181,13 @@ export const sqliteCounter = actor({
 \t\t\treturn await readCounter(db);
 \t\t},
 \t\tgetCount: async (ctx) => {
-\t\t\tconst db = ctx.sql as SqliteDatabase;
+\t\t\tconst db = ctx.db as SqliteDatabase;
 \t\t\tawait ensureCounterTable(db);
 
 \t\t\treturn await readCounter(db);
 \t\t},
 \t\tgetLifecycleCounts: async (ctx) => {
-\t\t\treturn await readLifecycleCounts(ctx.sql as SqliteDatabase);
+\t\t\treturn await readLifecycleCounts(ctx.db as SqliteDatabase);
 \t\t},
 \t\ttriggerSleep: (ctx) => {
 \t\t\tctx.sleep();

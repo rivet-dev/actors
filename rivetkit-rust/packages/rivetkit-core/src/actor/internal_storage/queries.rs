@@ -84,14 +84,6 @@ pub(crate) const DELETE_USER_KV_RANGE_SQL: &str =
 	"DELETE FROM _rivet_user_kv WHERE key >= ? AND key < ?";
 pub(crate) const UPSERT_USER_KV_SQL: &str = "INSERT INTO _rivet_user_kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value";
 pub(crate) const UPSERT_WORKFLOW_KV_SQL: &str = "INSERT INTO _rivet_wf_kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value";
-pub(crate) const LOAD_WORKFLOW_KV_SQL: &str = "SELECT value FROM _rivet_wf_kv WHERE key = ?";
-pub(crate) const DELETE_WORKFLOW_KV_SQL: &str = "DELETE FROM _rivet_wf_kv WHERE key = ?";
-pub(crate) const DELETE_WORKFLOW_KV_RANGE_SQL: &str =
-	"DELETE FROM _rivet_wf_kv WHERE key >= ? AND key < ?";
-pub(crate) const LIST_WORKFLOW_KV_RANGE_SQL: &str =
-	"SELECT key, value FROM _rivet_wf_kv WHERE key >= ? AND key < ? ORDER BY key ASC";
-pub(crate) const LIST_WORKFLOW_KV_FROM_SQL: &str =
-	"SELECT key, value FROM _rivet_wf_kv WHERE key >= ? ORDER BY key ASC";
 
 pub(crate) const LOAD_LAST_PUSHED_ALARM_SQL: &str =
 	"SELECT last_pushed_alarm FROM _rivet_runtime WHERE id = 1";

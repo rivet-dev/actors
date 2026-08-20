@@ -181,7 +181,7 @@ impl<A: Actor> RuntimeEvent<A> {
 			}
 			ActorEvent::WorkflowHistoryRequested { .. }
 			| ActorEvent::WorkflowReplayRequested { .. }
-			| ActorEvent::RunWake => {
+			| ActorEvent::RunWake { .. } => {
 				unreachable!(
 					"workflow/run-wake events are handled by the TypeScript runtime; Rust actors never host workflows"
 				)

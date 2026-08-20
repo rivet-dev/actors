@@ -41,7 +41,6 @@ pub use rivetkit_core::{
 	CompletableQueueMessage, ConnHandle, ConnId, EngineSpawnMode, EnqueueAndWaitOpts,
 	KeepAwakeRegion, ListOpts, QueueMessage as CoreQueueMessage, QueueNextBatchOpts, QueueNextOpts,
 	QueueTryNextBatchOpts, QueueTryNextOpts, QueueWaitOpts, Request, RequestSaveOpts, Response,
-	SaveStateOpts, SerializeStateReason, ServeConfig, SqliteDb, StateDelta, WebSocket,
-	WorkflowStorage, WsMessage,
+	SaveStateOpts, SerializeStateReason, ServeConfig, SqliteDb, StateDelta, WebSocket, WsMessage,
 	sqlite::{BindParam, ColumnValue, ExecResult, QueryResult},
 };
