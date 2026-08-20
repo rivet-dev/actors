@@ -1,3 +1,4 @@
+import onChange from "@rivetkit/on-change";
 import { actor } from "rivetkit";
 
 export type ConnState = {
@@ -6,12 +7,33 @@ export type ConnState = {
 	counter: number;
 	createdAt: number;
 	noCount: boolean;
+	capabilities: { tags: string[] };
 };
+
+/**
+ * Counts how many write-through proxy layers wrap a value. A value read off a
+ * state proxy is wrapped exactly once; more layers mean previously read
+ * proxies were persisted back into state.
+ */
+function proxyDepth(value: unknown): number {
+	let depth = 0;
+	let current = value;
+	while (current !== null && typeof current === "object") {
+		const target = onChange.target(current as Record<string, any>);
+		if (target === current) {
+			break;
+		}
+		depth++;
+		current = target;
+	}
+	return depth;
+}
 
 export const connStateActor = actor({
 	state: {
 		sharedCounter: 0,
 		disconnectionCount: 0,
+		nested: { tags: ["read", "write"] as string[] },
 	},
 	// Define connection state
 	createConnState: (
@@ -24,6 +46,7 @@ export const connStateActor = actor({
 			counter: 0,
 			createdAt: Date.now(),
 			noCount: params?.noCount ?? false,
+			capabilities: { tags: ["read", "write"] },
 		};
 	},
 	// Lifecycle hook when a connection is established
@@ -118,6 +141,29 @@ export const connStateActor = actor({
 			if (updates.role) c.conn.state.role = updates.role;
 			return c.conn.state;
 		},
+		// Replacing state with a spread of the current state is the common
+		// update pattern. Each read hands back a deep write-through proxy, so
+		// the nested values in the spread are proxies themselves.
+		spreadUpdateConnState: (c, iterations: number) => {
+			for (let i = 0; i < iterations; i++) {
+				c.conn.state = { ...c.conn.state, counter: i };
+			}
+			return {
+				depth: proxyDepth(c.conn.state.capabilities),
+				tags: [...c.conn.state.capabilities.tags],
+			};
+		},
+
+		spreadUpdateActorState: (c, iterations: number) => {
+			for (let i = 0; i < iterations; i++) {
+				c.state = { ...c.state, sharedCounter: i };
+			}
+			return {
+				depth: proxyDepth(c.state.nested),
+				tags: [...c.state.nested.tags],
+			};
+		},
+
 		disconnectSelf: (c, reason?: string) => {
 			c.conn.disconnect(reason ?? "test.disconnect");
 			return true;
