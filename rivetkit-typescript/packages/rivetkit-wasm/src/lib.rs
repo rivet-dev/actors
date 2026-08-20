@@ -1984,6 +1984,18 @@ impl WasmQueue {
 			.map_err(anyhow_to_js_error)?;
 		Ok(())
 	}
+	#[wasm_bindgen(js_name = completePersisted)]
+	pub async fn complete_persisted(
+		&self,
+		message_id: u64,
+		expected_name: String,
+		response: Option<Vec<u8>>,
+	) -> Result<bool, JsValue> {
+		self.inner
+			.complete_persisted_message(message_id, &expected_name, response)
+			.await
+			.map_err(anyhow_to_js_error)
+	}
 
 	#[wasm_bindgen(js_name = enqueueAndWait)]
 	pub async fn enqueue_and_wait(

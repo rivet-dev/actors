@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use napi::bindgen_prelude::Buffer;
+use napi::bindgen_prelude::{BigInt, Buffer};
 use napi_derive::napi;
 use parking_lot::Mutex;
 use rivetkit_core::{
@@ -166,6 +166,33 @@ impl Queue {
 	) -> napi::Result<()> {
 		self.inner
 			.wait_for_names_available(names, queue_wait_opts(options, signal)?)
+			.await
+			.map_err(napi_anyhow_error)
+	}
+
+	#[napi]
+	pub async fn complete_persisted(
+		&self,
+		message_id: BigInt,
+		expected_name: String,
+		response: Option<Buffer>,
+	) -> napi::Result<bool> {
+		let (negative, message_id, lossless) = message_id.get_u64();
+		if negative || !lossless {
+			return Err(napi_anyhow_error(
+				NapiInvalidArgument {
+					argument: "messageId".to_owned(),
+					reason: "must be a non-negative 64-bit bigint".to_owned(),
+				}
+				.build(),
+			));
+		}
+		self.inner
+			.complete_persisted_message(
+				message_id,
+				&expected_name,
+				response.map(|value| value.to_vec()),
+			)
 			.await
 			.map_err(napi_anyhow_error)
 	}

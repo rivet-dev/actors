@@ -862,6 +862,21 @@ export class NapiCoreRuntime implements CoreRuntime {
 			);
 	}
 
+	async actorQueueCompletePersisted(
+		ctx: ActorContextHandle,
+		messageId: bigint,
+		expectedName: string,
+		response?: RuntimeBytes | undefined | null,
+	): Promise<boolean> {
+		return await asNativeActorContext(ctx)
+			.queue()
+			.completePersisted(
+				messageId,
+				expectedName,
+				response == null ? response : toNapiBuffer(response),
+			);
+	}
+
 	async actorQueueEnqueueAndWait(
 		ctx: ActorContextHandle,
 		name: string,

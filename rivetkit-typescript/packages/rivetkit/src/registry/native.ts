@@ -1919,6 +1919,31 @@ class NativeQueueAdapter {
 			cleanup?.();
 		}
 	}
+	async waitForAvailable(
+		names?: readonly string[],
+		options?: { timeout?: number; signal?: AbortSignal },
+	): Promise<void> {
+		await this.waitForNamesAvailable(names ?? [], options);
+	}
+
+	async complete(
+		message: { id: bigint; name: string },
+		response?: unknown,
+	): Promise<void> {
+		const validatedResponse = validateQueueComplete(
+			this.#schemas,
+			message.name,
+			response,
+		);
+		await callNative(() =>
+			this.#runtime.actorQueueCompletePersisted(
+				this.#ctx,
+				message.id,
+				message.name,
+				encodeValue(validatedResponse),
+			),
+		);
+	}
 
 	async enqueueAndWait(
 		name: string,

@@ -332,6 +332,16 @@ export interface ActorQueue<
 		names: readonly TName[],
 		opts?: QueueWaitOptions<TCompletable>,
 	): Promise<any>;
+	/** @experimental */
+	waitForAvailable<const TName extends QueueFilterName<TQueues>>(
+		names?: readonly TName[],
+		opts?: Omit<QueueWaitOptions<false>, "completable">,
+	): Promise<void>;
+	/** @experimental */
+	complete<const TName extends QueueFilterName<TQueues>>(
+		message: { id: bigint; name: TName },
+		...args: QueueCompleteArgsForName<TQueues, TName>
+	): Promise<void>;
 	enqueueAndWait<const TName extends QueueFilterName<TQueues>>(
 		name: TName,
 		body: QueueMessageForName<TQueues, TName>["body"],

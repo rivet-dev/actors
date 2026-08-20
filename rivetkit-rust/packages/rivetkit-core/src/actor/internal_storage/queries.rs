@@ -65,6 +65,7 @@ pub(crate) const HAS_QUEUE_MESSAGES_FOR_NAME_SQL: &str =
 	"SELECT 1 FROM _rivet_queue INDEXED BY _rivet_queue_name_id WHERE name = ? LIMIT 1";
 pub(crate) const LOAD_QUEUE_MESSAGE_METADATA_PAGE_SQL: &str =
 	"SELECT id, name FROM _rivet_queue WHERE id > ? ORDER BY id LIMIT ?";
+pub(crate) const LOAD_QUEUE_MESSAGE_NAME_SQL: &str = "SELECT name FROM _rivet_queue WHERE id = ?";
 pub(crate) fn load_queue_messages_by_ids_sql(id_count: usize) -> String {
 	let placeholders = std::iter::repeat_n("?", id_count)
 		.collect::<Vec<_>>()

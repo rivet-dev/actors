@@ -656,6 +656,12 @@ export interface CoreRuntime {
 		options?: RuntimeQueueWaitOptions | undefined | null,
 		signal?: CancellationTokenHandle | undefined | null,
 	): Promise<void>;
+	actorQueueCompletePersisted(
+		ctx: ActorContextHandle,
+		messageId: bigint,
+		expectedName: string,
+		response?: RuntimeBytes | undefined | null,
+	): Promise<boolean>;
 	actorQueueEnqueueAndWait(
 		ctx: ActorContextHandle,
 		name: string,

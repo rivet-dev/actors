@@ -119,8 +119,13 @@ export class Queue {
 		options: any,
 		signal?: CancellationToken | null,
 	): Promise<Uint8Array | undefined>;
-	inspectMessages(): Promise<Array<any>>;
 	waitForNamesAvailable(names: any, options: any): Promise<void>;
+	inspectMessages(): Promise<Array<any>>;
+	completePersisted(
+		message_id: bigint,
+		expected_name: string,
+		response?: Uint8Array | null,
+	): Promise<boolean>;
 	send(name: string, body: Uint8Array): Promise<QueueMessage>;
 	maxSize(): number;
 	reset(): Promise<void>;

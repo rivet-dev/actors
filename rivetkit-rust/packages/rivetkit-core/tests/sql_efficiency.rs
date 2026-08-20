@@ -356,6 +356,12 @@ fn query_catalog() -> Vec<QueryCase> {
 			expectation: indexed(None, &["_rivet_queue"]),
 		},
 		QueryCase {
+			id: "queue.load_name",
+			sql: internal_storage::LOAD_QUEUE_MESSAGE_NAME_SQL.into(),
+			params: vec![1_i64.into()],
+			expectation: indexed(None, &["_rivet_queue"]),
+		},
+		QueryCase {
 			id: "queue.load_ids",
 			sql: internal_storage::load_queue_messages_by_ids_sql(3),
 			params: vec![1_i64.into(), 2_i64.into(), 3_i64.into()],

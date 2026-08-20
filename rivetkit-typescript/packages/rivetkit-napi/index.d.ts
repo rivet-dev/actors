@@ -382,6 +382,7 @@ export declare class Queue {
   next(options?: JsQueueNextOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<QueueMessage | null>
   nextBatch(options?: JsQueueNextBatchOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<Array<QueueMessage>>
   waitForNames(names: Array<string>, options?: JsQueueWaitOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<QueueMessage>
+  completePersisted(messageId: bigint, expectedName: string, response?: Buffer | undefined | null): Promise<boolean>
   waitForNamesAvailable(names: Array<string>, options?: JsQueueWaitOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<void>
   enqueueAndWait(name: string, body: Buffer, options?: JsQueueEnqueueAndWaitOptions | undefined | null, signal?: CancellationToken | undefined | null): Promise<Buffer | null>
   tryNext(options?: JsQueueTryNextOptions | undefined | null): QueueMessage | null

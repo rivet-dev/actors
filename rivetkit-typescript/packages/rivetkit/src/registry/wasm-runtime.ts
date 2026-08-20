@@ -912,6 +912,22 @@ export class WasmCoreRuntime implements CoreRuntime {
 		);
 	}
 
+	async actorQueueCompletePersisted(
+		ctx: ActorContextHandle,
+		messageId: bigint,
+		expectedName: string,
+		response?: RuntimeBytes | undefined | null,
+	): Promise<boolean> {
+		const queue = childHandle(asWasmActorContext(ctx), "queue");
+		return await callHandleAsync(
+			queue,
+			"completePersisted",
+			messageId,
+			expectedName,
+			response,
+		);
+	}
+
 	async actorQueueEnqueueAndWait(
 		ctx: ActorContextHandle,
 		name: string,

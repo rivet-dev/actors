@@ -1,0 +1,5 @@
+{
+  "code": "message_identity_mismatch",
+  "group": "queue",
+  "message": "Queue message identity does not match"
+}
