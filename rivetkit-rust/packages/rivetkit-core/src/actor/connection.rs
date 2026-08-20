@@ -1,13 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::ops::Bound::{Excluded, Unbounded};
+use std::iter::FusedIterator;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures::future::BoxFuture;
-use parking_lot::{RwLock, RwLockReadGuard};
+use parking_lot::RwLock;
 use rivet_error::RivetError;
 use rivetkit_actor_persist::{generated::v4 as persist_v4, versioned as persist_versioned};
 use serde::Serialize;
@@ -418,31 +419,30 @@ pub(crate) struct PendingHibernationChanges {
 	pub removed: BTreeSet<ConnId>,
 }
 
-/// Lock-backed iterator over live connection handles.
+/// Point-in-time snapshot iterator over live connection handles.
 ///
-/// Do not hold this iterator across `.await`. It keeps a read lock on the
-/// connection map until dropped, which blocks writers such as add/remove or
-/// connection reconfiguration.
-#[must_use = "connection iterators hold a read lock until dropped"]
+/// The snapshot captures membership only. Its handles remain live and may be
+/// disconnected or removed while the iterator exists.
+#[must_use]
 pub struct ConnHandles<'a> {
-	guard: RwLockReadGuard<'a, BTreeMap<ConnId, ConnHandle>>,
-	next_after: Option<ConnId>,
+	inner: std::vec::IntoIter<ConnHandle>,
+	_marker: PhantomData<&'a ()>,
 }
 
 impl<'a> ConnHandles<'a> {
-	fn new(guard: RwLockReadGuard<'a, BTreeMap<ConnId, ConnHandle>>) -> Self {
+	fn new(connections: Vec<ConnHandle>) -> Self {
 		Self {
-			guard,
-			next_after: None,
+			inner: connections.into_iter(),
+			_marker: PhantomData,
 		}
 	}
 
 	pub fn len(&self) -> usize {
-		self.guard.len()
+		self.inner.len()
 	}
 
 	pub fn is_empty(&self) -> bool {
-		self.guard.is_empty()
+		self.inner.len() == 0
 	}
 }
 
@@ -450,17 +450,17 @@ impl Iterator for ConnHandles<'_> {
 	type Item = ConnHandle;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		let (conn_id, conn) = match self.next_after.as_ref() {
-			Some(conn_id) => self
-				.guard
-				.range((Excluded(conn_id.clone()), Unbounded))
-				.next()?,
-			None => self.guard.iter().next()?,
-		};
-		self.next_after = Some(conn_id.clone());
-		Some(conn.clone())
+		self.inner.next()
+	}
+
+	fn size_hint(&self) -> (usize, Option<usize>) {
+		self.inner.size_hint()
 	}
 }
+
+impl ExactSizeIterator for ConnHandles<'_> {}
+
+impl FusedIterator for ConnHandles<'_> {}
 
 impl ActorContext {
 	pub(crate) fn configure_connection_storage(&self, config: ActorConfig) {
@@ -468,7 +468,7 @@ impl ActorContext {
 	}
 
 	pub(crate) fn iter_connections(&self) -> ConnHandles<'_> {
-		ConnHandles::new(self.0.connections.read())
+		ConnHandles::new(self.0.connections.read().values().cloned().collect())
 	}
 
 	pub(crate) fn active_connection_count(&self) -> u32 {
