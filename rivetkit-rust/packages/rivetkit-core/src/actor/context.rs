@@ -790,11 +790,10 @@ impl ActorContext {
 		}
 	}
 
-	/// Returns a lock-backed iterator over live connections.
+	/// Returns a point-in-time snapshot iterator over live connections.
 	///
-	/// Do not hold the returned iterator across `.await`. It keeps a read lock
-	/// on the connection map until dropped, which blocks connection writers.
-	#[must_use]
+	/// The snapshot captures membership only. Its handles remain live and may be
+	/// disconnected or removed while the iterator exists.
 	pub fn conns(&self) -> ConnHandles<'_> {
 		self.iter_connections()
 	}
