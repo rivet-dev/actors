@@ -17,8 +17,8 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::child::{ChildProcess, SpawnSpec, log_prefix};
 use crate::input::ActorInput;
 use crate::{
-	children, effective_stop_grace, release_child_port, reserve_child_port,
-	runner_config,
+	children, drain_grace, effective_stop_grace, exit_token, release_child_port,
+	reserve_child_port, runner_config,
 };
 
 /// Live actor contexts on this instance, keyed by actor id. Lets the process
@@ -54,6 +54,31 @@ impl GameServer {
 		// lived enough for the log agent to drain its stderr, which a fast
 		// self-exit could otherwise lose.
 		tracing::info!(actor_id = %actor_id, reason, "actor stopped, keeping instance warm");
+	}
+
+	/// Engine pause path (sleep, lost, going-away). Give the child up to
+	/// `DRAIN_GRACE` to finish its in-flight work and exit on its own before we
+	/// force a stop; the child is not signalled during the window. A natural
+	/// child exit ends the wait immediately, and a platform SIGTERM (which
+	/// cancels the exit token) cuts it short so the reclaim's SIGTERM→SIGKILL
+	/// budget is honored.
+	async fn drain_then_stop_child(&self, actor_id: &str, reason: &str) {
+		let child = self.child.lock().await.clone();
+		if let Some(child) = child {
+			if !child.has_exited() {
+				let prefix = log_prefix(actor_id, child.key.as_deref());
+				println!(
+					"{prefix} runner: draining child for up to {:?} before stopping",
+					drain_grace()
+				);
+				tokio::select! {
+					_ = child.wait_exit() => {}
+					_ = tokio::time::sleep(drain_grace()) => {}
+					_ = exit_token().cancelled() => {}
+				}
+			}
+		}
+		self.stop_child(actor_id, reason).await;
 	}
 }
 
@@ -184,7 +209,7 @@ impl Actor for GameServer {
 			.is_err()
 		{
 			// Unreachable given the duplicate-start check above; defensive.
-			child.stop(cfg.stop_grace).await;
+			child.stop(effective_stop_grace()).await;
 			release_child_port(child_port).await;
 			anyhow::bail!("a child for actor {actor_id} is already registered");
 		}
@@ -266,7 +291,7 @@ impl Actor for GameServer {
 	/// ahead of instance retirement); leaving the child running would orphan
 	/// it on an instance the engine considers vacated.
 	async fn on_sleep(self: Arc<Self>, ctx: Ctx<Self>) -> Result<()> {
-		self.stop_child(ctx.actor_id(), "actor sleeping").await;
+		self.drain_then_stop_child(ctx.actor_id(), "actor sleeping").await;
 		Ok(())
 	}
 

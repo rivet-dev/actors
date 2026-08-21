@@ -65,8 +65,6 @@ pub struct RunnerConfig {
 	pub command_template: Vec<String>,
 	/// Default local port for the child when `input.port` is absent.
 	pub default_child_port: u16,
-	/// SIGTERM→SIGKILL grace period on stop.
-	pub stop_grace: Duration,
 	/// How long to wait for the child's port to open before failing the start.
 	pub readiness_timeout: Duration,
 }
@@ -116,6 +114,30 @@ static SIGTERM_BUDGET: LazyLock<Duration> = LazyLock::new(|| {
 		.max(3);
 	Duration::from_secs(secs)
 });
+
+/// How long an engine-initiated pause (sleep, lost, going-away) lets the child
+/// keep serving and finish its own work before we force a stop. The child is not
+/// signalled during this window; it either exits on its own or is SIGTERM'd at
+/// the end. Defaults to 15 minutes. It must fit inside the engine's per-runner
+/// `drain_grace_period` or a platform reclaim cuts it short.
+static DRAIN_GRACE: LazyLock<Duration> = LazyLock::new(|| {
+	let secs = std::env::var("RIVET_DRAIN_GRACE_SECS")
+		.ok()
+		.and_then(|value| value.parse::<u64>().ok())
+		.unwrap_or(900);
+	Duration::from_secs(secs)
+});
+
+/// The drain window for an engine pause. See [`DRAIN_GRACE`].
+pub fn drain_grace() -> Duration {
+	*DRAIN_GRACE
+}
+
+/// The cancellation token that fires on a platform shutdown signal. Used to cut
+/// a drain wait short so the platform's SIGTERM→SIGKILL budget is honored.
+pub fn exit_token() -> &'static CancellationToken {
+	&EXIT
+}
 
 pub fn runner_config() -> Arc<RunnerConfig> {
 	RUNNER_CONFIG
@@ -187,16 +209,12 @@ pub async fn release_child_port(port: u16) {
 	RESERVED_PORTS.remove_async(&port).await;
 }
 
-/// The SIGTERM→SIGKILL grace to give a child right now: the configured
-/// `--stop-grace-secs` normally, capped to the platform budget while the
-/// process is shutting down due to an OS signal.
+/// The SIGTERM→SIGKILL window for the child: always `SIGTERM_BUDGET`, whatever
+/// triggered the stop, so the child never gets a different kill deadline on one
+/// path than another. The wait *before* SIGTERM (letting the child exit on its
+/// own during an engine pause) is separate; see [`drain_grace`].
 pub fn effective_stop_grace() -> Duration {
-	let grace = runner_config().stop_grace;
-	if SIGNAL_SHUTDOWN.load(Ordering::Acquire) {
-		grace.min(*SIGTERM_BUDGET)
-	} else {
-		grace
-	}
+	*SIGTERM_BUDGET
 }
 
 /// End the process. Only the platform shutdown signal drives this now: actors
@@ -276,10 +294,6 @@ struct Args {
 	#[arg(long, env = "RIVET_SERVERLESS_BASE_PATH", default_value = "/api/rivet")]
 	base_path: String,
 
-	/// SIGTERM→SIGKILL grace period (seconds) when stopping the child.
-	#[arg(long, env = "RIVET_STOP_GRACE_SECS", default_value_t = 10)]
-	stop_grace_secs: u64,
-
 	/// How long (seconds) to wait for the child's port to open before failing start.
 	#[arg(long, env = "RIVET_READINESS_TIMEOUT_SECS", default_value_t = 30)]
 	readiness_timeout_secs: u64,
@@ -325,12 +339,10 @@ async fn async_main() -> Result<()> {
 		.or_else(|| env_u16("PORT"))
 		.unwrap_or(8080);
 
-	let stop_grace = Duration::from_secs(args.stop_grace_secs);
 	RUNNER_CONFIG
 		.set(Arc::new(RunnerConfig {
 			command_template: args.command.clone(),
 			default_child_port: args.child_port,
-			stop_grace,
 			readiness_timeout: Duration::from_secs(args.readiness_timeout_secs),
 		}))
 		.map_err(|_| anyhow::anyhow!("runner config already set"))?;
@@ -341,9 +353,12 @@ async fn async_main() -> Result<()> {
 		ActorConfig {
 			// Game servers hold live in-memory state; never idle-sleep the actor.
 			no_sleep: true,
-			// The destroy grace deadline must outlast the child's SIGTERM→SIGKILL
-			// window or core aborts `on_destroy` mid-stop and leaks the child.
-			sleep_grace_period: stop_grace + Duration::from_secs(10),
+			// Core force-aborts the stop hook after this deadline. `on_sleep`
+			// legitimately runs for the whole drain window plus the SIGTERM
+			// budget, so the deadline must outlast both or core would abort the
+			// drain mid-flight and leak the child. The extra 5s keeps the
+			// deadline from racing a hook that finishes right on time.
+			sleep_grace_period: *DRAIN_GRACE + *SIGTERM_BUDGET + Duration::from_secs(5),
 			sleep_grace_period_overridden: true,
 			..Default::default()
 		},
@@ -419,7 +434,7 @@ async fn async_main() -> Result<()> {
 		};
 		tokio::join!(drain, stop_all_children(*SIGTERM_BUDGET));
 	} else {
-		stop_all_children(stop_grace).await;
+		stop_all_children(*SIGTERM_BUDGET).await;
 		runtime.shutdown().await;
 	}
 	serve_shutdown.cancel();
