@@ -217,10 +217,10 @@ pub fn effective_stop_grace() -> Duration {
 	*SIGTERM_BUDGET
 }
 
-/// End the process. Only the platform shutdown signal drives this now: actors
-/// stopping or failing to start no longer exit the instance, so it stays warm
-/// and reusable and its logs have time to drain. The runner is PID 1 in the
-/// image, so exiting stops the container and the platform reaps the instance.
+/// End the process. Driven by a platform shutdown signal or by the last child on
+/// this instance stopping (see `stop_child`). The runner is PID 1 in the image,
+/// so cancelling `EXIT` wakes `main` to run the graceful envoy close and return,
+/// which stops the container and lets the platform reap the instance.
 pub fn request_exit(actor_id: &str, reason: &str) {
 	tracing::info!(actor_id = %actor_id, reason, "shutting down container");
 	EXIT.cancel();
@@ -394,11 +394,7 @@ async fn async_main() -> Result<()> {
 	));
 	tracing::info!(port, "container-runner serverless front door listening");
 
-	// Wait for an exit request, then tear down. Only the signal path is live
-	// today: nothing calls `request_exit` except `spawn_signal_handler`, which
-	// sets `SIGNAL_SHUTDOWN` before cancelling `EXIT`, so the `else` branch is
-	// currently unreachable and kept only as a fallback for a future
-	// actor-driven exit.
+	// Wait for an exit request, then tear down. Two shapes depending on why:
 	//
 	// Signal (platform is reclaiming the instance): kill our children AND
 	// notify the engine at the SAME time, each bounded by the full SIGTERM
@@ -408,9 +404,10 @@ async fn async_main() -> Result<()> {
 	// immediately. Bounding the drain means an unreachable engine cannot eat
 	// the budget the children need.
 	//
-	// Fallback actor-driven exit (unreachable today): no platform deadline.
-	// Children are already reaped by the hooks (the sweep is a no-op backstop),
-	// and the runtime drains unbounded so the /start SSE flushes cleanly.
+	// Actor-driven exit (the last child stopped, so `stop_child` cancelled
+	// `EXIT`): no platform deadline. The child is already reaped by the hook
+	// that triggered the exit (the sweep is a no-op backstop), and the runtime
+	// drains unbounded so the /start SSE flushes cleanly.
 	EXIT.cancelled().await;
 	if SIGNAL_SHUTDOWN.load(Ordering::Acquire) {
 		// A platform SIGTERM reclaims this instance. Report every actor as crashed

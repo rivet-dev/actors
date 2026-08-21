@@ -18,7 +18,7 @@ use crate::child::{ChildProcess, SpawnSpec, log_prefix};
 use crate::input::ActorInput;
 use crate::{
 	children, drain_grace, effective_stop_grace, exit_token, release_child_port,
-	reserve_child_port, runner_config,
+	request_exit, reserve_child_port, runner_config,
 };
 
 /// Live actor contexts on this instance, keyed by actor id. Lets the process
@@ -48,12 +48,20 @@ impl GameServer {
 			release_child_port(child.child_port).await;
 		}
 
-		// The instance stays alive and warm after its last actor stops, ready to
-		// host the next placement. It is reaped by the platform's own shutdown
-		// signal, not by self-exit. This keeps the serverless container long
-		// lived enough for the log agent to drain its stderr, which a fast
-		// self-exit could otherwise lose.
-		tracing::info!(actor_id = %actor_id, reason, "actor stopped, keeping instance warm");
+		// Exit the whole process once the last child on this instance stops. The
+		// runner is PID 1, so `request_exit` cancels `EXIT`, which wakes `main`
+		// to run the graceful envoy close and then return, stopping the container
+		// so the platform reaps it. Guarded on an empty registry so a multi-actor
+		// instance does not tear down siblings still hosting a child.
+		if children().is_empty() {
+			request_exit(actor_id, reason);
+		} else {
+			tracing::info!(
+				actor_id = %actor_id,
+				reason,
+				"actor stopped, other actors still running on this instance"
+			);
+		}
 	}
 
 	/// Engine pause path (sleep, lost, going-away). Give the child up to
