@@ -381,7 +381,8 @@ jobs:
       needs.build.result == 'success' &&
       needs.build-wasm.result == 'success' &&
       needs.docker-images.result == 'success'
-    runs-on: depot-ubuntu-24.04-8
+    # npm trusted publishing currently requires a GitHub-hosted runner.
+    runs-on: ubuntu-24.04
     permissions:
       contents: write # git tag + gh release (release only)
       id-token: write
@@ -399,6 +400,8 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: pnpm
+      - name: Install OIDC-capable npm
+        run: npm install --global npm@11.16.0
       - run: pnpm install --frozen-lockfile
       - uses: ./.github/actions/docker-setup
         with:
@@ -568,7 +571,6 @@ jobs:
 
       - name: Publish npm packages
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           SKIP_WASM_BUILD: "1"
         run: |
           pnpm --filter=publish exec tsx src/ci/bin.ts publish-npm \
