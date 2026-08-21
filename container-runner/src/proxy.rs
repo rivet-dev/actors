@@ -1,9 +1,8 @@
 //! Bridges Rivet's decoded tunnel traffic to the child game server's local port.
 //!
 //! The rivetkit runtime reassembles tunnel frames into decoded `Request`s and
-//! `WebSocket` streams (see `Actor::on_fetch` / `::on_websocket`). This module
-//! forwards those to `127.0.0.1:<child_port>` and back — the glue the runtime
-//! deliberately leaves to the actor.
+//! `WebSocket` streams (`Actor::on_fetch`/`::on_websocket`); this module forwards
+//! them to `127.0.0.1:<child_port>` and back, the glue the runtime leaves to the actor.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -74,10 +73,9 @@ enum ClientEvent {
 	Close(u16, String),
 }
 
-/// Cap on client frames buffered toward a slow child. The old async pump
-/// applied tunnel backpressure by awaiting the child sink; the sync message
-/// callback cannot await, so a bounded queue plus a loud connection failure
-/// on overflow replaces silent unbounded buffering.
+/// Cap on client frames buffered toward a slow child. The sync message callback
+/// cannot await for backpressure, so overflow fails the connection loudly instead
+/// of buffering unbounded.
 const CLIENT_TO_CHILD_QUEUE: usize = 1024;
 
 /// Dial the child's WebSocket endpoint and pump frames in both directions:

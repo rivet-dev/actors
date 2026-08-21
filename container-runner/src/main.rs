@@ -1,20 +1,14 @@
-//! `rivet-container-runner` — a RivetKit serverless app that hosts a single
-//! actor by spawning a child game-server process and proxying Rivet's
-//! tunneled traffic to it.
+//! `rivet-container-runner`: a RivetKit serverless app that hosts actors by
+//! spawning one child game-server process per actor and proxying Rivet's tunneled
+//! traffic to it.
 //!
-//! Serverless model: the engine's `POST /api/rivet/start` starts this
-//! container (served by rivetkit-core's serverless runtime). On actor start
-//! the `GameServer` actor spawns the child (`-- <command...>`), pipes its
-//! logs to stdout prefixed with the actor id + key, and proxies inbound
-//! HTTP/WebSocket (arriving over Rivet's tunnel) to the child's local port.
-//! On actor stop it SIGTERMs the child.
-//!
-//! The runner hosts as many concurrent actors as the engine places on it,
-//! each with its own child process on its own port; the pool's request
-//! concurrency decides how many that is (1 in the recommended game-server
-//! setup). The instance stays warm after its last actor stops and never
-//! self-exits; the engine reaps it by draining the `/start` connection once
-//! the request lifespan elapses, or the platform sends a SIGTERM.
+//! The engine's `POST /api/rivet/start` boots this container. On actor start the
+//! `GameServer` actor spawns the child (`-- <command...>`), pipes its logs to
+//! stdout prefixed with the actor id + key, and proxies inbound HTTP/WebSocket to
+//! the child's local port. On actor stop it SIGTERMs the child; once the last
+//! child stops the process exits so the platform reaps the instance. The engine
+//! decides how many actors land here, each on its own port (1 in the recommended
+//! game-server setup).
 
 mod actor;
 mod child;
@@ -46,9 +40,9 @@ pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// image build context excludes `.git`).
 pub(crate) const GIT_SHA: &str = env!("CONTAINER_RUNNER_GIT_SHA");
 
-/// The effective git SHA, or `None` when unknown. Prefers the build-time SHA and
-/// falls back to a runtime `OVERRIDE_GIT_SHA` env var, so a deploy that cannot
-/// inject a build arg can still surface it via an environment variable.
+/// The effective git SHA, or `None` when unknown. Prefers the build-time SHA,
+/// falling back to the `OVERRIDE_GIT_SHA` env var for deploys that cannot inject a
+/// build arg.
 pub(crate) fn git_sha() -> Option<String> {
 	if GIT_SHA != "unknown" {
 		return Some(GIT_SHA.to_string());
@@ -73,39 +67,31 @@ pub struct RunnerConfig {
 // configuration is ambient process state set once in `main`.
 static RUNNER_CONFIG: OnceLock<Arc<RunnerConfig>> = OnceLock::new();
 
-/// Running children keyed by actor id. Owned globally (not only by actors) so
-/// the process shutdown path can stop children even if actor hooks never run,
-/// and so the watchdog and stop paths can arbitrate who reports an exit.
+/// Running children keyed by actor id. Global (not per-actor) so the shutdown path
+/// can stop children even when hooks never run, and the watchdog can arbitrate exits.
 static CHILDREN: LazyLock<scc::HashMap<String, Arc<ChildProcess>>> =
 	LazyLock::new(scc::HashMap::new);
 
-/// Child ports currently reserved by a spawning or running child. Multiple
-/// actors may run concurrently (engine placement decides how many land here),
-/// so each child needs its own port and concurrent starts must not race to
-/// the same one.
+/// Ports reserved by spawning or running children. Multiple actors can run here at
+/// once, so each needs its own port and concurrent starts must not race for one.
 static RESERVED_PORTS: LazyLock<scc::HashSet<u16>> = LazyLock::new(scc::HashSet::new);
 
-/// Cancelled to bring the whole process down (actor stopped, failed start, or
-/// signal). `main` owns the exit sequencing.
+/// Cancelled to bring the whole process down (last child stopped or a signal).
+/// `main` owns the exit sequencing.
 static EXIT: LazyLock<CancellationToken> = LazyLock::new(CancellationToken::new);
 
-/// Set when the process is shutting down because the PLATFORM sent a signal.
-/// The hosting platform gives a container only a bounded window (often ~10
-/// seconds) between SIGTERM and SIGKILL, so every grace period on this path must
-/// fit that budget; engine-initiated stops keep the full configured grace
-/// (their budget is the pool's drain grace period instead).
+/// Set when a platform signal is driving shutdown. The platform gives only a
+/// bounded window (~10s) between SIGTERM and SIGKILL, so grace periods on this
+/// path must fit that budget.
 static SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
-/// Set when shutdown was triggered by a platform SIGTERM (an instance reclaim),
-/// as opposed to a local SIGINT (developer Ctrl-C). Distinguishes a reclaim
-/// from a manual stop for downstream shutdown handling.
+/// Set when shutdown was a platform SIGTERM (instance reclaim) rather than a local
+/// SIGINT (Ctrl-C), so the reclaim can be reported as an actor crash.
 static PLATFORM_RECLAIM: AtomicBool = AtomicBool::new(false);
 
-/// How long the platform gives this container between SIGTERM and SIGKILL.
-/// Defaults to 9s, one second under the common ~10s platform budget so the whole
-/// teardown lands before SIGKILL; keep it in sync with the platform's actual
-/// budget via RIVET_SIGTERM_BUDGET_SECS. On the signal path the engine drain and
-/// the child kills run concurrently, each bounded by this full budget.
+/// SIGTERM→SIGKILL window the platform gives this container. Defaults to 9s, just
+/// under the common ~10s budget; override with RIVET_SIGTERM_BUDGET_SECS. On the
+/// signal path the engine drain and the child kills share this budget concurrently.
 static SIGTERM_BUDGET: LazyLock<Duration> = LazyLock::new(|| {
 	let secs = std::env::var("RIVET_SIGTERM_BUDGET_SECS")
 		.ok()
@@ -115,11 +101,9 @@ static SIGTERM_BUDGET: LazyLock<Duration> = LazyLock::new(|| {
 	Duration::from_secs(secs)
 });
 
-/// How long an engine-initiated pause (sleep, lost, going-away) lets the child
-/// keep serving and finish its own work before we force a stop. The child is not
-/// signalled during this window; it either exits on its own or is SIGTERM'd at
-/// the end. Defaults to 15 minutes. It must fit inside the engine's per-runner
-/// `drain_grace_period` or a platform reclaim cuts it short.
+/// How long an engine pause (sleep, lost, going-away) lets the child keep serving
+/// and exit on its own before we SIGTERM it. Defaults to 15 min (RIVET_DRAIN_GRACE_SECS);
+/// must fit inside the engine's per-runner `drain_grace_period` or a reclaim cuts it short.
 static DRAIN_GRACE: LazyLock<Duration> = LazyLock::new(|| {
 	let secs = std::env::var("RIVET_DRAIN_GRACE_SECS")
 		.ok()
@@ -133,8 +117,8 @@ pub fn drain_grace() -> Duration {
 	*DRAIN_GRACE
 }
 
-/// The cancellation token that fires on a platform shutdown signal. Used to cut
-/// a drain wait short so the platform's SIGTERM→SIGKILL budget is honored.
+/// Token that fires on a platform shutdown signal. Cuts a drain wait short so the
+/// platform's SIGTERM→SIGKILL budget is honored.
 pub fn exit_token() -> &'static CancellationToken {
 	&EXIT
 }
@@ -164,11 +148,9 @@ pub async fn active_actor_ids() -> Vec<String> {
 	ids
 }
 
-/// Reserve a local port for a new child. An explicit `input.port` is honored
-/// or refused if another child holds it; otherwise the first free port at or
-/// above the CLI default is picked. The reservation guards the window between
-/// port selection and the child actually binding; release it via
-/// [`release_child_port`] once the child is gone.
+/// Reserve a local port for a new child. An explicit `input.port` is honored (or
+/// refused if held); otherwise the first free port at or above the default is used.
+/// Guards selection-to-bind; release via [`release_child_port`] once the child is gone.
 pub async fn reserve_child_port(preferred: Option<u16>, default: u16) -> Result<u16> {
 	if let Some(port) = preferred {
 		if RESERVED_PORTS.insert_async(port).await.is_err() {
@@ -210,31 +192,28 @@ pub async fn release_child_port(port: u16) {
 }
 
 /// The SIGTERM→SIGKILL window for the child: always `SIGTERM_BUDGET`, whatever
-/// triggered the stop, so the child never gets a different kill deadline on one
-/// path than another. The wait *before* SIGTERM (letting the child exit on its
-/// own during an engine pause) is separate; see [`drain_grace`].
+/// triggered the stop. The wait before SIGTERM (an engine pause) is separate; see
+/// [`drain_grace`].
 pub fn effective_stop_grace() -> Duration {
 	*SIGTERM_BUDGET
 }
 
-/// End the process. Driven by a platform shutdown signal or by the last child on
-/// this instance stopping (see `stop_child`). The runner is PID 1 in the image,
-/// so cancelling `EXIT` wakes `main` to run the graceful envoy close and return,
-/// which stops the container and lets the platform reap the instance.
+/// End the process. Driven by a platform signal or by the last child stopping (see
+/// `stop_child`). The runner is PID 1, so cancelling `EXIT` wakes `main` to run the
+/// graceful envoy close and return, which stops the container.
 pub fn request_exit(actor_id: &str, reason: &str) {
 	tracing::info!(actor_id = %actor_id, reason, "shutting down container");
 	EXIT.cancel();
 }
 
-/// Stable per-process identifier, generated once. The runner is PID 1 in the
-/// image, so one boot id == one container instance. Logged at startup and on
-/// every actor start so an actor can be attributed to an instance (the log
-/// stream carries no instance id).
+/// Stable per-process id, generated once. The runner is PID 1, so one boot id ==
+/// one container instance. Logged per actor start so an actor can be attributed to
+/// an instance (the log stream carries no instance id).
 pub fn boot_id() -> &'static str {
 	static BOOT_ID: OnceLock<String> = OnceLock::new();
 	BOOT_ID.get_or_init(|| {
-		// 9 random bytes -> 12 chars. Falls back to a fixed marker if the
-		// CSPRNG is unavailable, which would itself be worth seeing in logs.
+		// 9 random bytes -> 12 chars. Falls back to a marker if the CSPRNG is
+		// unavailable, which is itself worth seeing in logs.
 		let mut buf = [0u8; 9];
 		match std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)) {
 			Ok(()) => base64url_nopad(&buf),
@@ -272,8 +251,7 @@ fn base64url_nopad(input: &[u8]) -> String {
     long_about = None,
 )]
 struct Args {
-	/// Serverless HTTP front-door port. Rivet Compute injects RIVET_PORT (other
-	/// serverless platforms use the conventional PORT); resolved in `main` as
+	/// Serverless HTTP front-door port. Resolved in `main` as
 	/// --port > RIVET_PORT > PORT > 8080.
 	#[arg(long)]
 	port: Option<u16>,
@@ -332,7 +310,7 @@ async fn async_main() -> Result<()> {
 	let boot_id = boot_id();
 	tracing::info!(?args, %boot_id, "starting container-runner");
 
-	// Front-door port: Rivet Compute injects RIVET_PORT; other serverless platforms use the conventional PORT.
+	// Front-door port: Rivet Compute injects RIVET_PORT; other platforms use PORT.
 	let port = args
 		.port
 		.or_else(|| env_u16("RIVET_PORT"))
@@ -353,11 +331,9 @@ async fn async_main() -> Result<()> {
 		ActorConfig {
 			// Game servers hold live in-memory state; never idle-sleep the actor.
 			no_sleep: true,
-			// Core force-aborts the stop hook after this deadline. `on_sleep`
-			// legitimately runs for the whole drain window plus the SIGTERM
-			// budget, so the deadline must outlast both or core would abort the
-			// drain mid-flight and leak the child. The extra 5s keeps the
-			// deadline from racing a hook that finishes right on time.
+			// Core force-aborts the stop hook at this deadline, so it must outlast the
+			// full drain window plus the SIGTERM budget (with a small margin) or the
+			// drain is cut short and the child leaks.
 			sleep_grace_period: *DRAIN_GRACE + *SIGTERM_BUDGET + Duration::from_secs(5),
 			sleep_grace_period_overridden: true,
 			..Default::default()
@@ -394,27 +370,15 @@ async fn async_main() -> Result<()> {
 	));
 	tracing::info!(port, "container-runner serverless front door listening");
 
-	// Wait for an exit request, then tear down. Two shapes depending on why:
-	//
-	// Signal (platform is reclaiming the instance): kill our children AND
-	// notify the engine at the SAME time, each bounded by the full SIGTERM
-	// budget. The direct sweep is what guarantees children die within budget
-	// rather than waiting on an engine round-trip to run our on_destroy hooks;
-	// notifying the engine in parallel just lets it start re-placing actors
-	// immediately. Bounding the drain means an unreachable engine cannot eat
-	// the budget the children need.
-	//
-	// Actor-driven exit (the last child stopped, so `stop_child` cancelled
-	// `EXIT`): no platform deadline. The child is already reaped by the hook
-	// that triggered the exit (the sweep is a no-op backstop), and the runtime
-	// drains unbounded so the /start SSE flushes cleanly.
+	// Wait for an exit request, then tear down. A platform reclaim (signal) kills
+	// children and notifies the engine at once, each bounded by the SIGTERM budget.
+	// An actor-driven exit (last child stopped) has no deadline: the child is already
+	// reaped, so the runtime drains unbounded.
 	EXIT.cancelled().await;
 	if SIGNAL_SHUTDOWN.load(Ordering::Acquire) {
-		// A platform SIGTERM reclaims this instance. Report every actor as crashed
-		// before draining so an unexpected SIGTERM (OOM or the ~60 minute request
-		// cap) surfaces as a crash on the engine instead of a silent reallocation.
-		// This runs while the envoy is still connected so the crash reaches the
-		// engine. A local SIGINT (Ctrl-C) drains gracefully without a crash.
+		// A platform SIGTERM reclaims this instance. Report actors as crashed while
+		// the envoy is still connected so the reclaim (OOM or the ~60 min request
+		// cap) surfaces as a crash, not a silent reallocation. SIGINT drains cleanly.
 		if PLATFORM_RECLAIM.load(Ordering::Acquire) {
 			crate::actor::crash_all_actors(
 				"runner received unexpected platform SIGTERM, likely OOM or running longer than 60 minutes",
@@ -446,11 +410,9 @@ async fn async_main() -> Result<()> {
 	Ok(())
 }
 
-/// Stop every child still in the registry. Actor `on_destroy` normally reaps
-/// its own child first; this is the belt-and-suspenders sweep for the signal
-/// path so children are never orphaned. Children are stopped concurrently so
-/// each gets the full `grace` within the SIGTERM budget instead of queueing
-/// behind the others.
+/// Stop every child still in the registry, concurrently so each gets the full
+/// `grace`. Actor hooks normally reap their own child first; this is the sweep for
+/// the signal path so children are never orphaned.
 async fn stop_all_children(grace: Duration) {
 	let mut children: Vec<Arc<ChildProcess>> = Vec::new();
 	CHILDREN
@@ -482,8 +444,8 @@ fn spawn_signal_handler() {
 		tokio::select! {
 			_ = sigterm.recv() => {
 				PLATFORM_RECLAIM.store(true, Ordering::Release);
-				// Attribute the reclaim to each running actor so it is visible in
-				// actor-scoped logs, not only the process-level log stream.
+				// Attribute the reclaim to each running actor so it shows in
+				// actor-scoped logs, not only the process-level stream.
 				let mut actor_ids = Vec::new();
 				CHILDREN
 					.retain_async(|actor_id, _| {

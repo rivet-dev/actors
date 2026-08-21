@@ -1,19 +1,16 @@
 //! The actor input payload describing how to launch the child game server.
 //!
-//! Everything the game server needs to launch (command, args, env, port) is
-//! carried in the actor's create-time `input` payload, CBOR-encoded per the
-//! RivetKit convention. All fields are optional; anything omitted falls back
-//! to the CLI-provided template (`rivet-container-runner -- <command...>`).
-//! The decoded input is also the actor's persisted state so a woken actor
-//! restores the same launch spec without re-decoding input.
+//! The command, args, env, and port are carried in the actor's create-time `input`
+//! (CBOR per RivetKit); anything omitted falls back to the CLI template
+//! (`rivet-container-runner -- <command...>`). This is also the actor's persisted
+//! state, so a woken actor restores the same launch spec.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Shape of the actor `input` payload. Unknown fields are ignored rather than
-/// rejected: this type is also the persisted actor state, and a strict decode
-/// would break waking actors after a rollback to a binary that predates a
-/// newly added field.
+/// Shape of the actor `input` payload. Unknown fields are ignored, not rejected:
+/// this is also the persisted state, and a strict decode would break waking actors
+/// after a rollback to a binary predating a new field.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ActorInput {
 	/// Overrides the CLI command template entirely (program + fixed args).

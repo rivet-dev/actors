@@ -2,7 +2,7 @@
 //
 // This is the child process that container-runner (rivet-container-runner) spawns inside
 // the container. It stands in for a real Unity FishNet dedicated server while we validate
-// the Rivet -> Cloud Run -> container pipeline.
+// the Rivet -> serverless -> container pipeline.
 //
 // Normal behavior:
 //   - Binds HTTP+WebSocket on $PORT (default 7770) on 0.0.0.0.

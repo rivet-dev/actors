@@ -11,7 +11,7 @@ const body = {
         // Seconds the engine holds the /start request before draining to a fresh one.
         request_lifespan: 900,
         drain_grace_period: 30,
-        // 1:1 actor<->container mapping (Cloud Run concurrency=1 model).
+        // 1:1 actor<->container mapping (serverless concurrency=1 model).
         slots_per_runner: 1,
         max_runners: 1,
         max_concurrent_actors: 1,

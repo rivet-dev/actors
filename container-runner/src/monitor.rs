@@ -1,33 +1,14 @@
 //! Periodic instance resource monitor.
 //!
-//! Opt-in via the [`ENABLE_ENV`] environment variable. When enabled it samples
-//! memory and CPU usage every [`sample_interval`] and logs them, so memory
-//! growth toward the limit (and the OOM that follows) is visible in the logs at
-//! fine granularity. Disabled by default so nothing is logged unless explicitly
-//! turned on.
+//! Opt-in via [`ENABLE_ENV`]. When on, it samples memory and CPU every
+//! [`sample_interval`] and logs them so growth toward the limit (and the OOM that
+//! follows) is visible at fine granularity.
 //!
-//! Memory and CPU are detected independently, because the gVisor sandbox
-//! exposes cgroup v1 memory but no cgroup v2 or cgroup v1 CPU accounting, so the
-//! two counters legitimately come from different sources.
-//!
-//! Only memory *usage* is reported, not a limit or percentage: under gVisor both
-//! the cgroup `memory.limit_in_bytes` and `/proc/meminfo` report the sandbox size
-//! rather than the container's configured limit, so any percentage would be
-//! misleading.
-//!
-//! Memory sources, in preference order:
-//!   - **cgroup v2** `memory.current` (real Linux). Exact.
-//!   - **cgroup v1** `memory/memory.usage_in_bytes` (gVisor sandbox).
-//!     Container-wide usage (all processes plus page cache).
-//!   - **`/proc/meminfo`** last resort. Under gVisor this reflects the whole
-//!     sandbox, not the container, so it is only an approximation.
-//!
-//! CPU sources, in preference order:
-//!   - **cgroup v2** `cpu.stat`.
-//!   - **`/proc/stat`**, the gVisor sandbox fallback (sandbox-wide, approximate).
-//!
-//! If neither a memory nor a CPU source is readable the monitor logs once and
-//! disables itself.
+//! Memory and CPU are detected independently (see [`MemSource`]/[`CpuSource`]): the
+//! gVisor sandbox exposes cgroup v1 memory but no cgroup v2 or v1 CPU, so the two
+//! counters can come from different sources. Only memory *usage* is reported, not a
+//! limit or percentage, since under gVisor the reported limit is the sandbox size,
+//! not the container's. If neither counter is readable the monitor disables itself.
 
 use std::time::{Duration, Instant};
 
