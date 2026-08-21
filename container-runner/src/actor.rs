@@ -13,10 +13,10 @@ use rivetkit::{Actor, ActorKeySegment, Ctx, Request, Response, WebSocket, action
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::child::{ChildProcess, SpawnSpec, log_prefix};
-use crate::input::ActorInput;
+use crate::input::{ActorInput, ActorState};
 use crate::{
-	children, drain_grace, effective_stop_grace, exit_token, idle_timeout, release_child_port,
-	request_exit, reserve_child_port, runner_config,
+	children, drain_grace, effective_stop_grace, exit_token, idle_timeout, reject_second_start,
+	release_child_port, request_exit, reserve_child_port, runner_config,
 };
 
 /// Live actor contexts keyed by actor id, so the shutdown path can report actors
@@ -29,6 +29,9 @@ pub struct GameServer {
 	/// Set on the first request, disarming the one-shot startup idle timer. Only
 	/// meaningful when [`idle_timeout`] is enabled.
 	got_request: AtomicBool,
+	/// Set when `on_start` detected a repeat start and skipped spawning a child, so
+	/// `run` sleeps the actor instead of running. See [`reject_second_start`].
+	reject_start: AtomicBool,
 }
 
 impl GameServer {
@@ -106,13 +109,23 @@ impl GameServer {
 			}
 		});
 	}
+
+	/// Record that the actor received a request: disarms the one-shot idle timer,
+	/// and in idle mode marks the real start on the first request so an idle-slept
+	/// actor that never served one can wake without tripping the second-start guard.
+	fn note_request(&self, ctx: &Ctx<Self>) {
+		let first = !self.got_request.swap(true, Ordering::Relaxed);
+		if first && reject_second_start() && idle_timeout().is_some() {
+			mark_started_once(ctx);
+		}
+	}
 }
 
 #[async_trait]
 impl Actor for GameServer {
-	// The launch spec is the persisted state: a woken actor restores the same
-	// spec without the engine re-sending input.
-	type State = ActorInput;
+	// The persisted state (launch spec plus `started_once`) is restored on wake, so a
+	// woken actor keeps its spec without the engine re-sending input.
+	type State = ActorState;
 	type Input = ActorInput;
 	type Actions = ();
 	type Events = ();
@@ -122,13 +135,17 @@ impl Actor for GameServer {
 	type Action = action::Raw;
 
 	async fn create_state(_ctx: &Ctx<Self>, input: Self::Input) -> Result<Self::State> {
-		Ok(input)
+		Ok(ActorState {
+			input,
+			started_once: false,
+		})
 	}
 
 	async fn create(_ctx: &Ctx<Self>) -> Result<Self> {
 		Ok(Self {
 			child: TokioMutex::new(None),
 			got_request: AtomicBool::new(false),
+			reject_start: AtomicBool::new(false),
 		})
 	}
 
@@ -160,9 +177,19 @@ impl Actor for GameServer {
 			}
 		}
 
+		// Second-start guard: if this actor already did its real start (a persisted
+		// flag that survives sleep), do not run again. Skip spawning a child; `run`
+		// sleeps the actor back down.
+		if reject_second_start() && ctx.state().started_once {
+			tracing::warn!(actor_id = %actor_id, "actor tried a second-start");
+			self.reject_start.store(true, Ordering::Relaxed);
+			return Ok(());
+		}
+
 		// Copy the launch spec out of the state guard before any await.
 		let (input_port, mut parts, env) = {
-			let input = ctx.state();
+			let state = ctx.state();
+			let input = &state.input;
 			// input.command overrides the CLI template; input.args are appended.
 			let mut parts = input
 				.command
@@ -236,6 +263,11 @@ impl Actor for GameServer {
 		// hook to remove the entry, so registering earlier would leak it.
 		register_ctx(&actor_id, &ctx).await;
 		*self.child.lock().await = Some(child);
+		// Non-idle: the real start is complete, so record it. Idle mode defers this to
+		// the first request (see `note_request`) so an idle-slept actor can wake.
+		if reject_second_start() && idle_timeout().is_none() {
+			mark_started_once(&ctx);
+		}
 		self.arm_idle_timeout(&ctx, actor_id);
 		Ok(())
 	}
@@ -244,6 +276,15 @@ impl Actor for GameServer {
 	/// first, so winning the `remove` race means the exit was unexpected: a clean
 	/// exit destroys the actor, any other reports an errored stop (a crash).
 	async fn run(self: Arc<Self>, ctx: Ctx<Self>) -> Result<()> {
+		// A rejected repeat start spawned no child; sleep the actor so it does not run
+		// again. `ctx.sleep()` is valid here because startup has completed.
+		if self.reject_start.load(Ordering::Relaxed) {
+			if let Err(err) = ctx.sleep() {
+				tracing::debug!(error = ?err, actor_id = %ctx.actor_id(), "reject-start sleep failed");
+			}
+			return Ok(());
+		}
+
 		let Some(child) = self.child.lock().await.clone() else {
 			anyhow::bail!("run: child process was never spawned");
 		};
@@ -272,7 +313,7 @@ impl Actor for GameServer {
 	}
 
 	async fn on_fetch(self: Arc<Self>, ctx: Ctx<Self>, req: Request) -> Result<Response> {
-		self.got_request.store(true, Ordering::Relaxed);
+		self.note_request(&ctx);
 		let child_port = self
 			.child
 			.lock()
@@ -289,7 +330,7 @@ impl Actor for GameServer {
 		ws: WebSocket,
 		req: Request,
 	) -> Result<()> {
-		self.got_request.store(true, Ordering::Relaxed);
+		self.note_request(&ctx);
 		let child_port = self
 			.child
 			.lock()
@@ -322,6 +363,16 @@ impl Actor for GameServer {
 		self.stop_child(ctx.actor_id(), "actor stopped").await;
 		Ok(())
 	}
+}
+
+/// Persist `started_once` so a later start is treated as a repeat. Idempotent: a
+/// no-op when already set. The read guard is released before the write.
+fn mark_started_once(ctx: &Ctx<GameServer>) {
+	if ctx.state().started_once {
+		return;
+	}
+	ctx.state_mut().started_once = true;
+	ctx.request_save();
 }
 
 /// Register an actor context for crash-on-shutdown reporting. Overwrites any

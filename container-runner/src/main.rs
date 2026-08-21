@@ -133,6 +133,20 @@ pub fn idle_timeout() -> Option<Duration> {
 	*IDLE_TIMEOUT
 }
 
+/// When set, an actor that starts a second time self-sleeps instead of running
+/// again; its persisted `started_once` records the first real start. Configured via
+/// RIVET_REJECT_SECOND_START (truthy `1`/`true`/`yes`/`on`). Off by default.
+static REJECT_SECOND_START: LazyLock<bool> = LazyLock::new(|| {
+	std::env::var("RIVET_REJECT_SECOND_START")
+		.map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+		.unwrap_or(false)
+});
+
+/// Whether the reject-second-start guard is enabled. See [`REJECT_SECOND_START`].
+pub fn reject_second_start() -> bool {
+	*REJECT_SECOND_START
+}
+
 /// Token that fires on a platform shutdown signal. Cuts a drain wait short so the
 /// platform's SIGTERM→SIGKILL budget is honored.
 pub fn exit_token() -> &'static CancellationToken {

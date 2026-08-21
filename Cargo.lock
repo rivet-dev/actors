@@ -5317,6 +5317,7 @@ version = "2.3.7"
 dependencies = [
  "anyhow",
  "async-trait",
+ "ciborium",
  "clap",
  "futures-util",
  "nix 0.30.1",

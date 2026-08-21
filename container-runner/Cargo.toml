@@ -28,3 +28,6 @@ tokio-tungstenite.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+ciborium.workspace = true
