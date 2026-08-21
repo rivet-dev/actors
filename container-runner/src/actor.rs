@@ -4,6 +4,7 @@
 //! watchdogs unexpected child exits, `on_fetch`/`on_websocket` proxy tunneled
 //! traffic to the child, and `on_sleep`/`on_destroy` stop it.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
 
 use anyhow::{Context, Result};
@@ -14,7 +15,7 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::child::{ChildProcess, SpawnSpec, log_prefix};
 use crate::input::ActorInput;
 use crate::{
-	children, drain_grace, effective_stop_grace, exit_token, release_child_port,
+	children, drain_grace, effective_stop_grace, exit_token, idle_timeout, release_child_port,
 	request_exit, reserve_child_port, runner_config,
 };
 
@@ -25,6 +26,9 @@ static ACTOR_CTXS: LazyLock<scc::HashMap<String, Ctx<GameServer>>> =
 
 pub struct GameServer {
 	child: TokioMutex<Option<Arc<ChildProcess>>>,
+	/// Set on the first request, disarming the one-shot startup idle timer. Only
+	/// meaningful when [`idle_timeout`] is enabled.
+	got_request: AtomicBool,
 }
 
 impl GameServer {
@@ -77,6 +81,31 @@ impl GameServer {
 		}
 		self.stop_child(actor_id, reason).await;
 	}
+
+	/// Arm the one-shot startup idle timer when [`idle_timeout`] is set. After the
+	/// window, if no request has arrived, ask the actor to sleep (`stop_child` then
+	/// exits the container). Cancelled early if the actor starts shutting down.
+	fn arm_idle_timeout(self: &Arc<Self>, ctx: &Ctx<Self>, actor_id: String) {
+		let Some(timeout) = idle_timeout() else {
+			return;
+		};
+		let this = self.clone();
+		let ctx = ctx.clone();
+		tokio::spawn(async move {
+			let abort = ctx.abort_signal();
+			tokio::select! {
+				_ = tokio::time::sleep(timeout) => {}
+				_ = abort.cancelled() => return,
+			}
+			if this.got_request.load(Ordering::Relaxed) {
+				return;
+			}
+			tracing::info!(actor_id = %actor_id, ?timeout, "no request within idle timeout, sleeping");
+			if let Err(err) = ctx.sleep() {
+				tracing::debug!(error = ?err, actor_id = %actor_id, "idle sleep request failed");
+			}
+		});
+	}
 }
 
 #[async_trait]
@@ -99,6 +128,7 @@ impl Actor for GameServer {
 	async fn create(_ctx: &Ctx<Self>) -> Result<Self> {
 		Ok(Self {
 			child: TokioMutex::new(None),
+			got_request: AtomicBool::new(false),
 		})
 	}
 
@@ -206,6 +236,7 @@ impl Actor for GameServer {
 		// hook to remove the entry, so registering earlier would leak it.
 		register_ctx(&actor_id, &ctx).await;
 		*self.child.lock().await = Some(child);
+		self.arm_idle_timeout(&ctx, actor_id);
 		Ok(())
 	}
 
@@ -241,6 +272,7 @@ impl Actor for GameServer {
 	}
 
 	async fn on_fetch(self: Arc<Self>, ctx: Ctx<Self>, req: Request) -> Result<Response> {
+		self.got_request.store(true, Ordering::Relaxed);
 		let child_port = self
 			.child
 			.lock()
@@ -257,6 +289,7 @@ impl Actor for GameServer {
 		ws: WebSocket,
 		req: Request,
 	) -> Result<()> {
+		self.got_request.store(true, Ordering::Relaxed);
 		let child_port = self
 			.child
 			.lock()
@@ -274,8 +307,14 @@ impl Actor for GameServer {
 
 	/// Engine-initiated sleep. `no_sleep` blocks only idle sleep; the engine can
 	/// still sleep an actor (dashboard, crash policy, eviction), so we stop the child.
+	/// In idle-timeout mode the sleep is (treated as) an idle sleep, so it skips the
+	/// drain and stops promptly; otherwise it drains for in-flight work first.
 	async fn on_sleep(self: Arc<Self>, ctx: Ctx<Self>) -> Result<()> {
-		self.drain_then_stop_child(ctx.actor_id(), "actor sleeping").await;
+		if idle_timeout().is_some() {
+			self.stop_child(ctx.actor_id(), "actor sleeping (idle)").await;
+		} else {
+			self.drain_then_stop_child(ctx.actor_id(), "actor sleeping").await;
+		}
 		Ok(())
 	}
 

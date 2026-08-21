@@ -117,6 +117,22 @@ pub fn drain_grace() -> Duration {
 	*DRAIN_GRACE
 }
 
+/// One-shot startup idle timeout. If the actor receives no request within this
+/// window of starting, it sleeps (and the container exits). `None` when
+/// RIVET_IDLE_TIMEOUT_SECS is unset or 0 (disabled); the first request disarms it.
+static IDLE_TIMEOUT: LazyLock<Option<Duration>> = LazyLock::new(|| {
+	let secs = std::env::var("RIVET_IDLE_TIMEOUT_SECS")
+		.ok()
+		.and_then(|value| value.parse::<u64>().ok())
+		.unwrap_or(0);
+	(secs > 0).then(|| Duration::from_secs(secs))
+});
+
+/// The one-shot startup idle-sleep window, or `None` when disabled. See [`IDLE_TIMEOUT`].
+pub fn idle_timeout() -> Option<Duration> {
+	*IDLE_TIMEOUT
+}
+
 /// Token that fires on a platform shutdown signal. Cuts a drain wait short so the
 /// platform's SIGTERM→SIGKILL budget is honored.
 pub fn exit_token() -> &'static CancellationToken {
