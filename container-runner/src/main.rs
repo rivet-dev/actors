@@ -29,6 +29,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
+use futures_util::future::join_all;
 use rivetkit::serverless_http::{self, ListenerConfig};
 use rivetkit::{ActorConfig, EngineSpawnMode, Registry, ServeConfig};
 use tokio_util::sync::CancellationToken;
@@ -103,29 +104,18 @@ static SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 static PLATFORM_RECLAIM: AtomicBool = AtomicBool::new(false);
 
 /// How long the platform gives this container between SIGTERM and SIGKILL.
-/// Defaults to 10 seconds; keep this in sync with the platform's actual budget
-/// via RIVET_SIGTERM_BUDGET_SECS.
-/// The signal-path teardown splits the budget: ~60% for the engine drain
-/// (whose per-actor stops SIGTERM children with a grace capped at ~40%), 1s
-/// for the straggler sweep, and the rest as margin.
+/// Defaults to 9s, one second under the common ~10s platform budget so the whole
+/// teardown lands before SIGKILL; keep it in sync with the platform's actual
+/// budget via RIVET_SIGTERM_BUDGET_SECS. On the signal path the engine drain and
+/// the child kills run concurrently, each bounded by this full budget.
 static SIGTERM_BUDGET: LazyLock<Duration> = LazyLock::new(|| {
 	let secs = std::env::var("RIVET_SIGTERM_BUDGET_SECS")
 		.ok()
 		.and_then(|value| value.parse::<u64>().ok())
-		.unwrap_or(10)
+		.unwrap_or(9)
 		.max(3);
 	Duration::from_secs(secs)
 });
-
-fn signal_drain_timeout() -> Duration {
-	SIGTERM_BUDGET.mul_f64(0.6)
-}
-
-fn signal_child_stop_grace() -> Duration {
-	SIGTERM_BUDGET.mul_f64(0.4)
-}
-
-const SIGNAL_SWEEP_GRACE: Duration = Duration::from_secs(1);
 
 pub fn runner_config() -> Arc<RunnerConfig> {
 	RUNNER_CONFIG
@@ -203,7 +193,7 @@ pub async fn release_child_port(port: u16) {
 pub fn effective_stop_grace() -> Duration {
 	let grace = runner_config().stop_grace;
 	if SIGNAL_SHUTDOWN.load(Ordering::Acquire) {
-		grace.min(signal_child_stop_grace())
+		grace.min(*SIGTERM_BUDGET)
 	} else {
 		grace
 	}
@@ -395,11 +385,13 @@ async fn async_main() -> Result<()> {
 	// currently unreachable and kept only as a fallback for a future
 	// actor-driven exit.
 	//
-	// Signal (platform is reclaiming the instance): tell the engine FIRST so
-	// it can start re-placing actors immediately. Its per-actor stops run our
-	// on_destroy hooks, which SIGTERM children with the capped signal grace.
-	// The drain is bounded so an unreachable engine cannot eat the whole
-	// platform budget; the sweep then catches any child whose hooks never ran.
+	// Signal (platform is reclaiming the instance): kill our children AND
+	// notify the engine at the SAME time, each bounded by the full SIGTERM
+	// budget. The direct sweep is what guarantees children die within budget
+	// rather than waiting on an engine round-trip to run our on_destroy hooks;
+	// notifying the engine in parallel just lets it start re-placing actors
+	// immediately. Bounding the drain means an unreachable engine cannot eat
+	// the budget the children need.
 	//
 	// Fallback actor-driven exit (unreachable today): no platform deadline.
 	// Children are already reaped by the hooks (the sweep is a no-op backstop),
@@ -417,13 +409,15 @@ async fn async_main() -> Result<()> {
 			)
 			.await;
 		}
-		if tokio::time::timeout(signal_drain_timeout(), runtime.shutdown())
-			.await
-			.is_err()
-		{
-			tracing::warn!("engine drain exceeded the signal budget, sweeping children directly");
-		}
-		stop_all_children(SIGNAL_SWEEP_GRACE).await;
+		let drain = async {
+			if tokio::time::timeout(*SIGTERM_BUDGET, runtime.shutdown())
+				.await
+				.is_err()
+			{
+				tracing::warn!("engine drain exceeded the signal budget");
+			}
+		};
+		tokio::join!(drain, stop_all_children(*SIGTERM_BUDGET));
 	} else {
 		stop_all_children(stop_grace).await;
 		runtime.shutdown().await;
@@ -442,7 +436,9 @@ async fn async_main() -> Result<()> {
 
 /// Stop every child still in the registry. Actor `on_destroy` normally reaps
 /// its own child first; this is the belt-and-suspenders sweep for the signal
-/// path so children are never orphaned.
+/// path so children are never orphaned. Children are stopped concurrently so
+/// each gets the full `grace` within the SIGTERM budget instead of queueing
+/// behind the others.
 async fn stop_all_children(grace: Duration) {
 	let mut children: Vec<Arc<ChildProcess>> = Vec::new();
 	CHILDREN
@@ -455,10 +451,11 @@ async fn stop_all_children(grace: Duration) {
 		return;
 	}
 	println!("runner: shutdown, stopping {} child(ren)", children.len());
-	for child in children {
+	join_all(children.into_iter().map(|child| async move {
 		child.stop(grace).await;
 		release_child_port(child.child_port).await;
-	}
+	}))
+	.await;
 }
 
 fn env_u16(key: &str) -> Option<u16> {
