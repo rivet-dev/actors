@@ -1240,8 +1240,9 @@ async fn clear_kv(ctx: &ActivityCtx, input: &ClearKvInput) -> Result<ClearKvOutp
 	let state = ctx.state::<State>()?;
 
 	let actor_id = state.actor_id;
-	let final_size = ctx
-		.udb()?
+	let namespace_id = state.namespace_id;
+	let udb = ctx.udb()?;
+	let final_size = udb
 		.txn("pegboard_actor2_clear_kv", |tx| async move {
 			let subspace = crate::keys::actor_kv::subspace(actor_id);
 
@@ -1256,6 +1257,9 @@ async fn clear_kv(ctx: &ActivityCtx, input: &ClearKvInput) -> Result<ClearKvOutp
 		})
 		.custom_instrument(tracing::info_span!("actor_clear_kv_tx"))
 		.await?;
+
+	// Keep outside txn - branch delete has its own txn.
+	crate::actor_sqlite::clear_branch_storage_for_destroy(&udb, namespace_id, actor_id).await?;
 
 	Ok(ClearKvOutput { final_size })
 }
