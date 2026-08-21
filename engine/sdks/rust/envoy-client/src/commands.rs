@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rivet_envoy_protocol as protocol;
 
 use crate::actor::create_actor;
@@ -15,6 +17,14 @@ pub async fn handle_commands(ctx: &mut EnvoyContext, commands: Vec<protocol::Com
 			"received command"
 		);
 	}
+
+	// Collect actors with a stop in the raw batch before dedup, so a replayed
+	// (skipped) stop is still re-acked instead of being replayed forever.
+	let stopped_actors: Vec<(String, u32)> = commands
+		.iter()
+		.filter(|c| matches!(c.inner, protocol::Command::CommandStopActor(_)))
+		.map(|c| (c.checkpoint.actor_id.clone(), c.checkpoint.generation))
+		.collect();
 
 	for command_wrapper in commands {
 		let checkpoint = command_wrapper.checkpoint;
@@ -80,35 +90,59 @@ pub async fn handle_commands(ctx: &mut EnvoyContext, commands: Vec<protocol::Com
 			}
 		}
 	}
+
+	// Ack stops immediately since their actors are removed before the periodic
+	// tick. Scope to just the stopped actors instead of a full-state ack, and do
+	// not clear dedup; the tick handles full re-acks, recovery, and clearing.
+	if !stopped_actors.is_empty() {
+		send_stop_command_acks(ctx, &stopped_actors).await;
+	}
 }
 
-pub async fn send_command_ack(ctx: &mut EnvoyContext) {
-	let mut last_command_checkpoints: Vec<protocol::ActorCheckpoint> = Vec::new();
-
-	for (actor_id, generations) in &ctx.actors {
-		for (generation, entry) in generations {
-			if entry.last_command_idx < 0 {
-				continue;
-			}
-			last_command_checkpoints.push(protocol::ActorCheckpoint {
-				actor_id: actor_id.clone(),
-				generation: *generation,
-				index: entry.last_command_idx,
-			});
+/// Ack only the given actors' latest processed command index. Used for the
+/// immediate stop ack. Does not clear dedup (see the race note in
+/// `send_command_ack`); a failed send is retried by the replayed batch or tick.
+async fn send_stop_command_acks(ctx: &EnvoyContext, actors: &[(String, u32)]) {
+	let mut highest: HashMap<(String, u32), i64> = HashMap::new();
+	for key in actors {
+		if let Some(&index) = ctx.processed_command_idx.get(key) {
+			highest.insert(key.clone(), index);
 		}
 	}
 
-	if last_command_checkpoints.is_empty() {
+	if highest.is_empty() {
 		return;
 	}
 
-	let send_failed = ws_send(
-		&ctx.shared,
-		protocol::ToRivet::ToRivetAckCommands(protocol::ToRivetAckCommands {
-			last_command_checkpoints: last_command_checkpoints.clone(),
-		}),
-	)
-	.await;
+	send_ack_checkpoints(ctx, checkpoints_from(highest)).await;
+}
+
+pub async fn send_command_ack(ctx: &mut EnvoyContext) {
+	// Merge live actors and the dedup map, highest index per actor-generation.
+	// Live actors are re-acked every tick (recovers an ack accepted locally but
+	// never committed by the server); the dedup map covers stops whose actor was
+	// already removed and is cleared once acked.
+	let mut highest: HashMap<(String, u32), i64> = HashMap::new();
+	for (actor_id, generations) in &ctx.actors {
+		for (generation, entry) in generations {
+			if entry.last_command_idx >= 0 {
+				highest.insert((actor_id.clone(), *generation), entry.last_command_idx);
+			}
+		}
+	}
+	for ((actor_id, generation), &index) in &ctx.processed_command_idx {
+		highest
+			.entry((actor_id.clone(), *generation))
+			.and_modify(|existing| *existing = (*existing).max(index))
+			.or_insert(index);
+	}
+
+	if highest.is_empty() {
+		return;
+	}
+
+	let last_command_checkpoints = checkpoints_from(highest);
+	let send_failed = send_ack_checkpoints(ctx, last_command_checkpoints.clone()).await;
 
 	// Skip the dedup clear if the ack never left this process. Otherwise
 	// `pegboard-envoy` would replay the commands on reconnect with no dedup
@@ -127,8 +161,35 @@ pub async fn send_command_ack(ctx: &mut EnvoyContext) {
 	// window is narrow (the gap between OS-accepted bytes and the FDB
 	// commit), but a strictly correct fix needs an ack-of-ack from
 	// `pegboard-envoy` so we only clear after positive confirmation.
+	// This now also applies to removed actors whose stops are acked here: a
+	// short-lived actor can be resurrected in the same window. Same fix.
 	for cp in &last_command_checkpoints {
 		ctx.processed_command_idx
 			.remove(&(cp.actor_id.clone(), cp.generation));
 	}
+}
+
+fn checkpoints_from(highest: HashMap<(String, u32), i64>) -> Vec<protocol::ActorCheckpoint> {
+	highest
+		.into_iter()
+		.map(|((actor_id, generation), index)| protocol::ActorCheckpoint {
+			actor_id,
+			generation,
+			index,
+		})
+		.collect()
+}
+
+/// Send an ack for the given checkpoints. Returns whether the send failed.
+async fn send_ack_checkpoints(
+	ctx: &EnvoyContext,
+	last_command_checkpoints: Vec<protocol::ActorCheckpoint>,
+) -> bool {
+	ws_send(
+		&ctx.shared,
+		protocol::ToRivet::ToRivetAckCommands(protocol::ToRivetAckCommands {
+			last_command_checkpoints,
+		}),
+	)
+	.await
 }

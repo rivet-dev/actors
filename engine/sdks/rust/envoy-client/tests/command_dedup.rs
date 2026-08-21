@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use rivet_envoy_client::actor::ToActor;
 use rivet_envoy_client::async_counter::AsyncCounter;
-use rivet_envoy_client::commands::handle_commands;
+use rivet_envoy_client::commands::{handle_commands, send_command_ack};
 use rivet_envoy_client::config::{
 	BoxFuture, EnvoyCallbacks, EnvoyConfig, HttpRequest, HttpResponse, WebSocketHandler,
 	WebSocketSender,
@@ -18,6 +18,7 @@ use rivet_envoy_client::sqlite::{
 use rivet_envoy_client::utils::{BufferMap, RemoteSqliteIndeterminateResultError};
 use rivet_envoy_protocol as protocol;
 use tokio::sync::mpsc;
+use vbare::OwnedVersionedData;
 
 struct IdleCallbacks;
 
@@ -270,4 +271,146 @@ async fn replayed_command_is_dropped_after_remote_sql_lost_response() {
 
 	handle_commands(&mut ctx, vec![stop_command("actor-replay", 1, 5)]).await;
 	assert!(actor_rx.try_recv().is_err());
+}
+
+fn decode_ack_checkpoints(msg: WsTxMessage) -> Vec<protocol::ActorCheckpoint> {
+	let WsTxMessage::Send(bytes) = msg else {
+		panic!("expected a websocket send, got a close");
+	};
+	let message = protocol::versioned::ToRivet::deserialize(&bytes, protocol::PROTOCOL_VERSION)
+		.expect("failed to decode ToRivet message");
+	match message {
+		protocol::ToRivet::ToRivetAckCommands(val) => val.last_command_checkpoints,
+		_ => panic!("expected ToRivetAckCommands"),
+	}
+}
+
+#[tokio::test]
+async fn stop_command_is_acked_immediately() {
+	let mut ctx = new_envoy_context();
+	let (actor_tx, mut actor_rx) = mpsc::unbounded_channel::<ToActor>();
+	ctx.insert_actor(
+		"actor-a".to_string(),
+		1,
+		actor_tx,
+		Arc::new(AsyncCounter::new()),
+		"actor-a".to_string(),
+		-1,
+	);
+
+	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+	*ctx.shared.ws_tx.lock().await = Some(ws_tx);
+
+	handle_commands(&mut ctx, vec![stop_command("actor-a", 1, 5)]).await;
+	assert!(matches!(
+		actor_rx.try_recv(),
+		Ok(ToActor::Stop { command_idx: 5, .. })
+	));
+
+	// The stop must be acked right away rather than waiting for the periodic
+	// tick, otherwise the actor entry is gone before the next ack.
+	let checkpoints =
+		decode_ack_checkpoints(ws_rx.try_recv().expect("stop should trigger an immediate ack"));
+	assert_eq!(checkpoints.len(), 1);
+	assert_eq!(checkpoints[0].actor_id, "actor-a");
+	assert_eq!(checkpoints[0].generation, 1);
+	assert_eq!(checkpoints[0].index, 5);
+}
+
+#[tokio::test]
+async fn stop_ack_retried_via_replay_after_failed_send() {
+	let mut ctx = new_envoy_context();
+	let (actor_tx, mut actor_rx) = mpsc::unbounded_channel::<ToActor>();
+	ctx.insert_actor(
+		"actor-a".to_string(),
+		1,
+		actor_tx,
+		Arc::new(AsyncCounter::new()),
+		"actor-a".to_string(),
+		-1,
+	);
+
+	// No websocket is connected, so the immediate ack send fails. The processed
+	// index must be retained so a later replay can re-ack it.
+	handle_commands(&mut ctx, vec![stop_command("actor-a", 1, 5)]).await;
+	assert!(matches!(
+		actor_rx.try_recv(),
+		Ok(ToActor::Stop { command_idx: 5, .. })
+	));
+	assert_eq!(
+		ctx.processed_command_idx.get(&("actor-a".to_string(), 1)),
+		Some(&5)
+	);
+
+	// Remove the actor, as happens once it emits its Stopped event. The re-ack
+	// must still work with no live actor, sourced from the dedup map.
+	ctx.remove_actor("actor-a", 1);
+
+	// Reconnect and replay the same stop. Dedup skips reprocessing, but the batch
+	// still carries a stop, so the retained checkpoint is re-acked.
+	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+	*ctx.shared.ws_tx.lock().await = Some(ws_tx);
+	handle_commands(&mut ctx, vec![stop_command("actor-a", 1, 5)]).await;
+	assert!(
+		actor_rx.try_recv().is_err(),
+		"replayed stop must not be reprocessed"
+	);
+
+	let checkpoints =
+		decode_ack_checkpoints(ws_rx.try_recv().expect("replayed stop should re-ack"));
+	assert_eq!(checkpoints.len(), 1);
+	assert_eq!(checkpoints[0].index, 5);
+}
+
+#[tokio::test]
+async fn unknown_actor_stop_is_acked() {
+	let mut ctx = new_envoy_context();
+	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+	*ctx.shared.ws_tx.lock().await = Some(ws_tx);
+
+	// No actor inserted: models a stop replayed to a process that never started
+	// it (e.g. after restart). It must still be acked to stop the replay.
+	handle_commands(&mut ctx, vec![stop_command("actor-gone", 3, 9)]).await;
+
+	let checkpoints = decode_ack_checkpoints(
+		ws_rx
+			.try_recv()
+			.expect("unknown-actor stop should still ack"),
+	);
+	assert_eq!(checkpoints.len(), 1);
+	assert_eq!(checkpoints[0].actor_id, "actor-gone");
+	assert_eq!(checkpoints[0].generation, 3);
+	assert_eq!(checkpoints[0].index, 9);
+}
+
+#[tokio::test]
+async fn live_actor_is_reacked_on_each_tick() {
+	let mut ctx = new_envoy_context();
+	let (actor_tx, _actor_rx) = mpsc::unbounded_channel::<ToActor>();
+	// A live actor whose latest command index is 3.
+	ctx.insert_actor(
+		"actor-a".to_string(),
+		1,
+		actor_tx,
+		Arc::new(AsyncCounter::new()),
+		"actor-a".to_string(),
+		3,
+	);
+
+	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+	*ctx.shared.ws_tx.lock().await = Some(ws_tx);
+
+	// The first tick acks index 3 and clears the dedup map. The second tick must
+	// still re-ack from the live-actor scan, recovering an ack the server may
+	// never have committed.
+	send_command_ack(&mut ctx).await;
+	let first = decode_ack_checkpoints(ws_rx.try_recv().expect("first tick should ack"));
+	assert_eq!(first.len(), 1);
+	assert_eq!(first[0].index, 3);
+
+	send_command_ack(&mut ctx).await;
+	let second = decode_ack_checkpoints(ws_rx.try_recv().expect("second tick should re-ack"));
+	assert_eq!(second.len(), 1);
+	assert_eq!(second[0].actor_id, "actor-a");
+	assert_eq!(second[0].index, 3);
 }
