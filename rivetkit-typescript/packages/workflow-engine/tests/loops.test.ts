@@ -232,6 +232,113 @@ for (const mode of modes) {
 			expect(result.output).toEqual(["a", "b", "c"]);
 		});
 
+		it("should resume an inner loop that suspends mid-iteration inside a parent loop", async () => {
+			// An inner loop whose body suspends (queue.next with no message)
+			// advances past iteration 0, persists its iteration, and resumes on
+			// the next run. The inner loop resume path starts at the saved
+			// iteration and never re-visits iteration 0, so the enclosing
+			// parent-loop branch's validateComplete() must still treat the
+			// already-completed inner iterations as accounted for.
+			const ticks: number[] = [];
+
+			const workflow = async (ctx: WorkflowContextInterface) => {
+				return await ctx.loop({
+					name: "outer",
+					state: { done: false },
+					run: async (outerCtx, outerState) => {
+						if (outerState.done) {
+							return Loop.break(ticks.length);
+						}
+
+						await outerCtx.loop({
+							name: "inner",
+							state: { count: 0 },
+							run: async (innerCtx, innerState) => {
+								if (innerState.count >= 2) {
+									return Loop.break(undefined);
+								}
+
+								const message = await innerCtx.queue.next<{
+									n: number;
+								}>("tick", { names: ["tick"] });
+
+								await innerCtx.step(
+									`record-${innerState.count}`,
+									async () => {
+										ticks.push(message.body.n);
+									},
+								);
+
+								return Loop.continue({
+									count: innerState.count + 1,
+								});
+							},
+						});
+
+						return Loop.break(ticks.length);
+					},
+				});
+			};
+
+			if (mode === "yield") {
+				await driver.messageDriver.addMessage({
+					id: "tick-1",
+					name: "tick",
+					data: { n: 1 },
+					sentAt: Date.now(),
+				});
+
+				// First run: inner iteration 0 consumes tick-1 and continues;
+				// inner iteration 1 finds no message and suspends, persisting
+				// the inner loop at iteration 1.
+				const firstRun = await runWorkflow(
+					"wf-1",
+					workflow,
+					undefined,
+					driver,
+					{ mode },
+				).result;
+
+				expect(firstRun.state).toBe("sleeping");
+				expect(ticks).toEqual([1]);
+
+				await driver.messageDriver.addMessage({
+					id: "tick-2",
+					name: "tick",
+					data: { n: 2 },
+					sentAt: Date.now(),
+				});
+
+				// Second run: replay resumes the inner loop at iteration 1
+				// (iteration 0 is never re-visited), then the parent branch is
+				// validated against the full subtree.
+				const secondRun = await runWorkflow(
+					"wf-1",
+					workflow,
+					undefined,
+					driver,
+					{ mode },
+				).result;
+
+				expect(secondRun.state).toBe("completed");
+				expect(secondRun.output).toBe(2);
+				expect(ticks).toEqual([1, 2]);
+				return;
+			}
+
+			const handle = runWorkflow("wf-1", workflow, undefined, driver, {
+				mode,
+			});
+
+			await handle.message("tick", { n: 1 });
+			await handle.message("tick", { n: 2 });
+
+			const result = await handle.result;
+			expect(result.state).toBe("completed");
+			expect(result.output).toBe(2);
+			expect(ticks).toEqual([1, 2]);
+		});
+
 		it("should resume nested joins across parent loop iterations", async () => {
 			const processed: string[] = [];
 

@@ -27,6 +27,7 @@ import {
 	appendName,
 	emptyLocation,
 	isLocationPrefix,
+	isLoopIterationMarker,
 	locationToKey,
 	registerName,
 } from "./location.js";
@@ -496,6 +497,52 @@ export class WorkflowContextImpl implements WorkflowContextInterface {
 	 */
 	private markVisited(key: string): void {
 		this.visitedKeys.add(key);
+	}
+
+	/**
+	 * Mark every surviving history entry belonging to already-completed
+	 * iterations of a resuming loop as visited.
+	 *
+	 * A loop that resumes from saved state starts at its persisted iteration
+	 * and never replays earlier iterations, so their history entries are never
+	 * re-visited on this run. When the loop is nested inside another loop (or
+	 * any branch that calls validateComplete), the enclosing branch validates
+	 * its entire subtree and would otherwise reject those unvisited entries as
+	 * a history divergence. Marking them visited here keeps the enclosing
+	 * validation consistent with the loop's intentional skip. Entries for the
+	 * resumed iteration and later are left alone so they are still validated as
+	 * the loop replays forward.
+	 */
+	private markCompletedLoopIterationsVisited(
+		loopLocation: Location,
+		resumedIteration: number,
+	): void {
+		if (resumedIteration <= 0) {
+			return;
+		}
+
+		const loopSegment = loopLocation[loopLocation.length - 1];
+		if (typeof loopSegment !== "number") {
+			throw new Error("Expected loop location to end with a name index");
+		}
+
+		for (const [key, entry] of this.storage.history.entries) {
+			if (!isLocationPrefix(loopLocation, entry.location)) {
+				continue;
+			}
+
+			const iterationSegment = entry.location[loopLocation.length];
+			if (
+				!iterationSegment ||
+				!isLoopIterationMarker(iterationSegment) ||
+				iterationSegment.loop !== loopSegment ||
+				iterationSegment.iteration >= resumedIteration
+			) {
+				continue;
+			}
+
+			this.markVisited(key);
+		}
 	}
 
 	/**
@@ -1194,6 +1241,7 @@ export class WorkflowContextImpl implements WorkflowContextInterface {
 			entry = existing;
 			state = loopData.state as S;
 			iteration = loopData.iteration;
+			this.markCompletedLoopIterationsVisited(location, iteration);
 			if (rollbackMode) {
 				rollbackOutput = loopData.output as T | undefined;
 				rollbackIterationRan = rollbackOutput !== undefined;
