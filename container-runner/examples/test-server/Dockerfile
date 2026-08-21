@@ -6,7 +6,7 @@
 # Build from the RIVET REPO ROOT so the workspace and examples are in context.
 # Arch-agnostic: builds for the host/requested platform.
 #   Local (native, e.g. arm64 Mac): docker build -f container-runner/examples/test-server/Dockerfile -t game:latest .
-#   Cloud Run (x86_64):             docker build --platform linux/amd64 -f container-runner/examples/test-server/Dockerfile -t game:amd64 .
+#   Serverless (x86_64):            docker build --platform linux/amd64 -f container-runner/examples/test-server/Dockerfile -t game:amd64 .
 #
 # Production pattern (per spec) — instead of building from source, curl a released
 # binary into an existing image:
@@ -33,7 +33,7 @@ COPY --from=builder /usr/local/bin/rivet-container-runner /usr/local/bin/rivet-c
 COPY container-runner/examples/test-server/ /app/test-server/
 RUN cd /app/test-server && npm install --omit=dev
 
-# Cloud Run sets $PORT (the serverless front door). The child listens on CHILD_PORT.
+# The serverless platform sets $PORT (the front door). The child listens on CHILD_PORT.
 ENV PORT=8080 \
     CHILD_PORT=7770 \
     RIVET_ACTOR_NAME=game

@@ -4,7 +4,7 @@
 # server), then drive a WebSocket ping-pong through the guard to every one.
 #
 # Each container-runner instance is one "container": its own front-door port, its own child
-# port, and its own serverless runner pool (load-<i>). This mirrors the Cloud Run 1:1
+# port, and its own serverless runner pool (load-<i>). This mirrors the serverless 1:1
 # actor<->container model locally, so `LOAD_COUNT` instances == that many containers.
 #
 #   engine (:7420 guard, :7421 api)

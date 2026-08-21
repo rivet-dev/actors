@@ -1,5 +1,5 @@
 # Local end-to-end: self-hosted Rivet engine + the game container (container-runner
-# wrapping the Node test server). All x86_64/amd64 to mirror Cloud Run.
+# wrapping the Node test server). All x86_64/amd64 to mirror the serverless platform.
 #
 # Flow:
 #   create actor (POST /actors) -> engine POSTs /api/rivet/start to game:8080

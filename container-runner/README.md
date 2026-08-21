@@ -26,8 +26,8 @@ There are two working local paths:
 2. Run the built Unity server behind `container-runner`, create a Rivet actor locally,
    and connect a FishNet client through the local Rivet guard URL.
 
-A production image for **Rivet Compute** (the Cloud Run serverless model) is provided —
-see [Rivet Compute](#rivet-compute) below.
+A production image for **Rivet Compute** (the serverless model) is provided. See
+[Rivet Compute](#rivet-compute) below.
 
 ## Project Layout
 
@@ -207,7 +207,7 @@ Knobs: `LOAD_COUNT` (default 25), `LOAD_CONCURRENCY` (default 64).
 
 **Running the full 1000:** 1000 local instances is ~2000 processes (a Rust runner + Node
 child each) and needs a beefy host plus a raised `ulimit -n`. For a true 1000-container run,
-point `load-test.mjs` at **Rivet Cloud** instead — Cloud Run scales the containers, no local
+point `load-test.mjs` at **Rivet Cloud** instead, which scales the containers with no local
 limit. Set the engine env and let a single pool auto-scale:
 
 ```bash

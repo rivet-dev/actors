@@ -1,11 +1,8 @@
 //! The `GameServer` actor: wraps one child game-server process per actor.
 //!
-//! Lifecycle: `on_start` reserves a port and spawns the child, waiting for
-//! readiness (so the actor is never reported ready before the child listens),
-//! `run` is a watchdog that reports unexpected child exits,
-//! `on_fetch`/`on_websocket` proxy tunneled traffic to the child's port, and
-//! `on_destroy` stops the child while the instance stays warm for the next
-//! placement.
+//! `on_start` reserves a port and spawns the child (waiting for readiness), `run`
+//! watchdogs unexpected child exits, `on_fetch`/`on_websocket` proxy tunneled
+//! traffic to the child, and `on_sleep`/`on_destroy` stop it.
 
 use std::sync::{Arc, LazyLock};
 
@@ -21,9 +18,8 @@ use crate::{
 	request_exit, reserve_child_port, runner_config,
 };
 
-/// Live actor contexts on this instance, keyed by actor id. Lets the process
-/// shutdown path report actors as crashed when the platform reclaims the
-/// container out from under them.
+/// Live actor contexts keyed by actor id, so the shutdown path can report actors
+/// as crashed when the platform reclaims the container.
 static ACTOR_CTXS: LazyLock<scc::HashMap<String, Ctx<GameServer>>> =
 	LazyLock::new(scc::HashMap::new);
 
@@ -32,14 +28,12 @@ pub struct GameServer {
 }
 
 impl GameServer {
-	/// Shared teardown for sleep and destroy: for a game server the two are
-	/// materially the same event, because the in-memory match state lives in
-	/// the child and cannot outlive the container. The launch spec is the
-	/// persisted actor state, so a later wake respawns an equivalent child.
+	/// Shared teardown for sleep and destroy. For a game server they are the same
+	/// event: match state lives in the child and cannot outlive the container, and
+	/// a later wake respawns an equivalent child from the persisted launch spec.
 	async fn stop_child(&self, actor_id: &str, reason: &str) {
-		// Remove from the registry FIRST so the watchdog treats the exit as
-		// deliberate, then stop. `stop` is idempotent if the process shutdown
-		// sweep already stopped this child.
+		// Remove from the registry first so the watchdog treats the exit as
+		// deliberate. `stop` is idempotent if the shutdown sweep already ran.
 		children().remove_async(actor_id).await;
 		ACTOR_CTXS.remove_async(actor_id).await;
 		let child = self.child.lock().await.take();
@@ -48,11 +42,9 @@ impl GameServer {
 			release_child_port(child.child_port).await;
 		}
 
-		// Exit the whole process once the last child on this instance stops. The
-		// runner is PID 1, so `request_exit` cancels `EXIT`, which wakes `main`
-		// to run the graceful envoy close and then return, stopping the container
-		// so the platform reaps it. Guarded on an empty registry so a multi-actor
-		// instance does not tear down siblings still hosting a child.
+		// Exit the process once the last child stops: `request_exit` cancels
+		// `EXIT`, waking `main` to close the envoy and return (the runner is
+		// PID 1). Guarded on an empty registry so siblings survive.
 		if children().is_empty() {
 			request_exit(actor_id, reason);
 		} else {
@@ -64,12 +56,9 @@ impl GameServer {
 		}
 	}
 
-	/// Engine pause path (sleep, lost, going-away). Give the child up to
-	/// `DRAIN_GRACE` to finish its in-flight work and exit on its own before we
-	/// force a stop; the child is not signalled during the window. A natural
-	/// child exit ends the wait immediately, and a platform SIGTERM (which
-	/// cancels the exit token) cuts it short so the reclaim's SIGTERM→SIGKILL
-	/// budget is honored.
+	/// Engine pause (sleep, lost, going-away): let the child finish and exit on its
+	/// own for up to `DRAIN_GRACE` before forcing a stop. A child exit or a platform
+	/// SIGTERM (which cancels the exit token) ends the wait early.
 	async fn drain_then_stop_child(&self, actor_id: &str, reason: &str) {
 		let child = self.child.lock().await.clone();
 		if let Some(child) = child {
@@ -118,10 +107,8 @@ impl Actor for GameServer {
 		let actor_id = ctx.actor_id().to_string();
 		let key = actor_key_string(&ctx);
 
-		// Surface the resource monitor's status here, tagged with the actor id, so
-		// it is visible in actor-scoped log views. The monitor's own enable/disable
-		// logs are process-level and have no actor id, so they are filtered out of
-		// those views.
+		// Tagged with the actor id so it shows in actor-scoped log views; the
+		// monitor's own process-level enable/disable logs are filtered out there.
 		tracing::info!(
 			actor_id = %actor_id,
 			resource_monitor_enabled = crate::monitor::enabled(),
@@ -129,9 +116,8 @@ impl Actor for GameServer {
 			"resource monitor status"
 		);
 
-		// An engine retry for an actor that is already running here must be an
-		// idempotent no-op: rejecting it would make the engine tear down a
-		// healthy actor.
+		// An engine retry for an already-running actor must be an idempotent no-op;
+		// rejecting it would make the engine tear down a healthy actor.
 		if let Some(existing) = children().read_async(&actor_id, |_, c| c.clone()).await {
 			if !existing.has_exited() {
 				println!(
@@ -172,9 +158,8 @@ impl Actor for GameServer {
 			key: key.clone(),
 		};
 
-		// Version line, tagged with the actor id so it is visible in actor-scoped
-		// logs. `git_sha` is omitted entirely when unknown rather than logged as
-		// "unknown".
+		// Tagged with the actor id for actor-scoped logs; `git_sha` is omitted when
+		// unknown rather than logged as "unknown".
 		match crate::git_sha() {
 			Some(git_sha) => tracing::info!(
 				actor_id = %actor_id,
@@ -200,17 +185,13 @@ impl Actor for GameServer {
 			Ok(child) => Arc::new(child),
 			Err(err) => {
 				release_child_port(child_port).await;
-				// A failed start is this actor's alone and does not take the
-				// instance down. The container stays warm and ready for the next
-				// placement, and stays alive long enough for the log agent to
-				// drain the failure logs before the platform reaps it.
+				// A failed start is this actor's alone; it does not take down others.
 				return Err(err);
 			}
 		};
 
-		// The global registry lets the process shutdown path stop children
-		// even when actor hooks never run, and arbitrates the deliberate-stop
-		// vs unexpected-exit race for the watchdog in `run`.
+		// The global registry lets the shutdown path stop children when hooks never
+		// run, and arbitrates the deliberate-stop vs unexpected-exit race in `run`.
 		if children()
 			.insert_async(actor_id.clone(), child.clone())
 			.await
@@ -221,19 +202,16 @@ impl Actor for GameServer {
 			release_child_port(child_port).await;
 			anyhow::bail!("a child for actor {actor_id} is already registered");
 		}
-		// Register only now that startup has succeeded. Registering earlier would
-		// leak an entry for any generation whose start failed, since a failed
-		// start never runs on_destroy/on_sleep to remove it.
+		// Register only after startup succeeds; a failed start never runs a stop
+		// hook to remove the entry, so registering earlier would leak it.
 		register_ctx(&actor_id, &ctx).await;
 		*self.child.lock().await = Some(child);
 		Ok(())
 	}
 
-	/// Watchdog: waits for the child to exit. Deliberate stops remove the
-	/// child from the global registry first, so winning the `remove` race
-	/// means the exit was unexpected and the actor must be torn down. A clean
-	/// exit (code 0) destroys the actor; any other exit returns an error so
-	/// the framework reports an errored stop and the engine records the crash.
+	/// Watchdog for the child exiting. Deliberate stops remove it from the registry
+	/// first, so winning the `remove` race means the exit was unexpected: a clean
+	/// exit destroys the actor, any other reports an errored stop (a crash).
 	async fn run(self: Arc<Self>, ctx: Ctx<Self>) -> Result<()> {
 		let Some(child) = self.child.lock().await.clone() else {
 			anyhow::bail!("run: child process was never spawned");
@@ -294,10 +272,8 @@ impl Actor for GameServer {
 		crate::proxy::ws_proxy(child_port, path, ws).await
 	}
 
-	/// Engine-initiated sleep. `no_sleep` suppresses idle sleep, but the
-	/// engine can still sleep an actor (dashboard, crash policy, eviction
-	/// ahead of instance retirement); leaving the child running would orphan
-	/// it on an instance the engine considers vacated.
+	/// Engine-initiated sleep. `no_sleep` blocks only idle sleep; the engine can
+	/// still sleep an actor (dashboard, crash policy, eviction), so we stop the child.
 	async fn on_sleep(self: Arc<Self>, ctx: Ctx<Self>) -> Result<()> {
 		self.drain_then_stop_child(ctx.actor_id(), "actor sleeping").await;
 		Ok(())
@@ -318,10 +294,9 @@ async fn register_ctx(actor_id: &str, ctx: &Ctx<GameServer>) {
 		.await;
 }
 
-/// Report every live actor on this instance as crashed. Called when the
-/// platform reclaims the container (an unexpected SIGTERM) so the reclaim
-/// surfaces as a crash on the engine instead of a silent reallocation. Runs
-/// while the envoy is still connected so the crash reaches the engine.
+/// Report every live actor as crashed. Called when the platform reclaims the
+/// container (unexpected SIGTERM), while the envoy is still connected, so the
+/// reclaim surfaces as a crash on the engine instead of a silent reallocation.
 pub async fn crash_all_actors(message: &str) {
 	let mut ctxs = Vec::new();
 	ACTOR_CTXS

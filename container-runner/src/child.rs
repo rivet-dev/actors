@@ -1,9 +1,8 @@
 //! Child game-server process management: spawn, log piping, readiness, SIGTERM stop.
 //!
-//! Ownership model: a dedicated "reaper" task exclusively owns the `tokio::process::Child`
-//! and awaits its exit, publishing the result on a `watch` channel. `stop()` and readiness
-//! checks signal/observe via the pid and the watch channel, so they never contend for the
-//! child handle (which would deadlock against the reaper's long-lived `wait()`).
+//! A dedicated reaper task owns the `tokio::process::Child` and publishes its exit on a
+//! `watch` channel; `stop()` and readiness checks signal/observe via the pid and channel,
+//! so they never contend for the child handle (which would deadlock the reaper's `wait()`).
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -72,12 +71,9 @@ impl ChildProcess {
 
 		let prefix = log_prefix(&actor_id, key.as_deref());
 
-		// Guarantee the child port is free BEFORE spawning. Otherwise a stale child from a
-		// prior start (in a reused container instance) still holding the port would make
-		// `wait_until_ready` below false-positive: it connects to the OLD listener and
-		// reports the NEW child "ready" even though the new child failed to bind
-		// (`Address already in use`) and is dead. Refuse the start with a clear diagnostic
-		// instead — this container hosts exactly one game server on a fixed port.
+		// Refuse to spawn if the port is already taken. A stale child from a prior start
+		// still holding it would make `wait_until_ready` false-positive on the OLD listener
+		// while the new child dies with `Address already in use`.
 		if TcpStream::connect((Ipv4Addr::LOCALHOST, child_port))
 			.await
 			.is_ok()
@@ -85,7 +81,7 @@ impl ChildProcess {
 			anyhow::bail!(
 				"child port {child_port} is already in use before spawning `{program}`: a \
                  previous game server is still running in this container. container-runner \
-                 hosts one actor per container — configure the serverless runner with \
+                 hosts one actor per container; configure the serverless runner with \
                  max_concurrent_actors=1 and platform request concurrency=1."
 			);
 		}
@@ -143,9 +139,8 @@ impl ChildProcess {
 			exited_rx,
 		};
 
-		// If the child crashes before opening its port, or never opens it, make sure we
-		// don't leave it running: kill it before surfacing the start failure. (The reaper
-		// task owns the tokio Child, so dropping `this` alone would NOT kill a hung child.)
+		// Kill the child before surfacing a readiness failure; dropping `this` alone would
+		// not (the reaper owns the tokio Child), leaving a hung child running.
 		if let Err(err) = this.wait_until_ready(readiness_timeout).await {
 			this.stop(Duration::from_secs(2)).await;
 			return Err(err);
