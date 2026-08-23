@@ -58,7 +58,7 @@ const ServiceDependentNumber = Schema.Number.pipe(
 	),
 );
 
-class ServiceDependentError extends Schema.TaggedErrorClass<ServiceDependentError>()(
+class ServiceDependentError extends Schema.TaggedError<ServiceDependentError>()(
 	"ServiceDependentError",
 	{
 		limit: ServiceDependentNumber,

@@ -14,7 +14,7 @@ import { db } from "rivetkit/db";
 
 // --- Counter ---
 
-export class CounterOverflowError extends Schema.TaggedErrorClass<CounterOverflowError>()(
+export class CounterOverflowError extends Schema.TaggedError<CounterOverflowError>()(
 	"CounterOverflowError",
 	{
 		limit: Schema.Number,
@@ -121,7 +121,7 @@ const ScaledNumber = Schema.Number.pipe(
 	),
 );
 
-export class ScaledOverflowError extends Schema.TaggedErrorClass<ScaledOverflowError>()(
+export class ScaledOverflowError extends Schema.TaggedError<ScaledOverflowError>()(
 	"ScaledOverflowError",
 	{
 		limit: ScaledNumber,
