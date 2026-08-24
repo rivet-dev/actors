@@ -34,11 +34,11 @@
 	"dependencies": {
 		"@hono/node-server": "^1.19.1",
 		"@hono/node-ws": "^1.2.0",
-		"@rivetkit/react": "^2.3.6",
+		"@rivetkit/react": "^2.3.7",
 		"hono": "^4.7.0",
 		"react": "^18.3.1",
 		"react-dom": "^18.3.1",
-		"rivetkit": "^2.3.6",
+		"rivetkit": "^2.3.7",
 		"ws": "^8.18.0"
 	},
 	"license": "MIT"

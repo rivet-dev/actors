@@ -1,17 +1,17 @@
 ---
 name: create-launch-post
-description: Create and publish concise Rivet launch or changelog posts through an approval-gated workflow, including release research, a required user-selected painting, local HTML-rendered social and technical images, an R2 hero upload, MDX authoring, a reviewed draft GitHub PR for manual merge, and a scheduled and verified Buffer thread for @rivet_dev. Use when asked to launch, announce, ship, or prepare and schedule a Rivet feature or release announcement.
+description: Create and publish concise Rivet launch or changelog posts through an approval-gated workflow, including release research, a required user-selected hero variation, local HTML-rendered social and technical images, an R2 hero upload, MDX authoring, a reviewed draft GitHub PR for manual merge, and a scheduled and verified Buffer thread for @rivet_dev. Use when asked to launch, announce, ship, or prepare and schedule a Rivet feature or release announcement.
 ---
 
 # Create Launch Post
 
-Prepare a complete, deliberately short launch. Keep the launch date, painting, social copy, Buffer schedule, and final GitHub merge as user-owned checkpoints. Opening the draft PR is not completion.
+Prepare a complete, deliberately short launch. Keep the launch date, hero variation, social copy, Buffer schedule, and final GitHub merge as user-owned checkpoints. Opening the draft PR is not completion.
 
 ## Workflow contract
 
 Run these phases in order:
 
-1. Accept the user's launch context, research the release, confirm the launch date, and ask the user for the painting. Never silently choose the painting.
+1. Accept the user's launch context, research the release, confirm the launch date, and ask the user which hero variation to use. Never silently choose the variation or the painting.
 2. Render the 2:1 blog hero and social image. Upload only the blog hero; keep social and technical assets local.
 3. Write and validate the blog post, upload the hero, and push an initial draft PR.
 4. Give the user one review packet containing the draft PR, social image, first technical-image draft, four Buffer main-post options, and the proposed reply thread. If the feature has meaningful Dashboard, Inspector, or other product UI, recommend adding a clean screenshot and ask the user to provide it or approve capturing it. Iterate on the post, PR, technical image, optional UI screenshot, and social copy until the user approves them. Push every approved blog revision to the same PR.
@@ -27,12 +27,12 @@ Do not declare the launch ready until all three acceptance gates pass:
 
 Use subagents in bounded waves when concurrency is available. Keep the main agent as the only user-facing orchestrator and the sole owner of tracked-file edits, asset uploads, `jj` operations, GitHub writes, Buffer mutations, and tunnel lifecycle. Give subagents read-only repository work or a unique output directory outside the repository; never let multiple agents edit the same worktree or perform the same external action.
 
-Start wave 1 while the main agent asks for the painting and confirms the date:
+Start wave 1 while the main agent asks for the hero variation and confirms the date:
 
 1. **Release researcher:** Inspect the source PR, implementation, tests, examples, and docs. Return verified public API syntax, constraints, shipped terminology, and candidate documentation and GitHub links with file or URL evidence.
 2. **Post-format researcher:** Review at least three recent concise Rivet changelog posts. Return the shared structure, tone, frontmatter conventions, slug rules, and useful examples without editing files.
 
-After the painting and release facts are available, start wave 2 in parallel:
+After the hero variation and release facts are available, start wave 2 in parallel:
 
 1. **Visual worker:** Run the bundled renderer in a unique external output directory. Produce the hero, social image, and first technical-image draft; report paths, dimensions, checksums, and visual concerns. Never upload or commit them.
 2. **Blog-draft worker:** Return a concise MDX draft grounded in the verified API and generic launch structure. Do not write the tracked post file.
@@ -40,7 +40,7 @@ After the painting and release facts are available, start wave 2 in parallel:
 
 The main agent must reconcile those outputs, verify facts against source, write the MDX, choose what to show the user, and own the approval loop. After integration, use one read-only **QA subagent** to inspect the final diff, post code, URLs, frontmatter/date, rendered images, Buffer payload, and `jj status`. Require it to report concrete defects only; the main agent applies any fixes and reruns focused checks.
 
-Do not delegate user checkpoints or final side effects. The main agent must personally confirm the painting, date, copy, thread, exact schedule, PR state, account/channel, media, and final verification.
+Do not delegate user checkpoints or final side effects. The main agent must personally confirm the hero variation, date, copy, thread, exact schedule, PR state, account/channel, media, and final verification.
 
 ## 1. Work locally and research the release
 
@@ -73,8 +73,14 @@ Do not remove the date prefix. The Astro routes derive the slug with `entry.id.r
 
 ## 2. Render the launch images
 
-1. Ask the user to choose and provide a painting. This is a required creative checkpoint; do not select one silently. Ask for the source or confirm that it is safe to publish.
-2. Use the repository renderer; do not use Figma. Pass a short feature name such as `Cron Jobs` as the social title:
+Ask the user which hero variation to use before rendering anything. This is a required creative checkpoint; never choose the variation silently. Both variations write `image.png` at `2048x1024` for the blog hero and `social.png` at `2048x1238` for distribution, so every later phase is identical regardless of which one is chosen. Use the repository renderers; do not use Figma.
+
+### Variation A — painting
+
+The default editorial treatment: a full-bleed painting with the launch title beneath it. Best when the launch is a product or capability announcement with no natural logo lockup.
+
+1. Ask the user to choose and provide a painting. Ask for the source or confirm that it is safe to publish.
+2. Pass a short feature name such as `Cron Jobs` as the social title:
 
 ```bash
 pnpm --dir website render-launch-images -- \
@@ -83,8 +89,24 @@ pnpm --dir website render-launch-images -- \
   --output-dir "$OUTPUT_DIR"
 ```
 
-3. The renderer writes `image.png` as the `2048x1024` blog crop, plus `social.html` and its `2048x1238` screenshot as `social.png`. The social card uses the Rivet launch layout, Perfectly Nineties Semibold, and the repository wordmark without Figma.
-4. If the source is already 2:1, preserve its composition and only normalize it to `2048x1024`. Otherwise, visually inspect both PNGs and rerun with `--focal-x <0..1>` and/or `--focal-y <0..1>` if the crop misses the subject. Do not hand-edit the output.
+3. If the source is already 2:1, preserve its composition and only normalize it to `2048x1024`. Otherwise, visually inspect both PNGs and rerun with `--focal-x <0..1>` and/or `--focal-y <0..1>` if the crop misses the subject. Do not hand-edit the output.
+
+### Variation B — logo tiles
+
+The Rivet wordmark above the launch title, over two to four product logos in rotated rounded "app tiles" with the middle tile dominant. Best when the launch is an integration or a combination of named technologies, where the logo lockup states the story faster than prose. The tile treatment matches the agentOS launch graphics and the landing page's floating-agent tiles.
+
+1. Ask the user which logos belong in the lockup and in what order. Order is left to right, and with three tiles the middle one is the largest, so put the subject of the launch in the middle.
+2. Collect an SVG per logo. Reuse repository marks where they exist (`website/src/images/products/`, `website/public/images/registry/`), fall back to the vendored marks in `.claude/skills/create-launch-post/assets/logos/`, and vendor any new mark there. Marks authored white for dark UIs are recolored to the site ink automatically, so a white-on-transparent SVG is fine.
+3. Pass the full post title rather than a short feature name; this layout has room for a sentence-length title:
+
+```bash
+pnpm --dir website render-tile-images -- \
+  --title "$POST_TITLE" \
+  --logos "$LOGO_A,$LOGO_B,$LOGO_C" \
+  --output-dir "$OUTPUT_DIR"
+```
+
+4. Inspect both PNGs. If a title wraps to a third line or a tile crowds the title, shorten the title rather than hand-editing the output. Tile geometry lives in `TILE_LAYOUTS` in the renderer; change it there if a lockup genuinely needs different placement.
 
 When short code demonstrations would help launch distribution, create a temporary JSON file outside the repository with one to four sections:
 
@@ -98,7 +120,7 @@ When short code demonstrations would help launch distribution, create a temporar
 ]
 ```
 
-Render the technical image directly without generating painting, hero, or social assets:
+Render the technical image directly without generating hero or social assets:
 
 ```bash
 pnpm --dir website render-technical-image -- \
@@ -241,4 +263,4 @@ Never commit the distribution image or tunnel URL, and never upload it to Rivet 
 
 If Buffer access, the verified company account, or threaded scheduling is unavailable, return the approved copy and exact schedule as a handoff. Never claim that the thread was scheduled.
 
-If the painting, asset credentials, or release API is missing, complete the safe independent work and report the exact remaining checkpoint instead of fabricating it.
+If the hero variation, painting, logo marks, asset credentials, or release API is missing, complete the safe independent work and report the exact remaining checkpoint instead of fabricating it.

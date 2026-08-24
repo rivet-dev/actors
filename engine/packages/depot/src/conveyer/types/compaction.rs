@@ -61,14 +61,14 @@ macro_rules! impl_compaction_versioned_data {
 
 			fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 				match version {
-					1 => Ok(Self::V1(serde_bare::from_slice(payload)?)),
+					1 => Ok(Self::V1(rivet_util::serde::bare_from_slice!(payload)?)),
 					_ => bail!("invalid depot {} version: {version}", $name),
 				}
 			}
 
 			fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 				match self {
-					Self::V1(data) => serde_bare::to_vec(&data).map_err(Into::into),
+					Self::V1(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 				}
 			}
 		}

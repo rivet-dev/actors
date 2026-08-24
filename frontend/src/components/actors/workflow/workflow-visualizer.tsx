@@ -23,6 +23,7 @@ import {
 } from "react";
 import "@xyflow/react/dist/style.css";
 import { Button, cn, DiscreteCopyButton, WithTooltip } from "@/components";
+import { useTheme } from "@/lib/theme";
 import { ActorObjectInspector } from "../console/actor-inspector";
 import { workflowHistoryToXYFlow } from "./workflow-to-xyflow";
 import type { WorkflowHistory } from "./workflow-types";
@@ -444,6 +445,7 @@ function WorkflowGraph({
 }) {
 	const { fitView } = useReactFlow();
 	const nodesInitialized = useNodesInitialized();
+	const { theme } = useTheme();
 
 	useEffect(() => {
 		if (!nodesInitialized || nodes.length === 0) {
@@ -474,6 +476,7 @@ function WorkflowGraph({
 			nodesConnectable={false}
 			edgesReconnectable={false}
 			proOptions={{ hideAttribution: true }}
+			colorMode={theme}
 		>
 			<Background
 				variant={BackgroundVariant.Dots}

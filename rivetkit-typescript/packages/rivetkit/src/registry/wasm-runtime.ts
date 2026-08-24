@@ -21,6 +21,7 @@ import type {
 	RegistryHandle,
 	RuntimeActorConfig,
 	RuntimeActorKeySegment,
+	RuntimeApplicationListenerConfig,
 	RuntimeBytes,
 	RuntimeHttpRequest,
 	RuntimeInspectorSnapshot,
@@ -322,6 +323,16 @@ export class WasmCoreRuntime implements CoreRuntime {
 	): Promise<void> {
 		throw new Error(
 			"registry.listen() is not supported on the wasm runtime; use registry.serve() and mount the handler in your platform's HTTP server instead",
+		);
+	}
+
+	async serveApplicationListener(
+		_registry: RegistryHandle,
+		_listener: RuntimeApplicationListenerConfig,
+		_config: RuntimeServeConfig,
+	): Promise<void> {
+		throw new Error(
+			"registry.listen() is not supported on the wasm runtime; use an application-owned HTTP server instead",
 		);
 	}
 

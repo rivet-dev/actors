@@ -27,11 +27,11 @@
 		"@durable-streams/client": "https://pkg.pr.new/rivet-dev/durable-streams/@durable-streams/client@0323b8b",
 		"@durable-streams/server": "https://pkg.pr.new/rivet-dev/durable-streams/@durable-streams/server@0323b8b",
 		"@durable-streams/writer": "https://pkg.pr.new/rivet-dev/durable-streams/@durable-streams/writer@0323b8b",
-		"@rivetkit/react": "^2.3.6",
+		"@rivetkit/react": "^2.3.7",
 		"ai": "^4.0.38",
 		"react": "^18.2.0",
 		"react-dom": "^18.2.0",
-		"rivetkit": "^2.3.6",
+		"rivetkit": "^2.3.7",
 		"zod": "^4.1.0"
 	},
 	"license": "MIT"

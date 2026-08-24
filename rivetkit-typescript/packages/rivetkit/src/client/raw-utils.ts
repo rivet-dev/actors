@@ -3,6 +3,7 @@ import {
 	PATH_WEBSOCKET_PREFIX,
 } from "@/common/actor-router-consts";
 import { deconstructError } from "@/common/utils";
+import { isRequestLike, isUrlLike } from "@/common/fetch-like";
 import type {
 	EngineControlClient,
 	GatewayRequestOptions,
@@ -28,9 +29,9 @@ export async function rawHttpFetch(
 
 	if (typeof input === "string") {
 		path = input;
-	} else if (input instanceof URL) {
+	} else if (isUrlLike(input)) {
 		path = input.pathname + input.search;
-	} else if (input instanceof Request) {
+	} else if (isRequestLike(input)) {
 		// Extract path from Request URL
 		const url = new URL(input.url);
 		path = url.pathname + url.search;

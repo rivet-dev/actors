@@ -14,6 +14,11 @@ pub(crate) const DEFAULT_NAMESPACE: &str = "production";
 pub(crate) const LOCAL_NAMESPACE: &str = "default";
 pub(crate) const POOL_NAME: &str = "default";
 pub(crate) const SUPABASE_FN_DEFAULT: &str = "rivet";
+/// Supabase runs the edge runtime in a container, so the handler reaches the
+/// engine on the host through Docker's host alias instead of loopback.
+/// `supabase functions serve` supplies the `host-gateway` mapping on Linux;
+/// Docker Desktop provides the alias on macOS and Windows.
+pub(crate) const SUPABASE_ENGINE_ENDPOINT: &str = "http://host.docker.internal:6420";
 
 #[derive(Parser)]
 #[command(name = "rivet", version, about = "Rivet CLI")]
@@ -32,8 +37,12 @@ enum Commands {
 	Deploy(commands::deploy::Opts),
 	/// View logs for your Rivet Compute instances.
 	Logs(commands::logs::Opts),
+	/// Manage compute pools.
+	Pool(commands::pool::Opts),
 	/// Install the GitHub Actions workflow that deploys to Rivet Cloud.
 	SetupCi(commands::setup_ci::Opts),
+	/// Mint a namespace-scoped token.
+	Token(commands::token::Opts),
 }
 
 #[tokio::main]
@@ -46,7 +55,9 @@ async fn main() -> Result<()> {
 		Commands::Engine(opts) => opts.execute().await,
 		Commands::Deploy(opts) => opts.execute().await,
 		Commands::Logs(opts) => opts.execute().await,
+		Commands::Pool(opts) => opts.execute().await,
 		Commands::SetupCi(opts) => opts.execute().await,
+		Commands::Token(opts) => opts.execute().await,
 	}
 }
 

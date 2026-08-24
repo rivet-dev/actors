@@ -145,7 +145,7 @@ impl<'a, T: Signal + Serialize> SignalBuilder<'a, T> {
 			let db_write_duration;
 
 			// Serialize input
-			let input_val = serde_json::value::to_raw_value(&self.body)
+			let input_val = rivet_util::serde::json_to_raw_value!(&self.body)
 				.map_err(WorkflowError::SerializeSignalBody)?;
 
 			match (

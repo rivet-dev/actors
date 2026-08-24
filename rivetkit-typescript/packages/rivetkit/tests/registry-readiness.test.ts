@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { actor } from "@/actor/mod";
-import { type RegistryDeps, Registry } from "@/registry";
+import { Registry, type RegistryDeps } from "@/registry";
 import type {
 	CoreRuntime,
 	RegistryHandle,
+	RuntimeApplicationFetch,
 	RuntimeServeConfig,
 } from "@/registry/runtime";
 
@@ -22,7 +23,14 @@ function deferred<T = void>() {
 function createRegistry() {
 	const ready = deferred();
 	const serve = deferred();
-	const calls = { build: 0, serve: 0, ready: 0 };
+	const listener = deferred();
+	const calls: {
+		build: number;
+		serve: number;
+		ready: number;
+		listener: number;
+		application?: RuntimeApplicationFetch;
+	} = { build: 0, serve: 0, ready: 0, listener: 0 };
 	const runtime = {
 		kind: "napi",
 		serveRegistry: () => {
@@ -32,6 +40,14 @@ function createRegistry() {
 		waitRegistryReady: () => {
 			calls.ready += 1;
 			return ready.promise;
+		},
+		serveApplicationListener: (
+			_registry: RegistryHandle,
+			config: { application: RuntimeApplicationFetch },
+		) => {
+			calls.listener += 1;
+			calls.application = config.application;
+			return listener.promise;
 		},
 		shutdownRegistry: async () => {},
 	} as unknown as CoreRuntime;
@@ -55,7 +71,7 @@ function createRegistry() {
 				buildConfiguredRegistry as RegistryDeps["buildConfiguredRegistry"],
 		},
 	);
-	return { registry, ready, serve, calls };
+	return { registry, ready, serve, listener, calls };
 }
 
 describe("Registry.startAndWait", () => {
@@ -71,11 +87,21 @@ describe("Registry.startAndWait", () => {
 
 		expect(second).toBe(first);
 		await vi.waitFor(() => expect(calls.ready).toBe(1));
-		expect(calls).toEqual({ build: 1, serve: 1, ready: 1 });
+		expect(calls).toMatchObject({
+			build: 1,
+			serve: 1,
+			ready: 1,
+			listener: 0,
+		});
 
 		ready.resolve();
 		await Promise.all([first, second, registry.startAndWait()]);
-		expect(calls).toEqual({ build: 1, serve: 1, ready: 1 });
+		expect(calls).toMatchObject({
+			build: 1,
+			serve: 1,
+			ready: 1,
+			listener: 0,
+		});
 	});
 
 	test("surfaces and retains a startup failure", async () => {
@@ -98,7 +124,12 @@ describe("Registry.startAndWait", () => {
 		await expect(registry.startAndWait()).rejects.toThrow(
 			"cannot run after shutdown has begun",
 		);
-		expect(calls).toEqual({ build: 0, serve: 0, ready: 0 });
+		expect(calls).toMatchObject({
+			build: 0,
+			serve: 0,
+			ready: 0,
+			listener: 0,
+		});
 	});
 
 	test("rejects the WebAssembly runtime before building it", async () => {
@@ -126,7 +157,10 @@ describe("Registry.startAndWait", () => {
 		const registry = new Registry(
 			{ use: { test: testActor }, startEngine: false, noWelcome: true },
 			{
-				buildConfiguredRegistry: (() => new Promise(() => {})) as RegistryDeps["buildConfiguredRegistry"],
+				buildConfiguredRegistry: (() =>
+					new Promise(
+						() => {},
+					)) as RegistryDeps["buildConfiguredRegistry"],
 			},
 		);
 
@@ -136,5 +170,46 @@ describe("Registry.startAndWait", () => {
 		);
 		await vi.advanceTimersByTimeAsync(30_000);
 		await assertion;
+	});
+
+	test("listen with an application starts envoy and the application listener", async () => {
+		const { registry, ready, serve, listener, calls } = createRegistry();
+		const listenPromise = registry.listen({
+			port: 3000,
+			application: {
+				fetch: async (request) =>
+					new Response(
+						`application:${new URL(request.url).pathname}`,
+						{
+							status: 201,
+						},
+					),
+			},
+		});
+
+		await vi.waitFor(() => {
+			expect(calls).toMatchObject({
+				build: 1,
+				serve: 1,
+				ready: 1,
+				listener: 1,
+			});
+		});
+		expect(calls.application).toBeDefined();
+		const response = await calls.application?.({
+			method: "GET",
+			url: "http://internal/health",
+			headers: {},
+			body: new Uint8Array(),
+		});
+		expect(response?.status).toBe(201);
+		expect(new TextDecoder().decode(response?.body)).toBe(
+			"application:/health",
+		);
+
+		ready.resolve();
+		listener.resolve();
+		serve.resolve();
+		await listenPromise;
 	});
 });

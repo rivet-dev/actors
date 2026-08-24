@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use reqwest::{Method, StatusCode};
@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use tokio::time::sleep;
 use url::Url;
 
-use crate::{POOL_NAME, util::encode};
+use crate::util::encode;
 
 #[derive(Deserialize)]
 pub struct TokenInspectResponse {
@@ -18,6 +18,11 @@ pub struct TokenInspectResponse {
 #[derive(Deserialize)]
 pub struct NamespaceResponse {
 	pub namespace: Namespace,
+}
+
+#[derive(Deserialize)]
+struct TokenResponse {
+	token: String,
 }
 
 #[derive(Deserialize)]
@@ -66,6 +71,57 @@ struct ManagedPoolError {
 	message: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedPoolsListResponse {
+	managed_pools: Vec<PoolSummary>,
+	pagination: Option<Pagination>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolSummary {
+	pub name: String,
+	pub status: Option<String>,
+	#[serde(default)]
+	pub config: Option<PoolConfig>,
+	#[serde(default)]
+	pub error: Option<PoolError>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolConfig {
+	pub display_name: Option<String>,
+	#[serde(default)]
+	pub image: Option<ImageRef>,
+	#[serde(default)]
+	pub resources: Option<PoolResources>,
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	pub environment: BTreeMap<String, String>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct ImageRef {
+	pub repository: String,
+	pub tag: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolResources {
+	pub cpu: Option<f64>,
+	pub memory: Option<String>,
+	pub min_scale: Option<u32>,
+	pub max_scale: Option<u32>,
+	pub instance_request_concurrency: Option<u32>,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct PoolError {
+	pub message: String,
+}
+
 pub struct CloudClient {
 	http: reqwest::Client,
 	base: Url,
@@ -81,22 +137,44 @@ impl CloudClient {
 		})
 	}
 
+	/// Builds an authenticated JSON request. A bodyless non-GET request gets an
+	/// explicit `Content-Length: 0`, since some Cloud API frontends (e.g.
+	/// Google's load balancer) reject a bodyless POST/PUT/DELETE with 411 Length
+	/// Required.
+	fn build_request(
+		&self,
+		method: Method,
+		path: &str,
+		body: Option<Value>,
+	) -> Result<reqwest::RequestBuilder> {
+		let url = self.base.join(path.trim_start_matches('/'))?;
+		let needs_content_length = !matches!(method, Method::GET | Method::HEAD);
+		let mut request = self
+			.http
+			.request(method, url)
+			.bearer_auth(&self.token)
+			.header("Content-Type", "application/json");
+		match body {
+			Some(body) => request = request.json(&body),
+			None if needs_content_length => {
+				request = request.header(reqwest::header::CONTENT_LENGTH, "0")
+			}
+			None => {}
+		}
+		Ok(request)
+	}
+
 	pub async fn request<T: DeserializeOwned>(
 		&self,
 		method: Method,
 		path: &str,
 		body: Option<Value>,
 	) -> Result<Option<T>> {
-		let url = self.base.join(path.trim_start_matches('/'))?;
-		let mut request = self
-			.http
-			.request(method, url)
-			.bearer_auth(&self.token)
-			.header("Content-Type", "application/json");
-		if let Some(body) = body {
-			request = request.json(&body);
-		}
-		let response = request.send().await.context("Cloud API request failed")?;
+		let response = self
+			.build_request(method, path, body)?
+			.send()
+			.await
+			.context("Cloud API request failed")?;
 		if response.status() == StatusCode::NOT_FOUND {
 			return Ok(None);
 		}
@@ -127,16 +205,11 @@ impl CloudClient {
 		path: &str,
 		body: Option<Value>,
 	) -> Result<Option<T>> {
-		let url = self.base.join(path.trim_start_matches('/'))?;
-		let mut request = self
-			.http
-			.request(method, url)
-			.bearer_auth(&self.token)
-			.header("Content-Type", "application/json");
-		if let Some(body) = body {
-			request = request.json(&body);
-		}
-		let response = request.send().await.context("Cloud API request failed")?;
+		let response = self
+			.build_request(method, path, body)?
+			.send()
+			.await
+			.context("Cloud API request failed")?;
 		let status = response.status();
 		let text = response.text().await.unwrap_or_default();
 		if !status.is_success() {
@@ -257,13 +330,14 @@ pub async fn create_or_update_pool(
 	project: &str,
 	org: &str,
 	namespace: &str,
+	pool: &str,
 	body: Value,
 ) -> Result<()> {
 	let path = format!(
 		"/projects/{}/namespaces/{}/managed-pools/{}?org={}",
 		encode(project),
 		encode(namespace),
-		POOL_NAME,
+		encode(pool),
 		encode(org)
 	);
 	let _: Option<Value> = cloud.request_ok(Method::PUT, &path, Some(body)).await?;
@@ -278,8 +352,11 @@ pub async fn pool_exists(
 	project: &str,
 	org: &str,
 	namespace: &str,
+	pool: &str,
 ) -> Result<bool> {
-	Ok(get_pool(cloud, project, org, namespace).await?.is_some())
+	Ok(get_pool(cloud, project, org, namespace, pool)
+		.await?
+		.is_some())
 }
 
 async fn get_pool(
@@ -287,12 +364,13 @@ async fn get_pool(
 	project: &str,
 	org: &str,
 	namespace: &str,
+	pool: &str,
 ) -> Result<Option<ManagedPool>> {
 	let path = format!(
 		"/projects/{}/namespaces/{}/managed-pools/{}?org={}",
 		encode(project),
 		encode(namespace),
-		POOL_NAME,
+		encode(pool),
 		encode(org)
 	);
 	Ok(cloud
@@ -306,14 +384,18 @@ pub async fn wait_for_pool(
 	project: &str,
 	org: &str,
 	namespace: &str,
+	pool: &str,
 	throw_on_error: bool,
 ) -> Result<()> {
+	// Include the pool name in status logs only when it is not the default, so
+	// the common single-pool case stays uncluttered. A `None` field is omitted.
+	let pool_field = (pool != crate::POOL_NAME).then_some(pool);
 	for _ in 0..180 {
-		let pool = get_pool(cloud, project, org, namespace)
+		let pool = get_pool(cloud, project, org, namespace, pool)
 			.await?
 			.context("managed pool disappeared while polling")?;
 		let status = pool.status.unwrap_or_else(|| "unknown".to_string());
-		tracing::info!(%status, "pool status");
+		tracing::info!(pool = pool_field, %status, "pool status");
 		match status.as_str() {
 			"ready" => return Ok(()),
 			"error" if throw_on_error => {
@@ -329,6 +411,95 @@ pub async fn wait_for_pool(
 		}
 	}
 	bail!("timed out waiting for managed pool to become ready")
+}
+
+pub async fn list_pools(
+	cloud: &CloudClient,
+	project: &str,
+	org: &str,
+	namespace: &str,
+) -> Result<Vec<PoolSummary>> {
+	let mut pools = Vec::new();
+	let mut cursor: Option<String> = None;
+	loop {
+		let mut path = format!(
+			"/projects/{}/namespaces/{}/managed-pools?org={}&limit=100",
+			encode(project),
+			encode(namespace),
+			encode(org)
+		);
+		if let Some(cursor) = &cursor {
+			path.push_str(&format!("&cursor={}", encode(cursor)));
+		}
+		let Some(response) = cloud
+			.request::<ManagedPoolsListResponse>(Method::GET, &path, None)
+			.await?
+		else {
+			break;
+		};
+		pools.extend(response.managed_pools);
+		match response.pagination.and_then(|p| p.cursor) {
+			Some(next) => cursor = Some(next),
+			None => break,
+		}
+	}
+	Ok(pools)
+}
+
+/// Deletes a managed pool. The Cloud API is fire-and-forget: it starts the
+/// teardown and returns without waiting for it to finish.
+pub async fn delete_pool(
+	cloud: &CloudClient,
+	project: &str,
+	org: &str,
+	namespace: &str,
+	pool: &str,
+) -> Result<()> {
+	let path = format!(
+		"/projects/{}/namespaces/{}/managed-pools/{}?org={}",
+		encode(project),
+		encode(namespace),
+		encode(pool),
+		encode(org)
+	);
+	let response = cloud
+		.build_request(Method::DELETE, &path, None)?
+		.send()
+		.await
+		.context("Cloud API request failed")?;
+	let status = response.status();
+	if status == StatusCode::NOT_FOUND {
+		bail!("pool not found: {pool}");
+	}
+	if !status.is_success() {
+		let text = response.text().await.unwrap_or_default();
+		bail!("Cloud API error {status}: {text}");
+	}
+	Ok(())
+}
+
+/// Mints a namespace-scoped token via `POST .../tokens/{kind}`, where `kind` is
+/// the Cloud API path segment (`secret`, `publishable`, or `connection`). These
+/// endpoints are get-or-create: repeated calls return the same token.
+pub async fn create_token(
+	cloud: &CloudClient,
+	project: &str,
+	org: &str,
+	namespace: &str,
+	kind: &str,
+) -> Result<String> {
+	let path = format!(
+		"/projects/{}/namespaces/{}/tokens/{}?org={}",
+		encode(project),
+		encode(namespace),
+		kind,
+		encode(org)
+	);
+	let response: TokenResponse = cloud
+		.request_ok(Method::POST, &path, None)
+		.await?
+		.context("token create returned no body")?;
+	Ok(response.token)
 }
 
 pub fn registry_endpoint(cloud_api: &str) -> Result<String> {

@@ -10,6 +10,7 @@ import type {
 	ProjectContext,
 } from "@/app/data-providers/cache";
 import { DevToolbar } from "@/app/dev-toolbar";
+import { ImpersonationBanner } from "@/app/impersonation-banner";
 import { FullscreenLoading } from "@/components";
 import { features } from "@/lib/features";
 
@@ -29,6 +30,7 @@ function CloudRoute() {
 	return (
 		<>
 			<Outlet />
+			<ImpersonationBanner />
 			<DevToolbar />
 			{import.meta.env.DEV ? (
 				<TanStackRouterDevtools position="bottom-right" />

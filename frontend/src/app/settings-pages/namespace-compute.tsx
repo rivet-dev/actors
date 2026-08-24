@@ -1,13 +1,16 @@
 import type { Rivet } from "@rivet-gg/cloud";
-import { faCircleExclamation, Icon } from "@rivet-gg/icons";
+import { faCircleExclamation, faTrash, Icon } from "@rivet-gg/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect } from "react";
+import { useNavigate, useSearch } from "@tanstack/react-router";
+import { type ReactNode, useEffect, useState } from "react";
 import { useFormState } from "react-hook-form";
 import z from "zod";
+import { resolvePoolName } from "@/app/pool-switcher";
 import {
 	Alert,
 	AlertDescription,
 	AlertTitle,
+	Button,
 	Code,
 	cn,
 	createSchemaForm,
@@ -23,6 +26,7 @@ import {
 import { useCloudNamespaceDataProvider } from "@/components/actors";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { features } from "@/lib/features";
 import { SettingsCard } from "./settings-card";
 
 const MEMORY_RE = /^(\d+)(Mi|Gi)$/;
@@ -206,13 +210,25 @@ export function NamespaceComputeContent() {
 function NamespaceComputeContentInner() {
 	const dataProvider = useCloudNamespaceDataProvider();
 
+	const { pool: poolParam } = useSearch({ strict: false });
+	const { data: pools = [] } = useQuery(
+		dataProvider.currentNamespaceManagedPoolsQueryOptions(),
+	);
+	const selectedPool = resolvePoolName(pools, poolParam);
+	// Only non-default pools are deletable (the default anchors resolution) and
+	// only when more than one exists; gated on danger-zone like other
+	// destructive surfaces.
+	const defaultPool = resolvePoolName(pools, undefined);
+	const canDeletePool =
+		features.dangerZone && pools.length > 1 && selectedPool !== defaultPool;
+
 	const {
 		data: pool,
 		isPending,
 		isError,
 	} = useQuery({
 		...dataProvider.currentNamespaceManagedPoolQueryOptions({
-			pool: "default",
+			pool: selectedPool,
 		}),
 		// Poll while a deploy is in flight so the footer button tracks the
 		// pool status; back off entirely once the pool settles.
@@ -246,11 +262,82 @@ function NamespaceComputeContentInner() {
 	}
 
 	return (
+		// Remount on pool switch; RHF only reads defaultValues at mount, so
+		// without this the form keeps the previous pool's values.
 		<ComputeForm
+			key={selectedPool}
+			pool={selectedPool}
+			defaultPool={defaultPool}
+			canDelete={canDeletePool}
 			config={pool.config}
 			status={pool.status}
 			error={pool.error}
 		/>
+	);
+}
+
+// Inline delete control for a non-default pool. Uses the same destroy endpoint
+// as `rivet pool delete`, behind a confirm click like the actor destroy button.
+function DeletePoolButton({
+	pool,
+	defaultPool,
+}: {
+	pool: string;
+	defaultPool: string;
+}) {
+	const dataProvider = useCloudNamespaceDataProvider();
+	const navigate = useNavigate();
+	const queryClient = useQueryClient();
+	const [isConfirming, setIsConfirming] = useState(false);
+
+	const { mutate, isPending } = useMutation({
+		...dataProvider.deleteCurrentNamespaceManagedPoolMutationOptions(),
+		onSuccess: async () => {
+			// Switch back to the default pool before the deleted pool's query
+			// 404s, then refresh the list so the switcher drops it.
+			await navigate({
+				to: ".",
+				search: (old) => ({
+					...(old as Record<string, unknown>),
+					pool: defaultPool,
+				}),
+			});
+			await queryClient.invalidateQueries(
+				dataProvider.currentNamespaceManagedPoolsQueryOptions(),
+			);
+		},
+	});
+
+	// Reset the confirm prompt if the user walks away without confirming,
+	// matching the actor destroy button's dwell window.
+	useEffect(() => {
+		if (!isConfirming) return;
+		const timer = setTimeout(() => setIsConfirming(false), 4000);
+		return () => clearTimeout(timer);
+	}, [isConfirming]);
+
+	return (
+		<Button
+			type="button"
+			isLoading={isPending}
+			variant="destructive-outline"
+			size="sm"
+			startIcon={isConfirming ? undefined : <Icon icon={faTrash} />}
+			onClick={(e) => {
+				e?.stopPropagation();
+				if (e?.shiftKey || isConfirming) {
+					mutate({ pool });
+					return;
+				}
+				setIsConfirming(true);
+			}}
+		>
+			{isPending
+				? "Deleting..."
+				: isConfirming
+					? "Are you sure? This cannot be undone."
+					: "Delete pool"}
+		</Button>
 	);
 }
 
@@ -286,10 +373,16 @@ function PoolErrorAlert({
 }
 
 function ComputeForm({
+	pool,
+	defaultPool,
+	canDelete,
 	config,
 	status,
 	error,
 }: {
+	pool: string;
+	defaultPool: string;
+	canDelete: boolean;
 	config: Rivet.ManagedPoolsGetResponse.ManagedPool.Config;
 	status: Rivet.ManagedPoolsGetResponse.ManagedPool.Status;
 	error: Rivet.ManagedPoolsGetResponse.ManagedPool.Error_ | undefined;
@@ -358,7 +451,7 @@ function ComputeForm({
 					overrides.args = args.length === 0 ? null : args;
 				}
 				await mutateAsync({
-					pool: "default",
+					pool,
 					displayName: config.displayName || "Default",
 					runnerConfig: {
 						maxConcurrentActors: values.maxConcurrentActors,
@@ -380,7 +473,7 @@ function ComputeForm({
 				});
 				await queryClient.invalidateQueries(
 					dataProvider.currentNamespaceManagedPoolQueryOptions({
-						pool: "default",
+						pool,
 					}),
 				);
 				form.reset(values);
@@ -427,7 +520,7 @@ function ComputeForm({
 					/>
 					<NumberField
 						name="instanceRequestConcurrency"
-						label="Instance request concurrency"
+						label="Max actors per container"
 					/>
 				</SettingsCard>
 				<SettingsCard
@@ -449,37 +542,69 @@ function ComputeForm({
 						label="Drain on version upgrade"
 					/>
 				</SettingsCard>
-				<DeployFooter status={status} />
+				<DeployFooter
+					status={status}
+					pool={pool}
+					defaultPool={defaultPool}
+					canDelete={canDelete}
+				/>
 			</div>
 		</Form>
 	);
 }
 
-// Renders the discard/deploy controls once the form has edits or a deploy is
-// in flight, so the tab reads as a plain settings sheet otherwise. While the
-// pool works through a deploy the submit button is locked and tracks the
-// polled pool status.
+// Delete/discard/deploy controls. The deploy side only shows once the form is
+// dirty or a deploy is in flight; the delete button sits on the left.
 function DeployFooter({
 	status,
+	pool,
+	defaultPool,
+	canDelete,
 }: {
 	status: Rivet.ManagedPoolsGetResponse.ManagedPool.Status;
+	pool: string;
+	defaultPool: string;
+	canDelete: boolean;
 }) {
 	const { isDirty } = useFormState<ComputeFormValues>();
+
+	// A tearing-down pool is not a deploy: show "Deleting..." instead of the
+	// deploy button so the footer never reads "Deploying..." during teardown.
+	if (status === "destroying") {
+		return (
+			<div className="flex items-center justify-end">
+				<span className="text-sm font-medium text-destructive">
+					Deleting...
+				</span>
+			</div>
+		);
+	}
+
 	const busy = isPoolBusy(status);
-	if (!isDirty && !busy) return null;
+	const showDeploy = isDirty || busy;
+	if (!showDeploy && !canDelete) return null;
 	return (
-		<div className="flex items-center justify-end gap-2">
-			{isDirty ? (
-				<Reset variant="secondary" size="sm">
-					Discard
-				</Reset>
+		<div className="flex items-center justify-between gap-2">
+			{canDelete ? (
+				<DeletePoolButton pool={pool} defaultPool={defaultPool} />
+			) : (
+				<span />
+			)}
+			{showDeploy ? (
+				<div className="flex items-center gap-2">
+					{isDirty ? (
+						<Reset variant="secondary" size="sm">
+							Discard
+						</Reset>
+					) : null}
+					<Submit
+						size="sm"
+						{...(busy ? { disabled: true, isLoading: true } : {})}
+					>
+						{busy ? "Deploying..." : "Deploy changes"}
+					</Submit>
+				</div>
 			) : null}
-			<Submit
-				size="sm"
-				{...(busy ? { disabled: true, isLoading: true } : {})}
-			>
-				{busy ? "Deploying..." : "Deploy changes"}
-			</Submit>
 		</div>
 	);
 }

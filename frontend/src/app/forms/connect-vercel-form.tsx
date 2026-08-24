@@ -18,7 +18,7 @@ import {
 	SelectValue,
 } from "@/components";
 import { defineStepper } from "@/components/ui/stepper";
-import { useEndpoint } from "../dialogs/connect-manual-serverfull-frame";
+import { useEndpoint } from "../dialogs/connect-manual-serverful-frame";
 import {
 	EnvVariables as EnvVariablesSection,
 	useRivetDsn,

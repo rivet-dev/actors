@@ -49,6 +49,7 @@ function StoryCanvas({ nodes, edges = [] }: { nodes: Node[]; edges?: Edge[] }) {
 					panOnDrag={[1, 2]}
 					edgesFocusable={false}
 					proOptions={{ hideAttribution: true }}
+					colorMode="dark"
 				>
 					<Background
 						variant={BackgroundVariant.Dots}

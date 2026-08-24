@@ -17,7 +17,11 @@ const baseSchedule: InspectorSchedule = {
 
 describe("schedule inspector formatting", () => {
 	test("formats one-time, interval, and cron schedules", () => {
-		const oneTime = { ...baseSchedule, kind: "at" as const, name: undefined };
+		const oneTime = {
+			...baseSchedule,
+			kind: "at" as const,
+			name: undefined,
+		};
 		expect(formatSchedule(oneTime)).toBe(
 			new Intl.DateTimeFormat(undefined, {
 				dateStyle: "medium",

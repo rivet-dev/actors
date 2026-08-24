@@ -1,0 +1,16 @@
+# Runs your Rivet worker as a container against a control plane.
+#
+# RIVET_ENDPOINT points at whichever control plane you are using: Rivet Cloud
+# (from the dashboard) or one you run yourself. See ../../control-plane/.
+services:
+  worker:
+    build: .
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      RIVET_ENDPOINT: ${RIVET_ENDPOINT:?set RIVET_ENDPOINT}
+      RIVET_PUBLIC_ENDPOINT: ${RIVET_PUBLIC_ENDPOINT:?set RIVET_PUBLIC_ENDPOINT}
+    ports:
+      - "8080:8080"
+    # Runners need up to 30 minutes to drain actors on shutdown, plus overhead.
+    stop_grace_period: 35m

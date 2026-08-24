@@ -272,42 +272,42 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # build-wasm — disabled
+  # build-wasm — portable wasm package used by edge runtimes
   # ---------------------------------------------------------------------------
-  # build-wasm:
-  #   needs: [context]
-  #   name: "Build rivetkit-wasm"
-  #   runs-on: depot-ubuntu-24.04-8
-  #   permissions:
-  #     contents: read
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #       with:
-  #         lfs: ${{ needs.context.outputs.trigger == 'release' }}
-  #     - run: corepack enable
-  #     - uses: actions/setup-node@v4
-  #       with:
-  #         node-version: "22"
-  #         cache: pnpm
-  #     - uses: actions-rust-lang/setup-rust-toolchain@v1
-  #       with:
-  #         toolchain: stable
-  #         target: wasm32-unknown-unknown
-  #         rustflags: ""
-  #     - uses: Swatinem/rust-cache@v2
-  #       with:
-  #         shared-key: "rivetkit-wasm-publish"
-  #         cache-on-failure: true
-  #     - name: Install wasm package dependencies
-  #       run: pnpm install --frozen-lockfile --filter=@rivetkit/rivetkit-wasm
-  #     - name: Build wasm package
-  #       run: pnpm --filter=@rivetkit/rivetkit-wasm build
-  #     - name: Upload wasm package artifact
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: wasm-package
-  #         path: rivetkit-typescript/packages/rivetkit-wasm/pkg
-  #         if-no-files-found: error
+  build-wasm:
+    needs: [context]
+    name: "Build rivetkit-wasm"
+    runs-on: depot-ubuntu-24.04-8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: ${{ needs.context.outputs.trigger == 'release' }}
+      - run: corepack enable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+          rustflags: ""
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "rivetkit-wasm-publish"
+          cache-on-failure: true
+      - name: Install wasm package dependencies
+        run: pnpm install --frozen-lockfile --filter=@rivetkit/rivetkit-wasm
+      - name: Build wasm package
+        run: pnpm --filter=@rivetkit/rivetkit-wasm build
+      - name: Upload wasm package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-package
+          path: rivetkit-typescript/packages/rivetkit-wasm/pkg
+          if-no-files-found: error
 
   # ---------------------------------------------------------------------------
   # docker-images — per-arch runtime images pushed to Docker Hub
@@ -374,11 +374,12 @@ jobs:
   # publish — npm publish + R2 upload + Docker manifest + release tail
   # ---------------------------------------------------------------------------
   publish:
-    needs: [context, build, docker-images]
+    needs: [context, build, build-wasm, docker-images]
     name: "Publish"
     if: |
       !cancelled() &&
       needs.build.result == 'success' &&
+      needs.build-wasm.result == 'success' &&
       needs.docker-images.result == 'success'
     runs-on: depot-ubuntu-24.04-8
     permissions:
@@ -430,6 +431,11 @@ jobs:
           path: container-runner-artifacts
           pattern: container-runner-*
           merge-multiple: true
+      - name: Download wasm package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-package
+          path: rivetkit-typescript/packages/rivetkit-wasm/pkg
       - name: Place native binaries in platform packages
         run: |
           NATIVE_DIR=rivetkit-typescript/packages/rivetkit-napi
@@ -554,7 +560,7 @@ jobs:
         run: |
           pnpm build -F rivetkit
           pnpm build -F rivetkit -F '@rivetkit/*' -F '!@rivetkit/shared-data' -F '!@rivetkit/engine-frontend' -F '!@rivetkit/mcp-hub' -F '!@rivetkit/rivetkit-napi' -F '!@rivetkit/rivetkit-wasm'
-          pnpm build -F '@rivet-dev/vercel-world'
+          pnpm build -F '@rivet-dev/workflow-world'
 
       # ---- shared publish (runs for all triggers) ----
       - name: Finalize package versions for publish
@@ -563,6 +569,7 @@ jobs:
       - name: Publish npm packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          SKIP_WASM_BUILD: "1"
         run: |
           pnpm --filter=publish exec tsx src/ci/bin.ts publish-npm \
             --tag ${{ needs.context.outputs.npm_tag }} \

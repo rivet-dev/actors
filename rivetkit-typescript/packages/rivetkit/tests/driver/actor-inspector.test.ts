@@ -5,6 +5,8 @@ import {
 	TO_CLIENT_VERSIONED,
 	TO_SERVER_VERSIONED,
 } from "../../src/inspector/client.browser";
+import type { WorkflowHistory as TransportWorkflowHistory } from "../../src/common/bare/transport/v1";
+import { decodeWorkflowHistoryTransport } from "../../src/common/inspector-transport";
 import { describeDriverMatrix } from "./shared-matrix";
 import { setupDriverTest, waitFor } from "./shared-utils";
 
@@ -770,6 +772,100 @@ describeDriverMatrix("Actor Inspector", (driverTestConfig) => {
 			expect(
 				Object.keys(data.history?.entryMetadata ?? {}).length,
 			).toBeGreaterThan(0);
+
+			await handle.release();
+			// Poll until the released workflow finishes because release() only unblocks the run handler.
+			await vi.waitFor(
+				async () => {
+					expect((await handle.getState()).finishedAt).not.toBeNull();
+				},
+				{ timeout: WORKFLOW_READY_TIMEOUT_MS, interval: 100 },
+			);
+		});
+
+		test("inspector websocket workflow history stays raw BARE", async (c) => {
+			const { client } = await setupDriverTest(c, driverTestConfig);
+			const handle = client.workflowRunningStepActor.getOrCreate([
+				"inspector-workflow-ws-bare",
+				crypto.randomUUID(),
+			]);
+			const gatewayUrl = await handle.getGatewayUrl();
+			const ws = new WebSocket(buildInspectorWebSocketUrl(gatewayUrl), [
+				"rivet",
+				"rivet_inspector_token.token",
+			]);
+			ws.binaryType = "arraybuffer";
+
+			try {
+				await waitForInspectorOpen(ws);
+				await waitForInspectorMessageWithTag(ws, "Init");
+
+				let raw: ArrayBuffer | undefined;
+				// Poll because history stays null until the run handler records its first entry.
+				await vi.waitFor(
+					async () => {
+						const pending = waitForInspectorMessageWithTag(
+							ws,
+							"WorkflowHistoryResponse",
+						);
+						ws.send(
+							TO_SERVER_VERSIONED.serialize(
+								{
+									body: {
+										tag: "WorkflowHistoryRequest",
+										val: { id: 1n },
+									},
+								},
+								INSPECTOR_PROTOCOL_VERSION,
+							),
+						);
+						const body = (await pending).body.val;
+						expect(body.isWorkflowEnabled).toBe(true);
+						expect(body.history).not.toBeNull();
+						raw = body.history as ArrayBuffer;
+					},
+					{
+						timeout: ACTIVE_WORKFLOW_INSPECTOR_TIMEOUT_MS,
+						interval: 250,
+					},
+				);
+
+				// Decoded outside the poll: CBOR-wrapped bytes are a hard
+				// failure, not something that becomes valid on a later attempt.
+				const decoded: TransportWorkflowHistory =
+					decodeWorkflowHistoryTransport(raw as ArrayBuffer);
+				expect(decoded.nameRegistry.length).toBeGreaterThan(0);
+				expect(decoded.entries.length).toBeGreaterThan(0);
+			} finally {
+				ws.close();
+			}
+
+			// `Init` carries history from the same bridge call, so assert it too.
+			// It arrives once per connection, hence a second socket: history is
+			// only guaranteed to be recorded now that the request above saw it.
+			const initWs = new WebSocket(
+				buildInspectorWebSocketUrl(gatewayUrl),
+				["rivet", "rivet_inspector_token.token"],
+			);
+			initWs.binaryType = "arraybuffer";
+
+			try {
+				await waitForInspectorOpen(initWs);
+				const init = await waitForInspectorMessageWithTag(
+					initWs,
+					"Init",
+				);
+				expect(init.body.val.isWorkflowEnabled).toBe(true);
+				expect(init.body.val.workflowHistory).not.toBeNull();
+				// Throws if the bytes were CBOR-wrapped instead of BARE.
+				const initDecoded = decodeWorkflowHistoryTransport(
+					init.body.val.workflowHistory as ArrayBuffer,
+				);
+				expect(initDecoded.nameRegistry.length).toBeGreaterThan(0);
+				expect(initDecoded.entries.length).toBeGreaterThan(0);
+			} finally {
+				initWs.close();
+			}
 
 			await handle.release();
 			// Poll until the released workflow finishes because release() only unblocks the run handler.

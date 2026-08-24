@@ -346,6 +346,7 @@ export interface RuntimeListenerConfig {
 	port: number;
 	host?: string;
 	publicDir?: string;
+	application?: RuntimeApplicationFetch;
 }
 
 export interface RuntimeServerlessRequest {
@@ -353,6 +354,21 @@ export interface RuntimeServerlessRequest {
 	url: string;
 	headers: Record<string, string>;
 	body: RuntimeBytes;
+}
+
+export interface RuntimeApplicationResponse {
+	status: number;
+	headers: Record<string, string>;
+	body: RuntimeBytes;
+}
+
+export type RuntimeApplicationFetch = (
+	request: RuntimeServerlessRequest,
+) => Promise<RuntimeApplicationResponse>;
+
+export interface RuntimeApplicationListenerConfig
+	extends RuntimeListenerConfig {
+	application: RuntimeApplicationFetch;
 }
 
 export interface RuntimeServerlessResponseHead {
@@ -427,6 +443,11 @@ export interface CoreRuntime {
 	serveListener(
 		registry: RegistryHandle,
 		listener: RuntimeListenerConfig,
+		config: RuntimeServeConfig,
+	): Promise<void>;
+	serveApplicationListener(
+		registry: RegistryHandle,
+		listener: RuntimeApplicationListenerConfig,
 		config: RuntimeServeConfig,
 	): Promise<void>;
 	registryHealth?(

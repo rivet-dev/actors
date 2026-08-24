@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use napi::JsObject;
 use napi::bindgen_prelude::{Buffer, Env, Promise};
 use napi::threadsafe_function::{ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction};
+use napi::{JsFunction, JsObject};
 use napi_derive::napi;
 use parking_lot::Mutex as ParkingMutex;
 use rivetkit_core::{
@@ -12,7 +12,9 @@ use rivetkit_core::{
 	ServerlessRequest,
 	registry::CoreEnvoyHandle,
 	serverless::ServerlessStreamError,
-	serverless_http::{self, ListenerConfig},
+	serverless_http::{
+		self, ApplicationFetch, ApplicationRequest, ApplicationResponse, ListenerConfig,
+	},
 };
 use tokio::sync::{Mutex as TokioMutex, Notify};
 use tokio_util::sync::CancellationToken as CoreCancellationToken;
@@ -63,6 +65,13 @@ pub struct JsServerlessRequest {
 pub struct JsServerlessResponseHead {
 	pub status: u16,
 	pub headers: HashMap<String, String>,
+}
+
+#[napi(object)]
+pub struct JsApplicationResponse {
+	pub status: u16,
+	pub headers: HashMap<String, String>,
+	pub body: Buffer,
 }
 
 #[napi(object)]
@@ -416,25 +425,89 @@ impl CoreRegistry {
 		})
 	}
 
-	#[napi]
-	pub async fn serve_listener(
+	#[napi(ts_return_type = "Promise<void>")]
+	pub fn serve_application_listener(
 		&self,
+		env: Env,
+		listener: JsListenerConfig,
+		application: JsFunction,
+		config: JsServeConfig,
+	) -> napi::Result<JsObject> {
+		let application = application_fetch_from_tsfn(create_application_fetch_tsfn(application)?);
+		let shutdown_token = self.shutdown_token.clone();
+		let (deferred, promise) = env.create_deferred::<(), _>()?;
+
+		napi::bindgen_prelude::spawn(async move {
+			let result = async {
+				let port: u16 = listener
+					.port
+					.try_into()
+					.map_err(|_| napi_anyhow_error(anyhow::anyhow!("port out of range")))?;
+				serverless_http::serve_application(
+					ListenerConfig {
+						host: listener.host,
+						port,
+						public_dir: listener.public_dir.map(PathBuf::from),
+						application: None,
+					},
+					application,
+					config.serverless_max_start_payload_bytes as usize,
+					shutdown_token,
+				)
+				.await
+				.map_err(napi_anyhow_error)
+			}
+			.await;
+			match result {
+				Ok(()) => deferred.resolve(|_| Ok(())),
+				Err(error) => deferred.reject(error),
+			}
+		});
+
+		Ok(promise)
+	}
+
+	#[napi(ts_return_type = "Promise<void>")]
+	pub fn serve_listener(
+		&self,
+		env: Env,
 		listener: JsListenerConfig,
 		config: JsServeConfig,
-	) -> napi::Result<()> {
-		let port: u16 = listener
-			.port
-			.try_into()
-			.map_err(|_| napi_anyhow_error(anyhow::anyhow!("port out of range")))?;
-		let listener_config = ListenerConfig {
-			host: listener.host,
-			port,
-			public_dir: listener.public_dir.map(PathBuf::from),
-		};
-		let runtime = self.ensure_serverless_runtime(config).await?;
-		serverless_http::serve(runtime, listener_config, self.shutdown_token.clone())
-			.await
-			.map_err(napi_anyhow_error)
+		application: Option<JsFunction>,
+	) -> napi::Result<JsObject> {
+		let application = application
+			.map(create_application_fetch_tsfn)
+			.transpose()?
+			.map(application_fetch_from_tsfn);
+		let registry = self.clone();
+		let (deferred, promise) = env.create_deferred::<(), _>()?;
+
+		napi::bindgen_prelude::spawn(async move {
+			let result = async {
+				let port: u16 = listener
+					.port
+					.try_into()
+					.map_err(|_| napi_anyhow_error(anyhow::anyhow!("port out of range")))?;
+				let listener_config = ListenerConfig {
+					host: listener.host,
+					port,
+					public_dir: listener.public_dir.map(PathBuf::from),
+					application,
+				};
+				let runtime = registry.ensure_serverless_runtime(config).await?;
+				serverless_http::serve(runtime, listener_config, registry.shutdown_token.clone())
+					.await
+					.map_err(napi_anyhow_error)
+			}
+			.await;
+
+			match result {
+				Ok(()) => deferred.resolve(|_| Ok(())),
+				Err(error) => deferred.reject(error),
+			}
+		});
+
+		Ok(promise)
 	}
 
 	#[napi(ts_return_type = "Promise<JsServerlessResponseHead>")]
@@ -618,6 +691,44 @@ impl CoreRegistry {
 			.clone()
 			.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned())
 	}
+}
+
+type ApplicationFetchTsfn = ThreadsafeFunction<ApplicationRequest, ErrorStrategy::CalleeHandled>;
+
+fn create_application_fetch_tsfn(callback: JsFunction) -> napi::Result<ApplicationFetchTsfn> {
+	callback.create_threadsafe_function(0, |ctx: ThreadSafeCallContext<ApplicationRequest>| {
+		let mut request = ctx.env.create_object()?;
+		request.set("method", ctx.value.method)?;
+		request.set("url", ctx.value.url)?;
+		request.set("headers", ctx.value.headers)?;
+		request.set(
+			"body",
+			ctx.env
+				.create_buffer_with_data(ctx.value.body)?
+				.into_unknown(),
+		)?;
+		Ok(vec![request.into_unknown()])
+	})
+}
+
+fn application_fetch_from_tsfn(callback: ApplicationFetchTsfn) -> ApplicationFetch {
+	Arc::new(move |request| {
+		let callback = callback.clone();
+		Box::pin(async move {
+			let promise = callback
+				.call_async::<Promise<JsApplicationResponse>>(Ok(request))
+				.await
+				.map_err(|error| anyhow::anyhow!("application fetch callback failed: {error}"))?;
+			let response = promise
+				.await
+				.map_err(|error| anyhow::anyhow!("application fetch promise failed: {error}"))?;
+			Ok(ApplicationResponse {
+				status: response.status,
+				headers: response.headers,
+				body: response.body.to_vec(),
+			})
+		})
+	})
 }
 
 fn create_stream_event_tsfn(

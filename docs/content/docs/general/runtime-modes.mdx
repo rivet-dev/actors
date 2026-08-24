@@ -1,0 +1,112 @@
+---
+title: "Runtime Modes"
+description: "RivetKit supports two runtime modes for running your actors:"
+skill: true
+---
+
+export const imgServerless = { src: "https://assets.rivet.dev/website/actors/docs/general/runtime-modes/serverless.png", width: 2533, height: 744, format: "png" };
+export const imgRunners = { src: "https://assets.rivet.dev/website/actors/docs/general/runtime-modes/runners.png", width: 2568, height: 1553, format: "png" };
+
+- **Runner**: Default mode. Runs your actors as a long-lived process that connects out to Rivet. Used for local development and most deployments.
+- **Serverless**: Responds to HTTP requests from Rivet and scales automatically. Used for serverless platforms (Vercel, Cloudflare Workers, etc.) and set automatically by Rivet Cloud.
+
+## Runner
+
+Runner is the default mode. Your app runs as a long-running process that opens a persistent connection out to the Rivet control plane, ready to run actors. The mode is named `envoy` internally, and it is active whenever `RIVETKIT_RUNTIME_MODE` is unset, so no configuration is needed for local development or standard deployments.
+
+### When to Use Runner
+
+- **Local development**: The default when `RIVETKIT_RUNTIME_MODE` is unset.
+- **Containers, VMs, and bare metal**: Long-running hosts such as Railway, Hetzner, Kubernetes, and AWS ECS.
+- **No public endpoint**: Your app connects out to Rivet, so it does not need to be publicly reachable or registered in the dashboard.
+- **Custom scaling**: You control how runner processes are pooled and scaled.
+
+### Example
+
+<CodeSnippet file="examples/docs/general-runtime-modes/runner.ts" title="runner.ts" />
+
+The runner runs in the background, ready to run actors.
+
+### Architecture
+
+On startup, your backend calls `registry.startEnvoy()` (or `registry.start()`, which selects Runner mode by default) to open a persistent connection to the Rivet control plane. When a client creates an actor, the control plane sends a command through this connection to start the actor on your backend.
+
+<img src={imgRunners.src} alt="Runner architecture diagram" />
+
+### Configuration
+
+#### Runner Pool
+
+Use `RIVET_POOL` to assign runners to a pool. This lets you control which runners handle specific actors.
+
+```bash
+RIVET_POOL=gpu-workers
+```
+
+<CodeSnippet file="examples/docs/general-runtime-modes/runner-pool.ts" />
+
+See [Pool Configuration](/actors/docs/general/pool-configuration) for how pools are scaled, drained on version upgrades, and rate-limited during actor eviction.
+
+## Serverless
+
+Serverless runs actor logic in response to HTTP requests from Rivet, allowing your infrastructure to scale automatically. It is used on serverless platforms and is set automatically by Rivet Cloud, which sets `RIVETKIT_RUNTIME_MODE=serverless` on deploy.
+
+### Benefits
+
+- **Platform support**: Works with serverless platforms (Vercel, Cloudflare Workers, etc.)
+- **Scale to zero**: No cost when idle
+- **Edge deployments**: Easier to deploy to edge locations
+- **Preview deployments**: Integrates with preview deployments on platforms like Vercel and Railway
+- **Efficient autoscaling**: Request-based autoscaling can be faster and more efficient than CPU-based autoscaling depending on the platform
+
+### Example
+
+<CodeGroup>
+
+<CodeSnippet file="examples/docs/general-runtime-modes/serverless-direct.ts" title="Direct" />
+
+<CodeSnippet file="examples/docs/general-runtime-modes/serverless-router.ts" title="With-Router" />
+
+</CodeGroup>
+
+See [Server Setup](/actors/docs/general/http-server/) for more configuration options.
+
+### Architecture
+
+When a client creates an actor, it sends a request to the Rivet control plane. The control plane then calls `GET /api/rivet/start` on your serverless backend to run the actor.
+
+<img src={imgServerless.src} alt="Serverless architecture diagram" />
+
+### Advanced
+
+#### Endpoints
+
+Rivet exposes the following endpoints:
+
+- `GET /api/rivet/metadata`: Validates configuration
+- `GET /api/rivet/start`: Runs an actor
+
+You should never call these endpoints yourself, this is included purely for comprehension of how Rivet works under the hood.
+
+#### Timeouts
+
+Serverless platforms like Vercel have function timeouts. Rivet handles this automatically by migrating actors between function invocations, preserving state through `ctx.state`. Write your code as if it runs forever, Rivet handles the rest.
+
+Read more about [how we handle timeouts](/blog/2025-10-20-how-we-built-websocket-servers-for-vercel-functions/#timeouts-and-failover).
+
+#### Shutdown Sequence
+
+Each serverless request has a configurable lifespan (`requestLifespan`, default: 60 minutes). Set this to match your platform's function timeout (e.g. `requestLifespan: 3600` for Vercel Pro).
+
+When the request nears its lifespan, the control plane reserves a grace period (`serverless_drain_grace_period`, default: 10 seconds) at the end to gracefully stop actors. For example, with a 3600-second lifespan, actors begin stopping at 3590 seconds. After the full lifespan elapses, the connection is forcibly closed and any remaining actors are rescheduled.
+
+See [Limits](/actors/docs/limits#serverless-shutdown) for configuration details.
+
+## Comparison
+
+| Mode | Method | Use Case |
+|------|--------|----------|
+| Runner | `registry.startEnvoy()` | Default. Long-running process that connects out to Rivet; no HTTP endpoint. |
+| Auto | `registry.start()` | Selects Runner by default; binds an HTTP listener and serves static files when `RIVETKIT_RUNTIME_MODE=serverless`. |
+| Serverless | `registry.serve()` | Fetch handler for serverless platforms. |
+| Serverless | `registry.handler()` | Integrating with existing routers (Hono, Elysia, etc.). |

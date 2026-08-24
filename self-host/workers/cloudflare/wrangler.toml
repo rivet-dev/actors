@@ -1,0 +1,8 @@
+name = "rivetkit-cloudflare"
+main = "src/index.ts"
+compatibility_date = "2025-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+RIVET_ENDPOINT = "https://your-namespace:sk_...@api.rivet.dev"
+RIVET_PUBLIC_ENDPOINT = "https://your-namespace@api.rivet.dev"

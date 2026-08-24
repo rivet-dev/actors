@@ -133,7 +133,7 @@ impl ActivityEvent {
 	pub fn parse_output<O: DeserializeOwned>(&self) -> WorkflowResult<Option<O>> {
 		self.output
 			.as_ref()
-			.map(|x| serde_json::from_str(x.get()))
+			.map(|x| rivet_util::serde::json_from_str!(x.get()))
 			.transpose()
 			.map_err(WorkflowError::DeserializeActivityOutput)
 	}
@@ -166,13 +166,14 @@ pub struct LoopEvent {
 
 impl LoopEvent {
 	pub fn parse_state<S: DeserializeOwned>(&self) -> WorkflowResult<S> {
-		serde_json::from_str(self.state.get()).map_err(WorkflowError::DeserializeLoopState)
+		rivet_util::serde::json_from_str!(self.state.get())
+			.map_err(WorkflowError::DeserializeLoopState)
 	}
 
 	pub fn parse_output<O: DeserializeOwned>(&self) -> WorkflowResult<Option<O>> {
 		self.output
 			.as_ref()
-			.map(|x| serde_json::from_str(x.get()))
+			.map(|x| rivet_util::serde::json_from_str!(x.get()))
 			.transpose()
 			.map_err(WorkflowError::DeserializeLoopOutput)
 	}

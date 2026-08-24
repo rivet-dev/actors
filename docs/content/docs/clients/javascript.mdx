@@ -1,0 +1,141 @@
+---
+title: "Node.js & Bun"
+description: "Connect JavaScript apps to Rivet Actors."
+skill: true
+---
+
+import { InstallPackage } from "@/components/docs/InstallPackage";
+
+## Getting Started
+
+See the [backend quickstart guide](/actors/docs/quickstart/backend) for getting started.
+
+## Minimal Client
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/clients-javascript/minimal-client/client.ts" title="client.ts" />
+</CodeGroup>
+
+## Stateless vs Stateful
+
+<CodeSnippet file="examples/docs/clients-javascript/stateless-vs-stateful.ts" />
+
+## Getting Actors
+
+<CodeSnippet file="examples/docs/clients-javascript/getting-actors.ts" />
+
+## Connection Parameters
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/clients-javascript/connection-params/params.ts" title="params" />
+<CodeSnippet file="examples/docs/clients-javascript/connection-params/get-params.ts" title="getParams" />
+</CodeGroup>
+
+Use `params` for static connection parameters. Use `getParams` when the value can change between connection attempts, such as refreshing a JWT before each `.connect()` or reconnect.
+
+## Subscribing to Events
+
+<CodeSnippet file="examples/docs/clients-javascript/subscribing-events.ts" />
+
+## Connection Lifecycle
+
+<CodeSnippet file="examples/docs/clients-javascript/connection-lifecycle.ts" />
+
+## Low-Level HTTP & WebSocket
+
+For actors that implement `onRequest` or `onWebSocket`, call them directly:
+
+```ts @nocheck
+import { createClient } from "rivetkit/client";
+
+const client = createClient();
+const handle = client.chatRoom.getOrCreate(["general"]);
+
+const response = await handle.fetch("history");
+const history = await response.json();
+
+const ws = await handle.webSocket("stream");
+ws.addEventListener("message", (event) => {
+  console.log("message:", event.data);
+});
+ws.send("hello");
+```
+
+## Calling from Backend
+
+<CodeSnippet file="examples/docs/clients-javascript/calling-from-backend.ts" />
+
+## Error Handling
+
+<CodeSnippet file="examples/docs/clients-javascript/error-handling.ts" />
+
+## Concepts
+
+### Keys
+
+Keys uniquely identify actor instances. Use compound keys (arrays) for hierarchical addressing:
+
+<CodeGroup>
+<CodeSnippet file="examples/docs/clients-javascript/keys/client.ts" title="client.ts" />
+</CodeGroup>
+
+Don't build keys with string interpolation like `"org:${userId}"` when `userId` contains user data. Use arrays instead to prevent key injection attacks.
+
+### Environment Variables
+
+`createClient()` automatically reads:
+
+- `RIVET_ENDPOINT` (endpoint)
+- `RIVET_NAMESPACE`
+- `RIVET_TOKEN`
+- `RIVET_POOL`
+
+Defaults to `http://localhost:6420` when unset. RivetKit runs on port 6420 by default.
+
+### Endpoint Format
+
+Endpoints support URL auth syntax:
+
+```
+https://namespace:token@api.rivet.dev
+```
+
+You can also pass the endpoint without auth and provide `RIVET_NAMESPACE` and `RIVET_TOKEN` separately. For serverless deployments, use your app's `/api/rivet` URL. See [Endpoints](/actors/docs/general/endpoints#url-auth-syntax) for details.
+
+## Advanced
+
+### Skip Ready Wait
+
+Requests are normally held at the gateway until the actor is ready to accept traffic. An actor is not ready while it's still starting (before `onWake` finishes) or while it's in the [sleep grace period](/actors/docs/lifecycle#shutdown-sequence) (running `onSleep`, `waitUntil`, and pending disconnects).
+
+Pass `skipReadyWait: true` on the [low-level HTTP and WebSocket APIs](#low-level-http--websocket) to deliver immediately and reach the actor's `onRequest` / `onWebSocket` handler in either window:
+
+```ts @nocheck
+import { createClient } from "rivetkit/client";
+
+const client = createClient();
+const handle = client.chatRoom.getOrCreate(["general"]);
+
+const response = await handle.fetch("/healthz", {
+  skipReadyWait: true,
+});
+
+const ws = await handle.webSocket("probe", undefined, {
+  skipReadyWait: true,
+});
+```
+
+Requests can still return transient lifecycle or gateway errors. Retry once the actor is available again.
+
+- `actor.stopping`: the actor has fully stopped, i.e. the sleep grace period has ended but it has not yet restarted.
+- `guard.actor_stopped_while_waiting`: the request reached the actor tunnel, but the actor stopped before the gateway received a response.
+- `guard.tunnel_request_aborted`: the actor tunnel aborted the request before a response started.
+- `guard.tunnel_message_timeout`: the gateway dropped the in-flight tunnel request after its tunnel message timeout.
+- `guard.tunnel_response_closed`: the actor tunnel closed before sending a response.
+- `guard.gateway_response_start_timeout`: the gateway timed out waiting for the actor response to start.
+
+## API Reference
+
+**Package:** [rivetkit](https://www.npmjs.com/package/rivetkit)
+
+See the [RivetKit client overview](/actors/docs/clients).

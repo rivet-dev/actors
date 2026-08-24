@@ -1,0 +1,33 @@
+---
+title: "Actor Statuses"
+description: "Understand the lifecycle statuses of Rivet Actors, what they mean, how they appear in the API, and how to troubleshoot common issues."
+skill: true
+---
+
+## Statuses
+
+These are the statuses you can see in the dashboard for each actor.
+
+| Status | Description |
+|---|---|
+| **Starting** | The actor has been created but has not yet become connectable. |
+| **Running** | The actor is live and accepting connections. |
+| **Destroyed** | The actor has been gracefully destroyed. |
+| **Crashed** | The actor failed to start or encountered a fatal error. See [Troubleshooting](/actors/docs/troubleshooting#actor-status-is-crashed) for common failure reasons. |
+| **Sleeping** | The actor has been put to sleep from inactivity. It will be woken up automatically when a new request arrives. |
+| **Pending** | The actor is waiting to be allocated to a runner. This happens when no runner is available to handle the actor. See [Troubleshooting](/actors/docs/troubleshooting#actor-status-is-pending) for common causes. |
+| **Crash Loop Backoff** | The actor failed to allocate and is waiting to retry with a backoff. This typically means repeated allocation failures. The backoff prevents overloading your infrastructure in the case of a widespread misconfiguration in your backend. See [Troubleshooting](/actors/docs/troubleshooting#actor-status-is-crashed) for common failure reasons. |
+
+## API Representation
+
+The actor object returned by the full engine API (used by the dashboard) includes the following timestamp fields used to derive status:
+
+| Field | Description |
+|---|---|
+| `createTs` | When the actor was first created. Always present. |
+| `connectableTs` | When the actor became connectable. Null if not yet running. |
+| `destroyTs` | When the actor was destroyed. |
+| `sleepTs` | When the actor entered a sleeping state. |
+| `pendingAllocationTs` | When the actor started waiting for an allocation. |
+| `rescheduleTs` | When the actor will retry allocation after a failure. |
+| `error` | Error details if the actor failed. |

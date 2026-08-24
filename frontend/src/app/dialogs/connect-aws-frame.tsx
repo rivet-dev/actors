@@ -1,6 +1,6 @@
 import { faAws, Icon } from "@rivet-gg/icons";
 import { type DialogContentProps, Frame } from "@/components";
-import ConnectManualServerlessFrameContent from "./connect-manual-serverless-frame";
+import ConnectManualServerfulFrameContent from "./connect-manual-serverful-frame";
 
 interface ConnectAwsFrameContentProps extends DialogContentProps {
 	footer?: React.ReactNode;
@@ -23,7 +23,7 @@ export default function ConnectAwsFrameContent({
 				</Frame.Title>
 			</Frame.Header>
 			<Frame.Content>
-				<ConnectManualServerlessFrameContent
+				<ConnectManualServerfulFrameContent
 					provider="aws-ecs"
 					onClose={onClose}
 				/>

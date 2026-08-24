@@ -238,7 +238,7 @@ export class ActorConnRaw {
 			},
 		});
 
-		this.#keepNodeAliveInterval = setInterval(() => 60_000);
+		this.#keepNodeAliveInterval = setInterval(() => {}, 60_000);
 	}
 
 	#clearResolvedActorIdentity() {

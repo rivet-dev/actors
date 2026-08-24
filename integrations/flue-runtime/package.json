@@ -1,0 +1,62 @@
+{
+	"name": "@rivet-dev/flue",
+	"version": "2.3.7",
+	"description": "Run Flue agents and workflows as durable Rivet Actors.",
+	"license": "Apache-2.0",
+	"publishConfig": {
+		"access": "public"
+	},
+	"type": "module",
+	"keywords": [
+		"rivetkit",
+		"rivet",
+		"flue",
+		"agents",
+		"workflows",
+		"actor",
+		"durable",
+		"ai"
+	],
+	"files": [
+		"dist",
+		"README.md"
+	],
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		},
+		"./runtime": {
+			"types": "./dist/runtime.d.ts",
+			"default": "./dist/runtime.js"
+		},
+		"./internal": {
+			"types": "./dist/internal.d.ts",
+			"default": "./dist/internal.js"
+		}
+	},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"scripts": {
+		"build": "rm -rf dist && tsc -p tsconfig.build.json",
+		"check-types": "tsc --noEmit",
+		"check:types": "tsc --noEmit",
+		"test": "pnpm run test:node && pnpm run test:contracts",
+		"test:node": "bash -c 'for file in test/*.test.ts; do case \"$file\" in *contract*) continue ;; esac; tsx --test \"$file\" || exit $?; done'",
+		"test:contracts": "vitest run test/rivet-store-contracts.test.ts"
+	},
+	"dependencies": {
+		"@flue/cli": "npm:@rivet-dev/labs-flue-cli@1.0.0-beta.9-rivet.1",
+		"@flue/runtime": "npm:@rivet-dev/labs-flue-runtime@1.0.0-beta.9-rivet.1",
+		"rivetkit": "workspace:*"
+	},
+	"devDependencies": {
+		"@rivetkit/engine-cli": "workspace:*",
+		"tsx": "^4.22.4",
+		"typescript": "6.0.3",
+		"vitest": "^4.0.15"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

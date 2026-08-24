@@ -1,16 +1,17 @@
-use anyhow::{Context, Result, anyhow, bail};
-use deadpool_postgres::{Pool, Transaction};
+use std::sync::Arc;
+
+use anyhow::{Result, anyhow, bail};
+use deadpool_postgres::Transaction;
 use tokio::sync::{mpsc, oneshot};
 use tokio_postgres::IsolationLevel;
 
 use crate::{
-	atomic::apply_atomic_op,
-	error::DatabaseError,
-	options::{ConflictRangeType, MutationType},
+	options::ConflictRangeType,
 	tx_ops::Operation,
 	value::{KeyValue, Slice, Values},
-	versionstamp::{generate_versionstamp, substitute_raw_versionstamp},
 };
+
+use super::{commit, shared::PostgresShared};
 
 pub enum TransactionCommand {
 	// Read operations
@@ -48,70 +49,57 @@ pub enum TransactionCommand {
 	},
 }
 
-/// TransactionTask runs in a separate tokio task to manage a PostgreSQL transaction.
+/// TransactionTask runs in a separate tokio task to own a single pinned PostgreSQL `REPEATABLE READ`
+/// snapshot connection for the lifetime of a follower transaction.
 ///
-/// This design is necessary because PostgreSQL transactions have lifetime constraints
-/// that don't work well with the FoundationDB-style API. Specifically:
-/// - The transaction must outlive all references to it
-/// - We can't store the transaction in a mutex due to lifetime issues with the connection
-///
-/// By running in a separate task and communicating via channels, we avoid these lifetime
-/// issues while maintaining a single serializable transaction for all operations.
+/// Reads go directly against this snapshot (they never involve the leader). Commits delegate to
+/// [`commit::submit`], which enqueues the request on the leader and awaits the result. The
+/// `read_version` is captured from the cached watermark before the snapshot is opened, so no write
+/// with `commit_version <= read_version` can be invisible to the snapshot.
 pub struct TransactionTask {
-	pool: Pool,
+	shared: Arc<PostgresShared>,
 	receiver: mpsc::UnboundedReceiver<TransactionCommand>,
 }
 
 impl TransactionTask {
-	pub fn new(pool: Pool, receiver: mpsc::UnboundedReceiver<TransactionCommand>) -> Self {
-		Self { pool, receiver }
+	pub fn new(
+		shared: Arc<PostgresShared>,
+		receiver: mpsc::UnboundedReceiver<TransactionCommand>,
+	) -> Self {
+		Self { shared, receiver }
 	}
 
 	pub async fn run(mut self) {
-		// Get connection from pool
-		let mut conn = match self.pool.get().await {
+		// Capture the read version BEFORE opening the snapshot so the snapshot reflects every write
+		// with commit_version <= read_version.
+		let read_version = self.shared.read_version();
+
+		let mut conn = match self.shared.pool.get().await {
 			Ok(conn) => conn,
 			Err(_) => {
-				// If we can't get a connection, respond to all pending commands with errors
 				self.fail_receiver().await;
 				return;
 			}
 		};
 
-		// Start the read transaction
 		let tx = match conn
 			.build_transaction()
 			.isolation_level(IsolationLevel::RepeatableRead)
+			.read_only(true)
 			.start()
 			.await
 		{
 			Ok(tx) => tx,
 			Err(_) => {
-				// If we can't start a transaction, respond to all pending commands with errors
 				self.fail_receiver().await;
 				return;
 			}
 		};
 
-		// TODO: Parallelize future
-		let start_version = match tx
-			.query_one("SELECT nextval('global_version_seq')", &[])
-			.await
-		{
-			Ok(row) => row.get::<_, i64>(0),
-			Err(err) => {
-				tracing::error!(?err, "failed to get postgres txn start_version");
-				self.fail_receiver().await;
-				return;
-			}
-		};
-
-		// Process commands
 		while let Some(cmd) = self.receiver.recv().await {
 			match cmd {
 				TransactionCommand::Get { key, response } => {
 					let result = self.handle_get(&tx, &key).await;
-
 					let _ = response.send(result);
 				}
 				TransactionCommand::GetKey {
@@ -121,7 +109,6 @@ impl TransactionTask {
 					response,
 				} => {
 					let result = self.handle_get_key(&tx, &key, or_equal, offset).await;
-
 					let _ = response.send(result);
 				}
 				TransactionCommand::GetRange {
@@ -148,7 +135,6 @@ impl TransactionTask {
 							reverse,
 						)
 						.await;
-
 					let _ = response.send(result);
 				}
 				TransactionCommand::Commit {
@@ -156,14 +142,12 @@ impl TransactionTask {
 					conflict_ranges,
 					response,
 				} => {
-					let (_, result) = tokio::join!(
-						// Read-only txn, we don't care about the result
-						tx.commit(),
-						self.handle_commit(start_version, operations, conflict_ranges),
-					);
-
+					// The read snapshot is read-only; release it and submit the commit to the leader.
+					let _ = tx.commit().await;
+					let result =
+						commit::submit(&self.shared, read_version, operations, conflict_ranges)
+							.await;
 					let _ = response.send(result);
-					// Exit after commit
 					return;
 				}
 				TransactionCommand::GetEstimatedRangeSize {
@@ -174,13 +158,12 @@ impl TransactionTask {
 					let result = self
 						.handle_get_estimated_range_size(&tx, &begin, &end)
 						.await;
-
 					let _ = response.send(result);
 				}
 			}
 		}
 
-		// If the channel is closed, the transaction will be rolled back when dropped
+		// If the channel is closed, the snapshot transaction is rolled back when dropped.
 	}
 
 	async fn handle_get(&mut self, tx: &Transaction<'_>, key: &[u8]) -> Result<Option<Slice>> {
@@ -234,27 +217,18 @@ impl TransactionTask {
 		reverse: bool,
 	) -> Result<Values> {
 		// Determine SQL operators based on key selector types
-		// For begin selector:
-		// first_greater_or_equal: or_equal = false, offset = 1 -> ">="
-		// first_greater_than: or_equal = true, offset = 1 -> ">"
 		let begin_op = if begin_offset == 1 {
 			if begin_or_equal { ">" } else { ">=" }
 		} else {
-			// This shouldn't happen for begin in range queries
 			">="
 		};
 
-		// For end selector:
-		// first_greater_than: or_equal = true, offset = 1 -> "<="
-		// first_greater_or_equal: or_equal = false, offset = 1 -> "<"
 		let end_op = if end_offset == 1 {
 			if end_or_equal { "<=" } else { "<" }
 		} else {
-			// This shouldn't happen for end in range queries
 			"<"
 		};
 
-		// Build query with CTE that adds conflict range
 		let query = if reverse {
 			if let Some(limit) = limit {
 				format!(
@@ -301,22 +275,22 @@ impl TransactionTask {
 		begin: &[u8],
 		end: &[u8],
 	) -> Result<i64> {
-		// Sample's 1% of the range
+		// Sample 1% of the range.
 		let query = "
 			WITH range_stats AS (
-				SELECT 
+				SELECT
 					COUNT(*) as estimated_count,
 					COALESCE(SUM(pg_column_size(key) + pg_column_size(value)), 0) as sample_size
-				FROM kv TABLESAMPLE SYSTEM(1) 
+				FROM kv TABLESAMPLE SYSTEM(1)
 				WHERE key >= $1 AND key < $2
 			),
 			table_stats AS (
-				SELECT reltuples::bigint as total_rows 
-				FROM pg_class 
+				SELECT reltuples::bigint as total_rows
+				FROM pg_class
 				WHERE relname = 'kv' AND relkind = 'r'
 			)
-			SELECT 
-				CASE 
+			SELECT
+				CASE
 					WHEN r.estimated_count = 0 THEN 0
 					ELSE (r.sample_size * 100)::bigint
 				END as estimated_size
@@ -327,165 +301,6 @@ impl TransactionTask {
 			.await
 			.map(|row| row.map(|r| r.get::<_, i64>(0)).unwrap_or(0))
 			.map_err(map_postgres_error)
-	}
-
-	async fn handle_commit(
-		&mut self,
-		start_version: i64,
-		operations: Vec<Operation>,
-		conflict_ranges: Vec<(Vec<u8>, Vec<u8>, ConflictRangeType)>,
-	) -> Result<()> {
-		// Get connection from pool
-		let mut conn = self.pool.get().await?;
-
-		// Start write transaction
-		let tx = conn
-			.build_transaction()
-			.isolation_level(IsolationLevel::ReadCommitted)
-			.start()
-			.await
-			.context("failed to start write txn")?;
-
-		let mut begins = Vec::with_capacity(conflict_ranges.len());
-		let mut ends = Vec::with_capacity(conflict_ranges.len());
-		let mut conflict_types = Vec::with_capacity(conflict_ranges.len());
-
-		for (begin, end, conflict_type) in conflict_ranges {
-			let conflict_type = match conflict_type {
-				ConflictRangeType::Read => "read",
-				ConflictRangeType::Write => "write",
-			};
-
-			begins.push(begin);
-			ends.push(end);
-			conflict_types.push(conflict_type);
-		}
-
-		let query = "
-			WITH data AS (
-				SELECT nextval('global_version_seq') AS commit_version
-			)
-			INSERT INTO conflict_ranges (range_data, conflict_type, start_version, commit_version)
-			SELECT
-				bytearange(begin_key, end_key, '[)'),
-				conflict_type::range_type,
-				$4,
-				data.commit_version
-			FROM UNNEST($1::bytea[], $2::bytea[], $3::text[]) AS t(begin_key, end_key, conflict_type), data";
-		let stmt = tx.prepare_cached(query).await.map_err(map_postgres_error)?;
-
-		// Insert all conflict ranges at once
-		tx.execute(&stmt, &[&begins, &ends, &conflict_types, &start_version])
-			.await
-			.map_err(map_postgres_error)?;
-
-		let transaction_versionstamp = generate_versionstamp(0);
-
-		for op in operations {
-			match op {
-				Operation::SetValue { key, value } => {
-					let query = "INSERT INTO kv (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2";
-					let stmt = tx.prepare_cached(query).await.map_err(map_postgres_error)?;
-
-					tx.execute(&stmt, &[&key, &value])
-						.await
-						.map_err(map_postgres_error)?;
-				}
-				Operation::Clear { key } => {
-					let query = "DELETE FROM kv WHERE key = $1";
-					let stmt = tx.prepare_cached(query).await.map_err(map_postgres_error)?;
-
-					tx.execute(&stmt, &[&key])
-						.await
-						.map_err(map_postgres_error)?;
-				}
-				Operation::ClearRange { begin, end } => {
-					let query = "DELETE FROM kv WHERE key >= $1 AND key < $2";
-					let stmt = tx.prepare_cached(query).await.map_err(map_postgres_error)?;
-
-					tx.execute(&stmt, &[&begin, &end])
-						.await
-						.map_err(map_postgres_error)?;
-				}
-				Operation::AtomicOp {
-					key,
-					param,
-					op_type,
-				} => {
-					if matches!(op_type, MutationType::SetVersionstampedKey) {
-						let key = substitute_raw_versionstamp(key, &transaction_versionstamp)
-							.map_err(anyhow::Error::msg)
-							.context("failed substituting versionstamped key")?;
-						let query = "INSERT INTO kv (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2";
-						let stmt = tx.prepare_cached(query).await.map_err(map_postgres_error)?;
-
-						tx.execute(&stmt, &[&key, &param])
-							.await
-							.map_err(map_postgres_error)?;
-						continue;
-					}
-
-					if matches!(op_type, MutationType::SetVersionstampedValue) {
-						let value = substitute_raw_versionstamp(param, &transaction_versionstamp)
-							.map_err(anyhow::Error::msg)
-							.context("failed substituting versionstamped value")?;
-						let query = "INSERT INTO kv (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2";
-						let stmt = tx.prepare_cached(query).await.map_err(map_postgres_error)?;
-
-						tx.execute(&stmt, &[&key, &value])
-							.await
-							.map_err(map_postgres_error)?;
-						continue;
-					}
-
-					// TODO: All operations need to be done on the sql side, not in rust
-
-					// Get current value from database
-					let current_query = "SELECT value FROM kv WHERE key = $1";
-					let stmt = tx
-						.prepare_cached(current_query)
-						.await
-						.map_err(map_postgres_error)?;
-
-					let current_row = tx
-						.query_opt(&stmt, &[&key])
-						.await
-						.map_err(map_postgres_error)?;
-
-					// Extract current value or use None if key doesn't exist
-					let current_value = current_row.map(|row| row.get::<_, Vec<u8>>(0));
-					let current_slice = current_value.as_deref();
-
-					// Apply atomic operation
-					let new_value = apply_atomic_op(current_slice, &param, op_type);
-
-					// Store the result
-					if let Some(new_value) = new_value {
-						let update_query = "INSERT INTO kv (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2";
-						let stmt = tx
-							.prepare_cached(update_query)
-							.await
-							.map_err(map_postgres_error)?;
-
-						tx.execute(&stmt, &[&key, &new_value])
-							.await
-							.map_err(map_postgres_error)?;
-					} else {
-						let update_query = "DELETE FROM kv WHERE key = $1";
-						let stmt = tx
-							.prepare_cached(update_query)
-							.await
-							.map_err(map_postgres_error)?;
-
-						tx.execute(&stmt, &[&key])
-							.await
-							.map_err(map_postgres_error)?;
-					}
-				}
-			}
-		}
-
-		tx.commit().await.map_err(map_postgres_error)
 	}
 
 	async fn fail_receiver(&mut self) {
@@ -511,31 +326,19 @@ impl TransactionTask {
 	}
 }
 
-/// Maps PostgreSQL error to DatabaseError
+/// Maps a PostgreSQL error from the read path to a `DatabaseError` where appropriate.
 fn map_postgres_error(err: tokio_postgres::Error) -> anyhow::Error {
-	let error_str = if let Some(err) = err.as_db_error() {
-		err.to_string()
-	} else {
-		err.to_string()
-	};
+	let error_str = err.to_string();
 
-	if error_str.contains("exclusion_violation")
-		|| error_str.contains("violates exclusion constraint")
-	{
-		// Retryable - another transaction has a conflicting range
-		DatabaseError::NotCommitted.into()
-	} else if error_str.contains("serialization failure")
+	if error_str.contains("serialization failure")
 		|| error_str.contains("could not serialize")
 		|| error_str.contains("deadlock detected")
 	{
-		// Retryable - transaction conflict
-		DatabaseError::NotCommitted.into()
+		crate::error::DatabaseError::NotCommitted.into()
 	} else if error_str.contains("current transaction is aborted") {
-		// Returned by the rest of the commands in a txn if it failed for exclusion reasons
-		DatabaseError::NotCommitted.into()
+		crate::error::DatabaseError::NotCommitted.into()
 	} else {
 		tracing::error!(%err, "postgres error");
-		// Non-retryable error
 		anyhow::Error::new(err)
 	}
 }

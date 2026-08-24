@@ -1,6 +1,6 @@
 {
 	"name": "@rivetkit/framework-base",
-	"version": "2.3.6",
+	"version": "2.3.7",
 	"description": "Base framework utilities for RivetKit client integrations",
 	"license": "Apache-2.0",
 	"keywords": [

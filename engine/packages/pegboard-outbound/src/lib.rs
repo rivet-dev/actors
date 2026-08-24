@@ -25,8 +25,6 @@ const SSE_OPEN_WARN_THRESHOLD: Duration = Duration::from_secs(5);
 
 #[tracing::instrument(skip_all)]
 pub async fn start(config: rivet_config::Config, pools: rivet_pools::Pools) -> Result<()> {
-	metrics::prepopulate();
-
 	let cache = rivet_cache::CacheInner::from_env(&config, pools.clone())?;
 	let ctx = StandaloneCtx::new(
 		db::DatabaseKv::new(config.clone(), pools.clone()).await?,

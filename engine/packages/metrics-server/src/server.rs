@@ -28,7 +28,7 @@ pub async fn run_standalone(config: rivet_config::Config) -> Result<()> {
 		Ok::<_, hyper::Error>(service_fn(serve_req))
 	}));
 
-	tracing::info!(?host, ?port, "started metrics server");
+	tracing::debug!(?host, ?port, "started metrics server");
 	server.await?;
 
 	Ok(())

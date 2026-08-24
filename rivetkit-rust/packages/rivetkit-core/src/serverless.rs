@@ -256,6 +256,13 @@ impl CoreServerlessRuntime {
 		self.settings.max_start_payload_bytes
 	}
 
+	/// Returns whether the native listener should reserve this URL for
+	/// RivetKit's framework routes instead of forwarding it to an application
+	/// fallback.
+	pub fn handles_listener_request(&self, url: &str) -> bool {
+		handles_listener_request(&self.settings.base_path, url)
+	}
+
 	/// Canonical 413 response built through the `RivetError` system.
 	pub fn incoming_too_long_response(&self) -> ServerlessResponse {
 		let error = IncomingMessageTooLong {
@@ -571,6 +578,23 @@ fn route_path(base_path: &str, url: &str) -> Result<String> {
 		return Ok(format!("/{rest}"));
 	}
 	Ok(path.to_owned())
+}
+
+fn handles_listener_request(base_path: &str, url: &str) -> bool {
+	let Ok(parsed) = Url::parse(url) else {
+		// Let the normal framework handler return its structured invalid URL
+		// response rather than passing malformed input to user code.
+		return true;
+	};
+	let request_path = parsed.path();
+	if request_path != base_path && !request_path.starts_with(&format!("{base_path}/")) {
+		return false;
+	}
+	let path = route_path(base_path, url).expect("URL was parsed and the same base path is valid");
+	matches!(
+		path.as_str(),
+		"" | "/" | "/health" | "/metadata" | "/metrics" | "/start"
+	)
 }
 
 fn parse_start_headers(headers: &HashMap<String, String>) -> Result<StartHeaders> {

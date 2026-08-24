@@ -14,7 +14,7 @@
 	"dependencies": {
 		"@monaco-editor/react": "^4.7.0",
 		"@rivet-gg/cloud": "https://pkg.pr.new/rivet-dev/cloud/@rivet-gg/cloud@715f221",
-		"@rivetkit/engine-api-full": "^2.3.6",
+		"@rivetkit/engine-api-full": "^2.3.7",
 		"dotenv": "^17.2.2",
 		"execa": "^9.5.2",
 		"freestyle-sandboxes": "^0.0.95",

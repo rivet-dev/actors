@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useEndpoint } from "@/app/dialogs/connect-manual-serverfull-frame";
+import { useEndpoint } from "@/app/dialogs/connect-manual-serverful-frame";
 import { useRivetDsn } from "@/app/env-variables";
 
 export function useRailwayTemplateLink({ runnerName }: { runnerName: string }) {

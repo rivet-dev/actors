@@ -1,6 +1,7 @@
 import type { TemplateContext } from "../../context";
 
 export function generateRunner(context: TemplateContext) {
-	// The test runner service now uses the Rust test-envoy binary.
-	// The docker-compose template points at the Rust Dockerfile directly.
+	// The runner service runs the kitchen-sink example in serverful mode,
+	// connecting to the engine as a long-lived runner. The docker-compose
+	// template builds examples/kitchen-sink/Dockerfile directly.
 }

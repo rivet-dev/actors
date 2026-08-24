@@ -1,0 +1,79 @@
+---
+title: "Production Checklist"
+description: "Checklist for deploying Rivet Actors to production."
+skill: true
+---
+
+<Tip>
+We recommend passing this page to your coding agent to verify your configuration before deploying.
+</Tip>
+
+Deploy-time configuration (environment variables, runtime mode, platform
+timeouts, concurrency, graceful shutdown) lives in the
+[worker production checklist](/actors/self-host/workers/production-checklist).
+This page covers application design: what to get right before writing the
+actor, not before shipping it.
+
+## Actors
+
+### Design Patterns
+
+- **Do not use god actors.** Avoid putting all logic into a single actor type. See [Design Patterns](/actors/docs/design-patterns).
+- **Do not use actor-per-request patterns.** Avoid creating a new actor for each request. See [Design Patterns](/actors/docs/design-patterns).
+
+### Lifecycle
+
+- **Do not rely on `onSleep` for critical cleanup.** `onSleep` is not called during crashes or forced terminations. See [Lifecycle](/actors/docs/lifecycle).
+
+### State
+
+- **Verify `c.state` does not grow unbounded.** Avoid using arrays or objects that grow over time in state. Use [SQLite](/actors/docs/sqlite) for unbounded or append-heavy data instead.
+- **Verify actor data does not exceed 10 GB.** Contact [enterprise support](https://rivet.dev/sales) if you need more storage.
+- **Use input parameters and `createState` for actor initialization.** See [Input Parameters](/actors/docs/input).
+
+### Events
+
+- **Use `conn.send()` instead of `c.broadcast()` for private events.** `c.broadcast()` sends to all connected clients. Use `conn.send()` to send events to a specific connection. See [Realtime](/actors/docs/events).
+
+### Actions
+
+- **Review action timeout configuration.** The default `actionTimeout` is 60 seconds. Increase it if you have long-running actions like API calls or file processing. See [Actor Configuration](/actors/docs/general/actor-configuration).
+- **Review message size limits.** The default `maxIncomingMessageSize` is 64 KiB and `maxOutgoingMessageSize` is 1 MiB. Increase if your actors send or receive large JSON payloads. See [Registry Configuration](/actors/docs/general/registry-configuration).
+
+### Queues
+
+- **Review queue limits.** The default `maxQueueSize` is 1,000 messages and `maxQueueMessageSize` is 64 KiB. Increase if you expect burst traffic or large queue payloads. See [Actor Configuration](/actors/docs/general/actor-configuration).
+- **Ensure queue handlers are idempotent.** If processing fails before `message.complete()`, the message will be retried. See [Queues](/actors/docs/queues).
+
+### Workflows
+
+- **Verify workflows do not generate infinite steps.** Use `ctx.loop` to avoid creating unbounded step histories. See [Workflows](/workflows/docs).
+
+## Security
+
+### Authentication
+
+- **Validate connections in `createConnState` or `onBeforeConnect`.** Do not trust client input without validation. See [Authentication](/actors/docs/authentication).
+
+### CORS
+
+- **Configure CORS for production.** Restrict allowed origins instead of allowing all. See [CORS](/actors/docs/general/cors).
+
+### Tokens (Rivet Cloud)
+
+- **Use `pk_*` tokens for `RIVET_PUBLIC_ENDPOINT`.** Public tokens are safe to expose to clients.
+- **Use `sk_*` tokens for `RIVET_ENDPOINT`.** Secret tokens should only be used server-side.
+- **Do not leak your secret token.** Never expose `sk_*` tokens in client-side code, public repositories, or browser environments. See [Endpoints](/actors/docs/general/endpoints).
+- **Verify you're connecting to the correct region.** Use the nearest datacenter endpoint (e.g. `api-us-west-1.rivet.dev`) for lowest latency.
+
+### Access Control
+
+Access control is only needed if you want granular permissions for different clients. For most use cases, basic authentication in `onBeforeConnect` or `createConnState` is sufficient.
+
+- **Use deny-by-default rules.** Reject unknown roles in `onBeforeConnect`, action handlers, `canPublish`, and `canSubscribe`. See [Access Control](/actors/docs/access-control).
+- **Authorize actions explicitly.** Check the caller's role in each action handler and throw `forbidden` for unauthorized access.
+- **Gate event subscriptions and queue publishes.** Use `canSubscribe` and `canPublish` hooks to restrict which clients can subscribe to events or publish to queues.
+
+## Clients
+
+- **Dispose connections and/or client when not in use (JavaScript client).** Call `conn.dispose()` or `client.dispose()` when no longer needed to free resources. React and SwiftUI clients handle this automatically. See [Connection Lifecycle](/actors/docs/clients/javascript#connection-lifecycle).

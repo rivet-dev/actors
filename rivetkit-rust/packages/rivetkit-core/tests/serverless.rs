@@ -8,8 +8,8 @@ mod moved_tests {
 	use tokio_util::sync::CancellationToken;
 
 	use super::{
-		CoreServerlessRuntime, ServerlessRequest, endpoints_match, normalize_endpoint_url,
-		parse_start_headers,
+		CoreServerlessRuntime, ServerlessRequest, endpoints_match, handles_listener_request,
+		normalize_endpoint_url, parse_start_headers,
 	};
 	use crate::registry::{EngineSpawnMode, ServeConfig};
 
@@ -22,6 +22,22 @@ mod moved_tests {
 		assert!(endpoints_match(
 			"http://0.0.0.0:6420/api/",
 			"http://localhost:6420/api"
+		));
+	}
+
+	#[test]
+	fn listener_only_reserves_framework_routes_below_base_path() {
+		assert!(handles_listener_request(
+			"/api/rivet",
+			"http://internal/api/rivet/metadata"
+		));
+		assert!(!handles_listener_request(
+			"/api/rivet",
+			"http://internal/health"
+		));
+		assert!(!handles_listener_request(
+			"/api/rivet",
+			"http://internal/api/rivet/application"
 		));
 	}
 

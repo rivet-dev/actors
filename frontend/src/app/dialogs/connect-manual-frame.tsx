@@ -2,7 +2,7 @@ import { faServer, Icon } from "@rivet-gg/icons";
 import { useState } from "react";
 import { type DialogContentProps, Frame } from "@/components";
 import { RunnerConfigToggleGroup } from "../runner-config-toggle-group";
-import ConnectManualServerlfullFrameContent from "./connect-manual-serverfull-frame";
+import ConnectManualServerfulFrameContent from "./connect-manual-serverful-frame";
 import ConnectManualServerlessFrameContent from "./connect-manual-serverless-frame";
 
 interface CreateProjectFrameContentProps extends DialogContentProps {}
@@ -10,7 +10,7 @@ interface CreateProjectFrameContentProps extends DialogContentProps {}
 export default function CreateProjectFrameContent({
 	onClose,
 }: CreateProjectFrameContentProps) {
-	const [mode, setMode] = useState("serverless");
+	const [mode, setMode] = useState("serverful");
 
 	return (
 		<>
@@ -29,8 +29,8 @@ export default function CreateProjectFrameContent({
 						onClose={onClose}
 					/>
 				) : null}
-				{mode === "serverfull" ? (
-					<ConnectManualServerlfullFrameContent
+				{mode === "serverful" ? (
+					<ConnectManualServerfulFrameContent
 						onClose={onClose}
 						provider="custom"
 					/>

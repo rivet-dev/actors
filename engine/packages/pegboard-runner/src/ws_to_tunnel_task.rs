@@ -1028,7 +1028,7 @@ async fn compat_ack_tunnel_message(conn: &Conn, payload: &[u8]) -> Result<()> {
 	use rivet_runner_protocol::generated::v2 as protocol_v2;
 
 	// Parse payload
-	let msg = serde_bare::from_slice::<protocol_v2::ToServer>(&payload)?;
+	let msg: protocol_v2::ToServer = rivet_util::serde::bare_from_slice!(&payload)?;
 	let protocol_v2::ToServer::ToServerTunnelMessage(msg) = msg else {
 		return Ok(());
 	};
@@ -1036,7 +1036,7 @@ async fn compat_ack_tunnel_message(conn: &Conn, payload: &[u8]) -> Result<()> {
 	tracing::debug!(?msg.request_id, ?msg.message_id, "sending v2 compat tunnel ack");
 
 	// Serialize response
-	let ack_msg = serde_bare::to_vec(&protocol_v2::ToClient::ToClientTunnelMessage(
+	let ack_msg = rivet_util::serde::bare_to_vec!(&protocol_v2::ToClient::ToClientTunnelMessage(
 		protocol_v2::ToClientTunnelMessage {
 			request_id: msg.request_id,
 			message_id: msg.message_id,

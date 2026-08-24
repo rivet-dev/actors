@@ -1,0 +1,19 @@
+{
+	"compilerOptions": {
+		"target": "ES2023",
+		"lib": ["ES2023", "DOM", "DOM.Iterable"],
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"allowImportingTsExtensions": true,
+		"noEmit": true,
+		"strict": true,
+		"skipLibCheck": true,
+		"types": ["node"]
+	},
+	"include": [
+		"src/**/*.ts",
+		"workflows/**/*.ts",
+		"nitro.config.ts",
+		"vitest.integration.config.ts"
+	]
+}

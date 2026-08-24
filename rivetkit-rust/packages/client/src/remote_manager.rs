@@ -278,6 +278,7 @@ impl RemoteManager {
 		name: &str,
 		key: &ActorKey,
 		input: Option<serde_json::Value>,
+		pool_name: Option<String>,
 	) -> Result<String> {
 		let config = self.resolved_config().await?;
 		// Canonical slash-escaped key format (matches the TS SDK and the
@@ -295,7 +296,7 @@ impl RemoteManager {
 			name: name.to_string(),
 			key: key_str,
 			input: input_encoded,
-			runner_name_selector: self.pool_name.clone(),
+			runner_name_selector: pool_name.unwrap_or_else(|| self.pool_name.clone()),
 			crash_policy: "destroy".to_string(),
 		};
 
@@ -327,6 +328,7 @@ impl RemoteManager {
 		name: &str,
 		key: &ActorKey,
 		input: Option<serde_json::Value>,
+		pool_name: Option<String>,
 	) -> Result<String> {
 		let config = self.resolved_config().await?;
 		// Canonical slash-escaped key format (matches the TS SDK and the
@@ -344,7 +346,7 @@ impl RemoteManager {
 			name: name.to_string(),
 			key: key_str,
 			input: input_encoded,
-			runner_name_selector: self.pool_name.clone(),
+			runner_name_selector: pool_name.unwrap_or_else(|| self.pool_name.clone()),
 			crash_policy: "destroy".to_string(),
 		};
 
@@ -388,12 +390,18 @@ impl RemoteManager {
 					&get_or_create_for_key.name,
 					&get_or_create_for_key.key,
 					get_or_create_for_key.input.clone(),
+					get_or_create_for_key.pool_name.clone(),
 				)
 				.await
 			}
 			ActorQuery::Create { create } => {
-				self.create_actor(&create.name, &create.key, create.input.clone())
-					.await
+				self.create_actor(
+					&create.name,
+					&create.key,
+					create.input.clone(),
+					create.pool_name.clone(),
+				)
+				.await
 			}
 		}
 	}
@@ -438,6 +446,7 @@ impl RemoteManager {
 				Some(&get_for_key.key),
 				None,
 				None,
+				None,
 			),
 			ActorQuery::GetOrCreateForKey {
 				get_or_create_for_key,
@@ -447,6 +456,7 @@ impl RemoteManager {
 				Some(&get_or_create_for_key.key),
 				get_or_create_for_key.input.as_ref(),
 				get_or_create_for_key.region.as_deref(),
+				get_or_create_for_key.pool_name.as_deref(),
 			),
 			ActorQuery::Create { .. } => {
 				Err(anyhow!("gateway URL does not support create actor queries"))
@@ -488,6 +498,7 @@ impl RemoteManager {
 		key: Option<&ActorKey>,
 		input: Option<&serde_json::Value>,
 		region: Option<&str>,
+		pool_name: Option<&str>,
 	) -> Result<String> {
 		if self.namespace.is_empty() {
 			return Err(anyhow!("actor query namespace must not be empty"));
@@ -512,7 +523,7 @@ impl RemoteManager {
 			push_query_param(&mut params, "rvt-input", &URL_SAFE_NO_PAD.encode(encoded));
 		}
 		if method == "getOrCreate" {
-			push_query_param(&mut params, "rvt-runner", &self.pool_name);
+			push_query_param(&mut params, "rvt-runner", pool_name.unwrap_or(&self.pool_name));
 			push_query_param(&mut params, "rvt-crash-policy", "sleep");
 		}
 		if let Some(region) = region {

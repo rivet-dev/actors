@@ -1,6 +1,6 @@
 {
 	"name": "@rivetkit/supabase",
-	"version": "2.3.6",
+	"version": "2.3.7",
 	"description": "Supabase Edge Functions integration for RivetKit actors",
 	"license": "Apache-2.0",
 	"keywords": [

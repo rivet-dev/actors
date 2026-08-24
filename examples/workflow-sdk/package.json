@@ -1,0 +1,37 @@
+{
+	"name": "example-workflow-sdk",
+	"version": "2.0.21",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "nitro build",
+		"check-types": "tsc --noEmit",
+		"dev": "nitro dev",
+		"test": "RIVET_RUN_ENGINE_PORT=16420 RIVETKIT_STORAGE_PATH=$PWD/.workflow-data vitest --config vitest.integration.config.ts run"
+	},
+	"dependencies": {
+		"@rivet-dev/workflow-world": "workspace:*",
+		"hono": "^4.12.25",
+		"nitro": "3.0.260610-beta",
+		"rollup": "^4.62.2",
+		"workflow": "5.0.0-beta.35"
+	},
+	"devDependencies": {
+		"@types/node": "^24.0.0",
+		"@workflow/vitest": "5.0.0-beta.35",
+		"typescript": "^5.9.3",
+		"vite": "^7.0.0",
+		"vitest": "^4.1.9"
+	},
+	"engines": {
+		"node": ">=22.0.0"
+	},
+	"template": {
+		"technologies": ["typescript", "workflow-sdk"],
+		"tags": ["workflow", "durable"],
+		"noFrontend": true,
+		"skipVercel": true
+	},
+	"stableVersion": "2.3.5",
+	"license": "MIT"
+}

@@ -1,0 +1,154 @@
+---
+title: "Realtime"
+description: "Events enable realtime communication from actors to clients. While clients use actions to send data to actors, events allow actors to push updates to connected clients instantly."
+skill: true
+---
+
+Events can be sent to clients connected using `.connect()`. They have no effect on [low-level WebSocket connections](/actors/docs/websocket-handler).
+
+## Publishing Events from Actors
+
+### Broadcasting to All Clients
+
+Define event names and payload types with `events` and `event<T>()`, then use `c.broadcast(eventName, ...args)` to send events to all connected clients:
+
+<CodeSnippet file="examples/docs/actors-events/broadcast.ts" />
+
+### Sending to Specific Connections
+
+Send events to individual connections using `conn.send(eventName, ...args)`:
+
+<CodeSnippet file="examples/docs/actors-events/send-to-connection.ts" />
+
+Send events to all connections except the sender:
+
+<CodeSnippet file="examples/docs/actors-events/send-except-sender.ts" />
+
+## Subscribing to Events from Clients
+
+Clients must establish a connection to receive events from actors. Use `.connect()` to create a persistent connection, then listen for events.
+
+### Basic Event Subscription
+
+Use `connection.on(eventName, callback)` to listen for events:
+
+<CodeGroup>
+
+<CodeSnippet file="examples/docs/actors-events/subscribe-basic.ts" title="TypeScript" />
+
+```tsx React @nocheck
+import { useState } from "react";
+import { useActor } from "./rivetkit";
+
+function ChatRoom() {
+  const [messages, setMessages] = useState<Array<{id: string, userId: string, text: string}>>([]);
+
+  const chatRoom = useActor({
+    name: "chatRoom",
+    key: ["general"]
+  });
+
+  // Listen for events
+  chatRoom.useEvent("messageReceived", (message) => {
+    setMessages(prev => [...prev, message]);
+  });
+
+  // ...rest of component...
+}
+```
+
+</CodeGroup>
+
+### One-time Event Listeners
+
+Use `connection.once(eventName, callback)` for events that should only trigger once:
+
+<CodeGroup>
+
+<CodeSnippet file="examples/docs/actors-events/subscribe-once.ts" title="TypeScript" />
+
+```tsx React @nocheck
+import { useState, useEffect } from "react";
+import { useActor } from "./rivetkit";
+
+function GameLobby() {
+  const [gameStarted, setGameStarted] = useState(false);
+
+  const gameRoom = useActor({
+    name: "gameRoom",
+    key: ["room-456"],
+    params: {
+      playerId: "player-789",
+      role: "player"
+    }
+  });
+
+  // Listen for game start (only once)
+  useEffect(() => {
+    if (!gameRoom.connection) return;
+
+    const handleGameStart = () => {
+      console.log('Game has started!');
+      setGameStarted(true);
+    };
+
+    gameRoom.connection.once('gameStarted', handleGameStart);
+  }, [gameRoom.connection]);
+
+  // ...rest of component...
+}
+```
+
+</CodeGroup>
+
+### Removing Event Listeners
+
+Use the callback returned from `.on()` to remove event listeners:
+
+<CodeGroup>
+
+<CodeSnippet file="examples/docs/actors-events/remove-listener.ts" title="TypeScript" />
+
+```tsx React @nocheck
+import { useState, useEffect } from "react";
+import { useActor } from "./rivetkit";
+
+function ConditionalListener() {
+  const [isListening, setIsListening] = useState(false);
+  const [messages, setMessages] = useState<string[]>([]);
+
+  const chatRoom = useActor({
+    name: "chatRoom",
+    key: ["general"]
+  });
+
+  useEffect(() => {
+    if (!chatRoom.connection || !isListening) return;
+
+    // Add listener
+    const unsubscribe = chatRoom.connection.on('messageReceived', (message) => {
+      setMessages(prev => [...prev, message.text]);
+    });
+
+    // Cleanup - remove listener when component unmounts or listening stops
+    return () => {
+      unsubscribe();
+    };
+  }, [chatRoom.connection, isListening]);
+
+  // ...rest of component...
+}
+```
+
+</CodeGroup>
+
+## Debugging
+
+- `GET /inspector/connections` shows active connections and connection metadata.
+- Use this to confirm clients are connected before expecting broadcasts.
+- `GET /inspector/summary` provides connections, RPCs, and queue size in one response.
+- In non-dev mode, inspector endpoints require authorization.
+
+## More About Connections
+
+For more details on actor connections, including connection lifecycle, authentication, and advanced connection patterns, see the [Connections documentation](/actors/docs/connections).

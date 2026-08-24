@@ -6,14 +6,7 @@ import {
 	faTriangleExclamation,
 	Icon,
 } from "@rivet-gg/icons";
-import type { Virtualizer } from "@tanstack/react-virtual";
-import {
-	useCallback,
-	useEffect,
-	useLayoutEffect,
-	useRef,
-	useState,
-} from "react";
+import { useCallback, useEffect } from "react";
 import { ErrorDetails } from "@/components/actors";
 import { VirtualScrollArea } from "@/components/virtual-scroll-area";
 import { AnsiText } from "./lib/ansi";
@@ -28,49 +21,11 @@ import {
 import { ScrollArea } from "./ui/scroll-area";
 import { Skeleton } from "./ui/skeleton";
 import { useDeploymentLogsStream } from "./use-deployment-logs-stream";
+import { useLogScroll } from "./use-log-scroll";
 
-const SKELETON_KEYS = [
-	"a",
-	"b",
-	"c",
-	"d",
-	"e",
-	"f",
-	"g",
-	"h",
-	"i",
-	"j",
-	"k",
-	"l",
-	"m",
-	"n",
-	"o",
-	"p",
-	"q",
-	"r",
-	"s",
-	"t",
-	"u",
-	"v",
-	"w",
-	"x",
-	"y",
-	"z",
-	"aa",
-	"ab",
-	"ac",
-	"ad",
-	"ae",
-	"af",
-	"ag",
-	"ah",
-	"ai",
-	"aj",
-	"ak",
-	"al",
-	"am",
-	"an",
-];
+const SKELETON_KEYS = Array(40)
+	.fill("")
+	.map((_, i) => i.toString(36));
 
 interface DeploymentLogsProps {
 	project?: string;
@@ -88,6 +43,7 @@ interface LogRowData {
 	entry?: Rivet.LogStreamEvent.Log;
 	isSentinel?: boolean;
 	isLoadingMore?: boolean;
+	onLoadMore?: () => void;
 	regionColumnWidth?: string;
 }
 
@@ -95,22 +51,27 @@ function LogRow({
 	entry,
 	isSentinel,
 	isLoadingMore,
+	onLoadMore,
 	regionColumnWidth,
 	...props
 }: LogRowData) {
 	if (isSentinel) {
+		// A clickable row rather than a passive hint: scrolling up auto-triggers
+		// a load, but when the list is short or a page returned no matching rows
+		// there is nothing to scroll, so the button is the reliable trigger.
 		return (
-			<div
+			<button
+				type="button"
 				{...props}
+				onClick={onLoadMore}
+				disabled={isLoadingMore}
 				className={cn(
-					"px-4 py-1 border-b text-muted-foreground/50 italic",
+					"w-full text-left px-4 py-1 border-b italic text-muted-foreground/60 hover:text-muted-foreground disabled:hover:text-muted-foreground/60 disabled:cursor-default",
 					props.className,
 				)}
 			>
-				{isLoadingMore
-					? "Loading older logs…"
-					: "Scroll to top to load older logs"}
-			</div>
+				{isLoadingMore ? "Loading older logs…" : "Load older logs"}
+			</button>
 		);
 	}
 
@@ -240,6 +201,7 @@ export function DeploymentLogs({
 		regionLabelLength && regionLabelLength > 0
 			? `${regionLabelLength + 4}ch`
 			: "18ch";
+
 	const {
 		logs,
 		isLoading,
@@ -247,6 +209,7 @@ export function DeploymentLogs({
 		streamError,
 		isLoadingMore,
 		hasMore,
+		oldestScannedTs,
 		loadMoreHistory,
 	} = useDeploymentLogsStream({
 		project: project ?? "",
@@ -257,111 +220,29 @@ export function DeploymentLogs({
 		paused,
 	});
 
-	const viewportRef = useRef<HTMLDivElement>(null);
-	const virtualizerRef = useRef<Virtualizer<HTMLDivElement, Element>>(null);
-	const [follow, setFollow] = useState(true);
-	// Track the log count before a load-more so we can restore scroll position.
-	const prevLogCountRef = useRef(0);
-
-	// Freeze displayed logs when not following so appended entries don't shift scroll.
-	// Always update when following, and also when history is prepended (logs grew
-	// from the front, detectable because the previously-first entry moved).
-	const frozenLogsRef = useRef(logs);
-	const frozenFirstIdRef = useRef<string | undefined>(undefined);
-	if (follow) {
-		frozenLogsRef.current = logs;
-		frozenFirstIdRef.current = logs[0]?.data.insertId;
-	} else if (
-		logs.length > 0 &&
-		logs[0]?.data.insertId !== frozenFirstIdRef.current
-	) {
-		// First entry changed — history was prepended. Accept the update.
-		frozenLogsRef.current = logs;
-		frozenFirstIdRef.current = logs[0]?.data.insertId;
-	}
-	const displayedLogs = follow ? logs : frozenLogsRef.current;
-
-	// When hasMore, index 0 is the sentinel row; real logs start at index 1.
-	const sentinelOffset = hasMore ? 1 : 0;
-	const totalCount = displayedLogs.length + sentinelOffset;
-
-	useEffect(() => {
-		if (
-			follow &&
-			!isLoading &&
-			virtualizerRef.current &&
-			displayedLogs.length > 0
-		) {
-			// https://github.com/TanStack/virtual/issues/537
-			const rafId = requestAnimationFrame(() => {
-				virtualizerRef.current?.scrollToIndex(totalCount - 1, {
-					align: "end",
-				});
-			});
-			return () => cancelAnimationFrame(rafId);
-		}
-	}, [totalCount, displayedLogs.length, follow, isLoading]);
-
-	// After prepending older history, keep the viewport anchored to the same
-	// content by growing scrollTop by the height added above the fold. Measuring
-	// the real scroll element (rather than the virtualizer's estimated total size)
-	// and applying the correction in a layout effect before paint keeps the scroll
-	// position exact with no visible jump.
-	const pendingRestoreRef = useRef(false);
-	const prevScrollHeightRef = useRef(0);
-	const prevScrollTopRef = useRef(0);
-	useLayoutEffect(() => {
-		if (
-			!pendingRestoreRef.current ||
-			displayedLogs.length <= prevLogCountRef.current
-		) {
-			return;
-		}
-		pendingRestoreRef.current = false;
-		const viewport = viewportRef.current;
-		if (!viewport) return;
-		const addedHeight = viewport.scrollHeight - prevScrollHeightRef.current;
-		viewport.scrollTop = prevScrollTopRef.current + addedHeight;
-	}, [displayedLogs.length]);
+	const {
+		displayedLogs,
+		follow,
+		setFollow,
+		viewportRef,
+		virtualizerRef,
+		triggerLoadMore,
+		handleScrollChange,
+		totalCount,
+		sentinelOffset,
+	} = useLogScroll({
+		logs,
+		hasMore,
+		isLoading,
+		isLoadingMore,
+		loadMoreHistory,
+	});
 
 	useEffect(() => {
 		if (logsRef) {
 			logsRef.current = logs;
 		}
 	}, [logs, logsRef]);
-
-	const handleScrollChange = useCallback(
-		(instance: Virtualizer<HTMLDivElement, Element>) => {
-			const isAtBottom =
-				(instance.range?.endIndex ?? 0) >= totalCount - 1;
-			if (isAtBottom) {
-				return setFollow(true);
-			}
-			if (instance.scrollDirection === "backward") {
-				setFollow(false);
-				// Load more when the sentinel row comes into view.
-				if (
-					(instance.range?.startIndex ?? 1) === 0 &&
-					hasMore &&
-					!isLoadingMore
-				) {
-					prevLogCountRef.current = displayedLogs.length;
-					const viewport = viewportRef.current;
-					prevScrollHeightRef.current = viewport?.scrollHeight ?? 0;
-					prevScrollTopRef.current = viewport?.scrollTop ?? 0;
-					pendingRestoreRef.current = true;
-					loadMoreHistory();
-				}
-			}
-		},
-		[
-			totalCount,
-			displayedLogs.length,
-			hasMore,
-			isLoadingMore,
-			loadMoreHistory,
-		],
-	);
 
 	if (isLoading) {
 		return (
@@ -399,11 +280,38 @@ export function DeploymentLogs({
 			);
 		}
 		return (
-			<div className="h-full flex flex-1 flex-col items-center justify-center">
-				<p>No logs available.</p>
-				<p className="text-muted-foreground text-xs mt-1">
-					Logs will appear here as they stream in.
-				</p>
+			<div className="h-full flex flex-1 flex-col items-center justify-center gap-3">
+				<div className="text-center">
+					<p>
+						{hasMore
+							? "No logs available."
+							: "No logs found."}
+					</p>
+					<p className="text-muted-foreground text-xs mt-1">
+						{hasMore
+							? "Nothing matches this view in recent history. Older logs may exist."
+							: "Logs will appear here as they stream in."}
+					</p>
+					{hasMore && oldestScannedTs ? (
+						<p className="text-muted-foreground text-xs mt-1 font-mono">
+							Searched back to {oldestScannedTs}
+						</p>
+					) : null}
+				</div>
+				{hasMore ? (
+					// The viewport is empty and cannot be scrolled, so scroll-to-top
+					// can't trigger a load. Offer an explicit way to page backward
+					// through older raw history.
+					<Button
+						variant="outline"
+						size="sm"
+						startIcon={<Icon icon={faArrowDown} className="rotate-180" />}
+						isLoading={isLoadingMore}
+						onClick={() => loadMoreHistory()}
+					>
+						Load older logs
+					</Button>
+				) : null}
 			</div>
 		);
 	}
@@ -433,7 +341,11 @@ export function DeploymentLogs({
 					viewportProps={{}}
 					getRowData={(index) => {
 						if (hasMore && index === 0) {
-							return { isSentinel: true, isLoadingMore };
+							return {
+								isSentinel: true,
+								isLoadingMore,
+								onLoadMore: triggerLoadMore,
+							};
 						}
 						return {
 							entry: displayedLogs[index - sentinelOffset],

@@ -1,6 +1,6 @@
 {
 	"name": "@rivetkit/engine-cli-win32-x64",
-	"version": "2.3.6",
+	"version": "2.3.7",
 	"description": "Rivet Engine binary for Windows x64",
 	"license": "Apache-2.0",
 	"os": [

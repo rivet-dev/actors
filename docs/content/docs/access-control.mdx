@@ -1,0 +1,47 @@
+---
+title: "Access Control"
+description: "Authorize actions, queue publishes, and event subscriptions with explicit hooks."
+skill: true
+---
+
+Use access control to decide what authenticated clients are allowed to do.
+
+This is authorization, not authentication:
+
+- Use [authentication](/actors/docs/authentication) to identify who is calling.
+- Use access-control rules to decide what they can do after connecting.
+
+## Permission Surfaces
+
+RivetKit authorization is explicit per surface:
+
+- `onBeforeConnect` rejects unauthenticated or malformed connections.
+- Action handlers (`actions.*`) enforce action permissions.
+- `queues.<name>.canPublish` allows or denies inbound queue publishes.
+- `events.<name>.canSubscribe` allows or denies event subscriptions.
+
+## Fail By Default
+
+Use deny-by-default rules everywhere:
+
+1. Keep `onBeforeConnect` strict and reject invalid credentials.
+2. In each action, explicitly allow expected roles and throw `forbidden` otherwise.
+3. In `canPublish` and `canSubscribe`, return `true` only for allowed roles and end with `return false`.
+
+<CodeSnippet file="examples/docs/actors-access-control/chat-room.ts" />
+
+## Return Value Contract
+
+`canPublish` and `canSubscribe` must return a boolean:
+
+- `true`: allow
+- `false`: deny with `forbidden`
+
+Returning `undefined`, `null`, or any non-boolean throws an internal error.
+
+## Notes
+
+- `canPublish` only applies to queue names defined in `queues`.
+- Incoming queue messages for undefined queues are ignored and the publish succeeds as completed.
+- `canSubscribe` only applies to event names defined in `events`.
+- Broadcasting an event not defined in `events` still publishes to subscribers.

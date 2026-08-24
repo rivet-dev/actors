@@ -128,6 +128,11 @@ export interface GetOrCreateOptions extends QueryOptions {
 	createInRegion?: string;
 	/** Input data to pass to the actor. */
 	createWithInput?: unknown;
+	/**
+	 * Name of the envoy pool to select for this actor if it is created.
+	 * Overrides the client's configured `poolName` for this call.
+	 */
+	poolName?: string;
 }
 
 /**
@@ -140,6 +145,11 @@ export interface CreateOptions extends QueryOptions {
 	region?: string;
 	/** Input data to pass to the actor. */
 	input?: unknown;
+	/**
+	 * Name of the envoy pool to select for this actor.
+	 * Overrides the client's configured `poolName` for this call.
+	 */
+	poolName?: string;
 }
 
 /**
@@ -300,6 +310,7 @@ export class ClientRaw {
 				key: keyArray,
 				input: opts?.createWithInput,
 				region: opts?.createInRegion,
+				poolName: opts?.poolName,
 			},
 		};
 

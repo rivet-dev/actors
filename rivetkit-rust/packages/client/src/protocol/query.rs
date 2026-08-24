@@ -11,6 +11,8 @@ pub struct CreateRequest {
 	pub input: Option<JsonValue>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub region: Option<String>,
+	#[serde(rename = "poolName", skip_serializing_if = "Option::is_none")]
+	pub pool_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +36,8 @@ pub struct GetOrCreateRequest {
 	pub input: Option<JsonValue>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub region: Option<String>,
+	#[serde(rename = "poolName", skip_serializing_if = "Option::is_none")]
+	pub pool_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

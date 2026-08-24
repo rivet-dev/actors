@@ -1,6 +1,6 @@
 import { faRailway, Icon } from "@rivet-gg/icons";
 import { type DialogContentProps, Frame } from "@/components";
-import ConnectManualServerlfullFrameContent from "./connect-manual-serverfull-frame";
+import ConnectManualServerfulFrameContent from "./connect-manual-serverful-frame";
 
 interface ConnectRailwayFrameContentProps extends DialogContentProps {}
 
@@ -17,7 +17,7 @@ export default function ConnectRailwayFrameContent({
 				</Frame.Title>
 			</Frame.Header>
 			<Frame.Content>
-				<ConnectManualServerlfullFrameContent
+				<ConnectManualServerfulFrameContent
 					provider="railway"
 					onClose={onClose}
 				/>

@@ -1,6 +1,6 @@
 {
 	"name": "@rivetkit/virtual-websocket",
-	"version": "2.3.6",
+	"version": "2.3.7",
 	"description": "Virtual WebSocket implementation for creating linked WebSocket pairs",
 	"license": "Apache-2.0",
 	"type": "module",

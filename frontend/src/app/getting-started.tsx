@@ -3,7 +3,6 @@ import {
 	faArrowRight,
 	faCheck,
 	faChevronDown,
-	faCopy,
 	faKey,
 	Icon,
 } from "@rivet-gg/icons";
@@ -18,10 +17,9 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { motion } from "framer-motion";
 import { type ReactNode, Suspense, useContext, useMemo } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
-import { toast } from "sonner";
 import { match } from "ts-pattern";
 import z from "zod";
-import * as ConnectServerfullForm from "@/app/forms/connect-manual-serverfull-form";
+import * as ConnectServerfulForm from "@/app/forms/connect-manual-serverful-form";
 import * as ConnectServerlessForm from "@/app/forms/connect-manual-serverless-form";
 import {
 	CodeFrame,
@@ -37,9 +35,8 @@ import {
 } from "@/components/actors";
 import { defineStepper } from "@/components/ui/stepper";
 import { deriveProviderFromMetadata } from "@/lib/data";
-import { cloudEnv, engineEnv, getRivetRunUrl } from "@/lib/env";
+import { engineEnv } from "@/lib/env";
 import { features } from "@/lib/features";
-import { usePublishableToken } from "@/queries/accessors";
 import { queryClient } from "@/queries/global";
 import { cn } from "../components/lib/utils";
 import { Badge } from "../components/ui/badge";
@@ -52,13 +49,13 @@ import {
 } from "../components/ui/dropdown-menu";
 import { TEST_IDS } from "../utils/test-ids";
 import { DeploymentCheck } from "./deployment-check";
-import { useEndpoint } from "./dialogs/connect-manual-serverfull-frame";
+import { useEndpoint } from "./dialogs/connect-manual-serverful-frame";
 import {
 	buildServerlessConfig,
 	Configuration,
 	ConfigurationAccordion,
 } from "./dialogs/connect-manual-serverless-frame";
-import { EnvVariables, useRivetDsn } from "./env-variables";
+import { EnvVariables } from "./env-variables";
 import { StepperForm, StepVisibilityContext } from "./forms/stepper-form";
 import { Content } from "./layout";
 import { AgentSelectStep } from "@/components/onboarding/agent-os/agent-select-step";
@@ -68,11 +65,13 @@ import {
 	DEFAULT_PACKAGES,
 	DEFAULT_SANDBOX_PROVIDER,
 } from "@/components/onboarding/agent-os/catalog";
-import { RunnerConfigToggleGroup } from "./runner-config-toggle-group";
 import {
-	getAgentInstructionsPrompt,
-	getComputeAddendum,
-} from "@/content/agent-prompts";
+	AgentPromptBanner,
+	CommandBox,
+	defaultRuntimeModeForProvider,
+	useAgentInstructionsCode,
+	useComputeInstructionsCode,
+} from "./compute-deploy";
 
 function platformTitle(provider: unknown): string {
 	return (
@@ -136,9 +135,9 @@ const stepper = defineStepper(
 			if (provider === "rivet") {
 				return z.object({ success: z.literal(true) });
 			}
-			if ((values.mode as string) === "serverfull") {
+			if ((values.mode as string) === "serverful") {
 				return z.object({
-					mode: z.literal("serverfull"),
+					mode: z.literal("serverful"),
 					runnerName: z.string().min(1, "Runner name is required"),
 					datacenter: z.string().min(1, "Please select a region"),
 					customName: z
@@ -151,7 +150,7 @@ const stepper = defineStepper(
 			}
 			return z.object({
 				mode: z
-					.union([z.literal("serverless"), z.literal("serverfull")])
+					.union([z.literal("serverless"), z.literal("serverful")])
 					.optional(),
 				...ConnectServerlessForm.configurationSchema.shape,
 				...ConnectServerlessForm.deploymentSchema.shape,
@@ -229,7 +228,14 @@ export function GettingStarted({
 		provider: defaultProvider,
 		datacenters: {},
 		datacenter: "",
-		mode: "serverless" as "serverless" | "serverfull",
+		// Default the runner mode from the selected provider (serverful for most
+		// platforms, serverless for function-only ones). Keep serverless when an
+		// existing serverless config was found so its prefill still applies.
+		mode: (initialRunnerConfig
+			? "serverless"
+			: defaultRuntimeModeForProvider(defaultProvider)) as
+			| "serverless"
+			| "serverful",
 		template: "actor" as "actor" | "agent-os",
 		agent: DEFAULT_AGENT,
 		packages: DEFAULT_PACKAGES,
@@ -246,12 +252,12 @@ export function GettingStarted({
 		const v = values as unknown as {
 			runnerName: string;
 			provider: string;
-			mode?: "serverless" | "serverfull";
+			mode?: "serverless" | "serverful";
 			datacenter?: string;
 			customName?: string;
 			customIcon?: string;
 		};
-		if (v.mode === "serverfull") {
+		if (v.mode === "serverful") {
 			const existingConfig = await queryClient.fetchQuery(
 				dataProvider.runnerConfigQueryOptions({
 					name: v.runnerName,
@@ -478,13 +484,25 @@ function SwitchPlatform() {
 					<DropdownMenuItem
 						key={option.name}
 						className="items-start gap-3 py-2"
-						onClick={() =>
+						onClick={() => {
 							setValue("provider", option.name, {
 								shouldDirty: true,
 								shouldTouch: true,
 								shouldValidate: true,
-							})
-						}
+							});
+							// Reset the runner mode to the new provider's default
+							// so switching to a container platform lands on the
+							// runner and a function platform lands on serverless.
+							setValue(
+								"mode",
+								defaultRuntimeModeForProvider(option.name),
+								{
+									shouldDirty: true,
+									shouldTouch: true,
+									shouldValidate: true,
+								},
+							);
+						}}
 					>
 						<Icon
 							icon={option.icon}
@@ -645,19 +663,6 @@ function OrDivider({ label }: { label: string }) {
 			<span className="text-xs text-muted-foreground">{label}</span>
 			<div className="h-px flex-1 bg-border" />
 		</div>
-	);
-}
-
-function CommandBox({ command }: { command: string }) {
-	return (
-		<CodeFrame
-			language="bash"
-			code={() => command}
-			hideFooter
-			className="group my-0"
-		>
-			<CodePreview code={command} language="bash" className="text-left" />
-		</CodeFrame>
 	);
 }
 
@@ -935,7 +940,7 @@ function AgentOsHandoff() {
 // compute deployment addendum alongside the onboarding instructions. Copying it
 // gives the agent everything it needs to scaffold, run, and deploy in one paste.
 function RunLocallyComputeBanner() {
-	const code = useComputeInstructionsCode();
+	const { code } = useComputeInstructionsCode();
 	return (
 		<AgentPromptBanner
 			code={code}
@@ -965,52 +970,6 @@ function StepNumber({ n }: { n: number }) {
 	);
 }
 
-function useAgentInstructionsCode({
-	provider,
-	runnerName = "default",
-	endpoint,
-}: {
-	provider?: Provider;
-	runnerName?: string;
-	endpoint?: string;
-} = {}) {
-	const providerDetails = provider
-		? deployOptions.find((p) => p.name === provider)
-		: undefined;
-	const providerStr =
-		providerDetails?.displayName ?? provider ?? "your chosen provider";
-	const publishableToken = useRivetDsn({ kind: "publishable", endpoint });
-	const secretToken = useRivetDsn({ kind: "secret", endpoint });
-
-	return getAgentInstructionsPrompt({
-		providerStr,
-		publishableToken,
-		secretToken,
-		runnerName,
-	});
-}
-
-function useComputeInstructionsCode() {
-	const agentInstructions = useAgentInstructionsCode({ provider: "rivet" });
-	const dataProvider = useCloudNamespaceDataProvider();
-	const { data: cloudToken } = useSuspenseQuery(
-		dataProvider.createApiTokenQueryOptions({ name: "Onboarding" }),
-	);
-	const publishableRawToken = usePublishableToken();
-	const namespace = dataProvider.engineNamespace;
-
-	const computeAddendum = getComputeAddendum({
-		cloudToken,
-		publishableToken: publishableRawToken ?? "<PUBLISHABLE_TOKEN>",
-		namespace,
-		apiUrl: cloudEnv().VITE_APP_API_URL,
-		cloudApiUrl: cloudEnv().VITE_APP_CLOUD_API_URL,
-		rivetRunUrl: getRivetRunUrl(namespace),
-	});
-
-	return `${agentInstructions}\n\n---\n\n${computeAddendum}`;
-}
-
 function CopyAgentInstructionsButton({ provider }: { provider?: Provider }) {
 	// The compute prompt reads cloud-namespace data; only available with compute.
 	if (provider === "rivet" && features.compute) {
@@ -1019,55 +978,8 @@ function CopyAgentInstructionsButton({ provider }: { provider?: Provider }) {
 	return <GenericCopyAgentInstructionsButton provider={provider} />;
 }
 
-function AgentPromptBanner({
-	code,
-	containsSecret = false,
-	title = "Use your coding agent",
-	description = "Have your coding agent complete these steps to deploy to Rivet Compute.",
-}: {
-	code: string;
-	containsSecret?: boolean;
-	title?: string;
-	description?: string;
-}) {
-	return (
-		<button
-			type="button"
-			onClick={() => {
-				navigator.clipboard.writeText(code);
-				toast.success(
-					containsSecret
-						? "Copied to clipboard — includes a secret deploy token, paste only into your agent"
-						: "Copied to clipboard",
-				);
-			}}
-			className="relative w-full flex items-center justify-between gap-4 rounded-lg px-4 py-4 border border-primary group cursor-pointer text-left"
-		>
-			<Badge className="absolute -top-2.5 left-4 z-10 bg-background">
-				Recommended
-			</Badge>
-			<div className="min-w-0">
-				<p className="font-medium mb-1">{title}</p>
-				<p className="text-sm text-muted-foreground">{description}</p>
-				{containsSecret ? (
-					<p className="mt-1 text-xs text-muted-foreground">
-						Includes a secret deploy token. Paste only into your
-						coding agent.
-					</p>
-				) : null}
-			</div>
-			<Button asChild variant="outline" className="shrink-0">
-				<div>
-					<Icon icon={faCopy} className="me-2 text-primary" />
-					Copy prompt
-				</div>
-			</Button>
-		</button>
-	);
-}
-
 function ComputeCopyAgentInstructionsButton() {
-	const code = useComputeInstructionsCode();
+	const { code } = useComputeInstructionsCode();
 	return <AgentPromptBanner code={code} containsSecret />;
 }
 
@@ -1078,7 +990,16 @@ function GenericCopyAgentInstructionsButton({
 }) {
 	const endpoint = useEndpoint();
 	const runnerName = useWatch({ name: "runnerName" }) as string;
-	const code = useAgentInstructionsCode({ provider, runnerName, endpoint });
+	const mode = useWatch({ name: "mode" }) as
+		| "serverless"
+		| "serverful"
+		| undefined;
+	const code = useAgentInstructionsCode({
+		provider,
+		runnerName,
+		endpoint,
+		mode,
+	});
 	return (
 		<AgentPromptBanner
 			code={code}
@@ -1240,11 +1161,13 @@ function BackendSetupRivet() {
 function BackendSetup() {
 	const provider = useWatch({ name: "provider" });
 	const isAgentOs = useWatch({ name: "template" }) === "agent-os";
-	const mode = useWatch({ name: "mode" }) as
+	const rawMode = useWatch({ name: "mode" }) as
 		| "serverless"
-		| "serverfull"
+		| "serverful"
 		| undefined;
-	const { setValue } = useFormContext();
+	// The runner mode is fixed per provider (no user toggle); render the mode
+	// that provider deploys with.
+	const mode = rawMode ?? defaultRuntimeModeForProvider(provider);
 
 	if (provider === "rivet" && features.compute) {
 		return <BackendSetupRivet />;
@@ -1255,25 +1178,8 @@ function BackendSetup() {
 			{isAgentOs ? <AgentOsKeyNotice /> : null}
 			<CopyAgentInstructionsButton provider={provider} />
 			<OrDivider label="or set it up manually" />
-			<div>
-				<RunnerConfigToggleGroup
-					mode={mode ?? "serverless"}
-					onChange={(value) =>
-						setValue("mode", value, {
-							shouldDirty: true,
-							shouldTouch: true,
-							shouldValidate: true,
-						})
-					}
-				/>
-				<p className="text-xs text-muted-foreground text-center -mt-2">
-					{(mode ?? "serverless") === "serverfull"
-						? "Runner: a long-lived process you keep running that connects to Rivet."
-						: "Serverless: Rivet invokes your deployment on demand and scales to zero."}
-				</p>
-			</div>
-			{mode === "serverfull" ? (
-				<BackendSetupServerfull provider={provider} />
+			{mode === "serverful" ? (
+				<BackendSetupServerful provider={provider} />
 			) : (
 				<BackendSetupServerless provider={provider} />
 			)}
@@ -1346,9 +1252,9 @@ function BackendSetupServerless({ provider }: { provider: Provider }) {
 	);
 }
 
-function BackendSetupServerfull({ provider }: { provider: Provider }) {
+function BackendSetupServerful({ provider }: { provider: Provider }) {
 	const isCustom = provider === "custom" || provider === "custom-platform";
-	const endpoint = useServerfullEndpoint();
+	const endpoint = useServerfulEndpoint();
 	const runnerName = useWatch({ name: "runnerName" });
 
 	return (
@@ -1358,11 +1264,11 @@ function BackendSetupServerfull({ provider }: { provider: Provider }) {
 				<div className="flex-1 min-w-0">
 					<p className="font-medium mb-4">Configure your runner</p>
 					<div className="space-y-3">
-						<ConnectServerfullForm.RunnerName />
+						<ConnectServerfulForm.RunnerName />
 						{isCustom ? (
 							<ConnectServerlessForm.CustomBranding />
 						) : null}
-						<ConnectServerfullForm.Datacenter />
+						<ConnectServerfulForm.Datacenter />
 					</div>
 				</div>
 			</div>
@@ -1389,7 +1295,7 @@ function BackendSetupServerfull({ provider }: { provider: Provider }) {
 	);
 }
 
-function useServerfullEndpoint() {
+function useServerfulEndpoint() {
 	const datacenter = useWatch({ name: "datacenter" });
 	const dataProvider = useEngineCompatDataProvider();
 	const { data } = useQuery(

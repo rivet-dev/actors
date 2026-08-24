@@ -26,6 +26,9 @@ pub struct Opts {
 	/// Cloud namespace to deploy to.
 	#[arg(long, default_value = DEFAULT_NAMESPACE)]
 	namespace: String,
+	/// Cloud compute pool to deploy to.
+	#[arg(long, default_value = crate::POOL_NAME)]
+	pool: String,
 	/// Override project from /tokens/api/inspect.
 	#[arg(long)]
 	project: Option<String>,
@@ -126,6 +129,10 @@ impl Opts {
 		let organization = self.org.unwrap_or(inspect.organization);
 		let namespace = ensure_namespace(&cloud, &project, &organization, &self.namespace).await?;
 
+		// Surface the pool in logs only when it is not the default, so the common
+		// single-pool case stays uncluttered. A `None` field is omitted by tracing.
+		let pool_field = (self.pool != crate::POOL_NAME).then_some(self.pool.as_str());
+
 		let dashboard = dashboard_endpoint(&self.cloud_api)?;
 		let dashboard_url = format!(
 			"{dashboard}/orgs/{}/projects/{}/ns/{}?skipOnboarding=1",
@@ -139,6 +146,7 @@ impl Opts {
 				context = %self.build_context.display(),
 				%project,
 				namespace = %namespace.name,
+				pool = pool_field,
 				reuse_image = self.reuse_image,
 				"deploying"
 			);
@@ -147,29 +155,41 @@ impl Opts {
 		if self.reuse_image {
 			// Reusing an image requires a pool that already has one; do not enable
 			// a fresh pool here.
-			if !pool_exists(&cloud, &project, &organization, &namespace.name).await? {
+			if !pool_exists(&cloud, &project, &organization, &namespace.name, &self.pool).await? {
 				bail!(
 					"cannot reuse image: no managed pool exists for this namespace, deploy an image first"
 				);
 			}
 		} else {
-			tracing::info!("enabling managed pool");
+			tracing::info!(pool = pool_field, "enabling managed pool");
 			create_or_update_pool(
 				&cloud,
 				&project,
 				&organization,
 				&namespace.name,
-				json!({ "displayName": "Default" }),
+				&self.pool,
+				json!({ "displayName": self.pool }),
 			)
 			.await?;
-			wait_for_pool(&cloud, &project, &organization, &namespace.name, false).await?;
+			wait_for_pool(
+				&cloud,
+				&project,
+				&organization,
+				&namespace.name,
+				&self.pool,
+				false,
+			)
+			.await?;
 		}
 
 		// Build and push a new image unless reusing the image already deployed to
 		// the pool. When reusing, the `image` field is omitted from the upsert so
 		// the pool keeps its current build. Sending `null` would instead clear it.
 		let image = if self.reuse_image {
-			tracing::info!("reusing existing pool image, skipping build");
+			tracing::info!(
+				pool = pool_field,
+				"reusing existing pool image, skipping build"
+			);
 			None
 		} else {
 			let registry = registry_endpoint(&self.cloud_api)?;
@@ -189,9 +209,9 @@ impl Opts {
 			Some((image_name, tag))
 		};
 
-		tracing::info!("upserting managed pool");
+		tracing::info!(pool = pool_field, "upserting managed pool");
 		let mut pool_body = json!({
-			"displayName": "Default",
+			"displayName": self.pool,
 		});
 		if let Some((image_name, tag)) = image {
 			pool_body["image"] = json!({
@@ -209,8 +229,24 @@ impl Opts {
 		if let Some(resources) = resources {
 			pool_body["resources"] = resources;
 		}
-		create_or_update_pool(&cloud, &project, &organization, &namespace.name, pool_body).await?;
-		wait_for_pool(&cloud, &project, &organization, &namespace.name, true).await?;
+		create_or_update_pool(
+			&cloud,
+			&project,
+			&organization,
+			&namespace.name,
+			&self.pool,
+			pool_body,
+		)
+		.await?;
+		wait_for_pool(
+			&cloud,
+			&project,
+			&organization,
+			&namespace.name,
+			&self.pool,
+			true,
+		)
+		.await?;
 
 		// The dashboard URL is the command's result; print it to stdout so it
 		// can be captured by scripts.

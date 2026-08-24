@@ -25,12 +25,11 @@
 		"dev": "tsup --config tsup.config.ts --watch",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest",
-		"serve": "DOCS_METADATA_PATH=./data/docs.json node dist/cli.js",
+		"serve": "node dist/cli.js",
 		"inspect": "npx @modelcontextprotocol/inspector http://localhost:7332/mcp"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.25.3",
-		"rivet-website": "workspace:*",
 		"zod": "^3.25.76"
 	},
 	"devDependencies": {

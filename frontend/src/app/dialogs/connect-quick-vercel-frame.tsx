@@ -13,7 +13,7 @@ import { successfulBackendSetupEffect } from "@/lib/effects";
 import { queryClient } from "@/queries/global";
 import { useRivetDsn } from "../env-variables";
 import { StepperForm } from "../forms/stepper-form";
-import { useEndpoint } from "./connect-manual-serverfull-frame";
+import { useEndpoint } from "./connect-manual-serverful-frame";
 import {
 	buildServerlessConfig,
 	ConfigurationAccordion,

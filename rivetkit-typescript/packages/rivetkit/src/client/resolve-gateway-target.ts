@@ -41,6 +41,7 @@ export async function resolveGatewayTarget(
 			key: target.getOrCreateForKey.key,
 			input: target.getOrCreateForKey.input,
 			region: target.getOrCreateForKey.region,
+			poolName: target.getOrCreateForKey.poolName,
 		});
 		return output.actorId;
 	}
@@ -51,6 +52,7 @@ export async function resolveGatewayTarget(
 			key: target.create.key,
 			input: target.create.input,
 			region: target.create.region,
+			poolName: target.create.poolName,
 		});
 		return output.actorId;
 	}

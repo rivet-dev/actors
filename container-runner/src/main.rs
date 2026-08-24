@@ -12,12 +12,14 @@
 //! The runner hosts as many concurrent actors as the engine places on it,
 //! each with its own child process on its own port; the pool's request
 //! concurrency decides how many that is (1 in the recommended game-server
-//! setup). When the last actor stops the process exits so the platform reaps
-//! the instance.
+//! setup). The instance stays warm after its last actor stops and never
+//! self-exits; the engine reaps it by draining the `/start` connection once
+//! the request lifespan elapses, or the platform sends a SIGTERM.
 
 mod actor;
 mod child;
 mod input;
+mod monitor;
 mod proxy;
 
 use std::io::Read;
@@ -34,6 +36,27 @@ use tracing_subscriber::EnvFilter;
 
 use crate::actor::GameServer;
 use crate::child::ChildProcess;
+
+/// Crate version from Cargo.toml (the workspace version).
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Git commit SHA baked in at build time (see `build.rs`). `"unknown"` when the
+/// build had neither `OVERRIDE_GIT_SHA` nor a reachable git repo (the release
+/// image build context excludes `.git`).
+pub(crate) const GIT_SHA: &str = env!("CONTAINER_RUNNER_GIT_SHA");
+
+/// The effective git SHA, or `None` when unknown. Prefers the build-time SHA and
+/// falls back to a runtime `OVERRIDE_GIT_SHA` env var, so a deploy that cannot
+/// inject a build arg can still surface it via an environment variable.
+pub(crate) fn git_sha() -> Option<String> {
+	if GIT_SHA != "unknown" {
+		return Some(GIT_SHA.to_string());
+	}
+	std::env::var("OVERRIDE_GIT_SHA")
+		.ok()
+		.map(|sha| sha.trim().to_string())
+		.filter(|sha| !sha.is_empty())
+}
 
 /// Static runner configuration derived from the CLI/env.
 pub struct RunnerConfig {
@@ -68,15 +91,20 @@ static RESERVED_PORTS: LazyLock<scc::HashSet<u16>> = LazyLock::new(scc::HashSet:
 static EXIT: LazyLock<CancellationToken> = LazyLock::new(CancellationToken::new);
 
 /// Set when the process is shutting down because the PLATFORM sent a signal.
-/// Cloud Run gives a container roughly 10 seconds between SIGTERM and SIGKILL,
-/// so every grace period on this path must fit that budget; engine-initiated
-/// stops keep the full configured grace (their budget is the pool's drain
-/// grace period instead).
+/// The hosting platform gives a container only a bounded window (often ~10
+/// seconds) between SIGTERM and SIGKILL, so every grace period on this path must
+/// fit that budget; engine-initiated stops keep the full configured grace
+/// (their budget is the pool's drain grace period instead).
 static SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+/// Set when shutdown was triggered by a platform SIGTERM (an instance reclaim),
+/// as opposed to a local SIGINT (developer Ctrl-C). Distinguishes a reclaim
+/// from a manual stop for downstream shutdown handling.
+static PLATFORM_RECLAIM: AtomicBool = AtomicBool::new(false);
+
 /// How long the platform gives this container between SIGTERM and SIGKILL.
-/// Cloud Run defaults to 10 seconds (configurable up to 60 on the service);
-/// keep this in sync with the platform setting via RIVET_SIGTERM_BUDGET_SECS.
+/// Defaults to 10 seconds; keep this in sync with the platform's actual budget
+/// via RIVET_SIGTERM_BUDGET_SECS.
 /// The signal-path teardown splits the budget: ~60% for the engine drain
 /// (whose per-actor stops SIGTERM children with a grace capped at ~40%), 1s
 /// for the straggler sweep, and the rest as margin.
@@ -108,6 +136,20 @@ pub fn runner_config() -> Arc<RunnerConfig> {
 
 pub fn children() -> &'static scc::HashMap<String, Arc<ChildProcess>> {
 	&CHILDREN
+}
+
+/// Actor ids currently hosting a running child on this instance. Used to
+/// attribute the instance-wide resource samples to the running actor(s).
+pub async fn active_actor_ids() -> Vec<String> {
+	let mut ids = Vec::new();
+	// `retain_async` returning `true` keeps every entry: a read-only scan.
+	CHILDREN
+		.retain_async(|actor_id, _| {
+			ids.push(actor_id.clone());
+			true
+		})
+		.await;
+	ids
 }
 
 /// Reserve a local port for a new child. An explicit `input.port` is honored
@@ -167,12 +209,12 @@ pub fn effective_stop_grace() -> Duration {
 	}
 }
 
-/// End the process. Called when the LAST actor on this instance is gone (or a
-/// failed start poisoned an otherwise idle instance): the instance drains
-/// instead of lingering for the next placement. The runner is PID 1 in the
+/// End the process. Only the platform shutdown signal drives this now: actors
+/// stopping or failing to start no longer exit the instance, so it stays warm
+/// and reusable and its logs have time to drain. The runner is PID 1 in the
 /// image, so exiting stops the container and the platform reaps the instance.
 pub fn request_exit(actor_id: &str, reason: &str) {
-	tracing::info!(actor_id = %actor_id, reason, "actor finished, exiting container");
+	tracing::info!(actor_id = %actor_id, reason, "shutting down container");
 	EXIT.cancel();
 }
 
@@ -222,8 +264,9 @@ fn base64url_nopad(input: &[u8]) -> String {
     long_about = None,
 )]
 struct Args {
-	/// Serverless HTTP front-door port. Rivet Compute injects RIVET_PORT (plain Cloud Run
-	/// uses PORT); resolved in `main` as --port > RIVET_PORT > PORT > 8080.
+	/// Serverless HTTP front-door port. Rivet Compute injects RIVET_PORT (other
+	/// serverless platforms use the conventional PORT); resolved in `main` as
+	/// --port > RIVET_PORT > PORT > 8080.
 	#[arg(long)]
 	port: Option<u16>,
 
@@ -244,7 +287,7 @@ struct Args {
 	base_path: String,
 
 	/// SIGTERM→SIGKILL grace period (seconds) when stopping the child.
-	#[arg(long, env = "RIVET_STOP_GRACE_SECS", default_value_t = 25)]
+	#[arg(long, env = "RIVET_STOP_GRACE_SECS", default_value_t = 10)]
 	stop_grace_secs: u64,
 
 	/// How long (seconds) to wait for the child's port to open before failing start.
@@ -285,7 +328,7 @@ async fn async_main() -> Result<()> {
 	let boot_id = boot_id();
 	tracing::info!(?args, %boot_id, "starting container-runner");
 
-	// Front-door port: Rivet Compute injects RIVET_PORT; plain Cloud Run uses PORT.
+	// Front-door port: Rivet Compute injects RIVET_PORT; other serverless platforms use the conventional PORT.
 	let port = args
 		.port
 		.or_else(|| env_u16("RIVET_PORT"))
@@ -329,6 +372,7 @@ async fn async_main() -> Result<()> {
 
 	let serve_shutdown = CancellationToken::new();
 	spawn_signal_handler();
+	monitor::spawn_resource_monitor();
 
 	let serve = tokio::spawn(serverless_http::serve(
 		runtime.clone(),
@@ -339,12 +383,17 @@ async fn async_main() -> Result<()> {
 			host: Some("::".to_string()),
 			port,
 			public_dir: None,
+			application: None,
 		},
 		serve_shutdown.clone(),
 	));
 	tracing::info!(port, "container-runner serverless front door listening");
 
-	// Wait for an exit request, then tear down. Two orders depending on why:
+	// Wait for an exit request, then tear down. Only the signal path is live
+	// today: nothing calls `request_exit` except `spawn_signal_handler`, which
+	// sets `SIGNAL_SHUTDOWN` before cancelling `EXIT`, so the `else` branch is
+	// currently unreachable and kept only as a fallback for a future
+	// actor-driven exit.
 	//
 	// Signal (platform is reclaiming the instance): tell the engine FIRST so
 	// it can start re-placing actors immediately. Its per-actor stops run our
@@ -352,12 +401,22 @@ async fn async_main() -> Result<()> {
 	// The drain is bounded so an unreachable engine cannot eat the whole
 	// platform budget; the sweep then catches any child whose hooks never ran.
 	//
-	// Actor-driven exit (last actor stopped or a failed start poisoned an
-	// idle instance): no platform deadline. Children are already reaped by
-	// the hooks (the sweep is a no-op backstop), and the runtime drains
-	// unbounded so the /start SSE flushes its stopping frame cleanly.
+	// Fallback actor-driven exit (unreachable today): no platform deadline.
+	// Children are already reaped by the hooks (the sweep is a no-op backstop),
+	// and the runtime drains unbounded so the /start SSE flushes cleanly.
 	EXIT.cancelled().await;
 	if SIGNAL_SHUTDOWN.load(Ordering::Acquire) {
+		// A platform SIGTERM reclaims this instance. Report every actor as crashed
+		// before draining so an unexpected SIGTERM (OOM or the ~60 minute request
+		// cap) surfaces as a crash on the engine instead of a silent reallocation.
+		// This runs while the envoy is still connected so the crash reaches the
+		// engine. A local SIGINT (Ctrl-C) drains gracefully without a crash.
+		if PLATFORM_RECLAIM.load(Ordering::Acquire) {
+			crate::actor::crash_all_actors(
+				"runner received unexpected platform SIGTERM, likely OOM or running longer than 60 minutes",
+			)
+			.await;
+		}
 		if tokio::time::timeout(signal_drain_timeout(), runtime.shutdown())
 			.await
 			.is_err()
@@ -412,7 +471,30 @@ fn spawn_signal_handler() {
 		let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
 		let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
 		tokio::select! {
-			_ = sigterm.recv() => tracing::info!("received SIGTERM"),
+			_ = sigterm.recv() => {
+				PLATFORM_RECLAIM.store(true, Ordering::Release);
+				// Attribute the reclaim to each running actor so it is visible in
+				// actor-scoped logs, not only the process-level log stream.
+				let mut actor_ids = Vec::new();
+				CHILDREN
+					.retain_async(|actor_id, _| {
+						actor_ids.push(actor_id.clone());
+						true
+					})
+					.await;
+				if actor_ids.is_empty() {
+					tracing::error!(
+						"unexpected platform SIGTERM received, likely hitting OOM or running longer than 60 minutes"
+					);
+				} else {
+					for actor_id in actor_ids {
+						tracing::error!(
+							actor_id = %actor_id,
+							"unexpected platform SIGTERM received, likely hitting OOM or running longer than 60 minutes"
+						);
+					}
+				}
+			}
 			_ = sigint.recv() => tracing::info!("received SIGINT"),
 		}
 		SIGNAL_SHUTDOWN.store(true, Ordering::Release);

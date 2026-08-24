@@ -72,8 +72,18 @@ describe("getActorStatus", () => {
 		).toBe("crashed");
 	});
 
-	it("returns 'crashed' when destroyed without ever being connectable", () => {
-		expect(getActorStatus({ ...base, destroyTs: 2000 })).toBe("crashed");
+	it("returns 'stopped' when destroyed without an error (connectableTs is cleared on destroy)", () => {
+		expect(getActorStatus({ ...base, destroyTs: 2000 })).toBe("stopped");
+	});
+
+	it("returns 'crashed' when destroyed with an error (error wins over graceful stop)", () => {
+		expect(
+			getActorStatus({
+				...base,
+				destroyTs: 2000,
+				error: { message: "boom" },
+			}),
+		).toBe("crashed");
 	});
 
 	it("returns 'unknown' when createTs is not set", () => {

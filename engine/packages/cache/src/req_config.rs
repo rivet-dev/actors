@@ -365,7 +365,7 @@ impl RequestConfig {
 				keys: cache_keys.clone(),
 			};
 
-			let payload = serde_json::to_vec(&message)?;
+			let payload = rivet_util::serde::json_to_vec!(&message)?;
 
 			if let Err(err) = ups
 				.publish(
@@ -495,12 +495,12 @@ impl RequestConfig {
 			keys,
 			getter,
 			|value: &Value| -> Result<Vec<u8>> {
-				serde_json::to_vec(&value)
+				rivet_util::serde::json_to_vec!(&value)
 					.map_err(Error::SerdeEncode)
 					.map_err(Into::into)
 			},
 			|value: &[u8]| -> Result<Value> {
-				serde_json::from_slice(value)
+				rivet_util::serde::json_from_slice!(value)
 					.map_err(Error::SerdeDecode)
 					.map_err(Into::into)
 			},

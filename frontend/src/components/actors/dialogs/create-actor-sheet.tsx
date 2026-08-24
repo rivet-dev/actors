@@ -56,6 +56,8 @@ export function CreateActorSheet({
 	});
 	const { copy } = useActorsView();
 	const [advancedOpen, setAdvancedOpen] = useState(false);
+	const defaultRunnerNameSelector =
+		ActorCreateForm.useDefaultRunnerNameSelector();
 
 	const isAgentOs = variant === "agent-os";
 	const title = isAgentOs
@@ -96,7 +98,8 @@ export function CreateActorSheet({
 							key: values.key,
 							datacenter: values.datacenter,
 							runnerNameSelector:
-								values.runnerNameSelector || "default",
+								values.runnerNameSelector ||
+								defaultRunnerNameSelector,
 							crashPolicy: "destroy",
 						});
 					}}
@@ -224,7 +227,9 @@ function AdvancedFields() {
 					<ActorCreateForm.Datacenter />
 					<ActorCreateForm.RunnerNameSelector />
 				</>
-			) : null}
+			) : (
+				<ActorCreateForm.Pool />
+			)}
 			<ActorCreateForm.JsonInput />
 		</div>
 	);

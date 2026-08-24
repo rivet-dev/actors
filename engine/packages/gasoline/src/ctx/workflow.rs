@@ -302,9 +302,9 @@ impl WorkflowCtx {
 				tracing::debug!("activity success");
 
 				// Write output
-				let input_val = serde_json::value::to_raw_value(input)
+				let input_val = rivet_util::serde::json_to_raw_value!(input)
 					.map_err(WorkflowError::SerializeActivityInput)?;
-				let output_val = serde_json::value::to_raw_value(&output)
+				let output_val = rivet_util::serde::json_to_raw_value!(&output)
 					.map_err(WorkflowError::SerializeActivityOutput)?;
 
 				tokio::try_join!(
@@ -346,7 +346,7 @@ impl WorkflowCtx {
 				tracing::error!(?err, "activity error");
 
 				let err_str = err.to_string();
-				let input_val = serde_json::value::to_raw_value(input)
+				let input_val = rivet_util::serde::json_to_raw_value!(input)
 					.map_err(WorkflowError::SerializeActivityInput)?;
 
 				// Write error (failed state)
@@ -380,7 +380,7 @@ impl WorkflowCtx {
 				tracing::debug!("activity timeout");
 
 				let err_str = err.to_string();
-				let input_val = serde_json::value::to_raw_value(input)
+				let input_val = rivet_util::serde::json_to_raw_value!(input)
 					.map_err(WorkflowError::SerializeActivityInput)?;
 
 				self.db

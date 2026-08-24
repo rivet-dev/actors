@@ -830,7 +830,7 @@ async fn compare_retry(
 	if reset {
 		state.reschedule_ts = None;
 	} else {
-		let backoff = util::backoff::Backoff::new_at(
+		let backoff = util::throttle::Backoff::new_at(
 			ctx.config().pegboard().reschedule_backoff_max_exponent(),
 			None,
 			ctx.config().pegboard().base_retry_timeout(),

@@ -46,6 +46,8 @@ export default function CreateActorDialog() {
 	});
 
 	const { copy } = useActorsView();
+	const defaultRunnerNameSelector =
+		ActorCreateForm.useDefaultRunnerNameSelector();
 
 	return (
 		<ActorCreateForm.Form
@@ -55,7 +57,8 @@ export default function CreateActorDialog() {
 					input: values.input ? JSON.parse(values.input) : undefined,
 					key: values.key,
 					datacenter: values.datacenter,
-					runnerNameSelector: values.runnerNameSelector || "default",
+					runnerNameSelector:
+						values.runnerNameSelector || defaultRunnerNameSelector,
 					crashPolicy: "destroy",
 				});
 			}}
@@ -91,7 +94,9 @@ export default function CreateActorDialog() {
 									<ActorCreateForm.Datacenter />
 									<ActorCreateForm.RunnerNameSelector />
 								</>
-							) : null}
+							) : (
+								<ActorCreateForm.Pool />
+							)}
 							<ActorCreateForm.JsonInput />
 						</AccordionContent>
 					</AccordionItem>

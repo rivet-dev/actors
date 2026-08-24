@@ -635,8 +635,8 @@ fn reconnect_backoff(
 	retry_count: usize,
 	base_retry_timeout: usize,
 	max_exponent: usize,
-) -> util::backoff::Backoff {
-	util::backoff::Backoff::new_at(max_exponent, None, base_retry_timeout, 500, retry_count)
+) -> util::throttle::Backoff {
+	util::throttle::Backoff::new_at(max_exponent, None, base_retry_timeout, 500, retry_count)
 }
 
 /// Report an error to the error tracker workflow.

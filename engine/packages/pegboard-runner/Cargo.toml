@@ -29,6 +29,7 @@ rivet-metrics.workspace = true
 rivet-runner-protocol.workspace = true
 rivet-runtime.workspace = true
 rivet-types.workspace = true
+rivet-util.workspace = true
 scc.workspace = true
 serde_bare.workspace = true
 serde_json.workspace = true

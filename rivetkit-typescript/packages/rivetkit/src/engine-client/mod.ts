@@ -167,7 +167,14 @@ export class RemoteEngineControlClient implements EngineControlClient {
 	): Promise<ActorOutput> {
 		await this.#metadataPromise;
 
-		const { name, key, input: actorInput, region, crashPolicy } = input;
+		const {
+			name,
+			key,
+			input: actorInput,
+			region,
+			crashPolicy,
+			poolName,
+		} = input;
 
 		logger().info({
 			msg: "getOrCreateWithKey: getting or creating actor via engine api",
@@ -179,7 +186,7 @@ export class RemoteEngineControlClient implements EngineControlClient {
 			datacenter: region,
 			name,
 			key: serializeActorKey(key),
-			runner_name_selector: this.#config.poolName,
+			runner_name_selector: poolName ?? this.#config.poolName,
 			input: actorInput
 				? uint8ArrayToBase64(
 						encodeCborCompat(actorInput as JsonCompatValue),
@@ -205,6 +212,7 @@ export class RemoteEngineControlClient implements EngineControlClient {
 		input,
 		region,
 		crashPolicy,
+		poolName,
 	}: CreateInput): Promise<ActorOutput> {
 		await this.#metadataPromise;
 
@@ -214,7 +222,7 @@ export class RemoteEngineControlClient implements EngineControlClient {
 		const result = await createActor(this.#config, {
 			datacenter: region,
 			name,
-			runner_name_selector: this.#config.poolName,
+			runner_name_selector: poolName ?? this.#config.poolName,
 			key: serializeActorKey(key),
 			input: input
 				? uint8ArrayToBase64(encodeCborCompat(input as JsonCompatValue))
@@ -422,7 +430,8 @@ export class RemoteEngineControlClient implements EngineControlClient {
 				this.#config.maxInputSize,
 				undefined,
 				"getOrCreateForKey" in target
-					? this.#config.poolName
+					? (target.getOrCreateForKey.poolName ??
+						this.#config.poolName)
 					: undefined,
 				options,
 			);

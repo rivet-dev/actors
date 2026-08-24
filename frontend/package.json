@@ -58,7 +58,7 @@
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@radix-ui/react-visually-hidden": "^1.2.3",
-    "@rivet-gg/cloud": "https://pkg.pr.new/rivet-dev/engine-ee/@rivet-gg/cloud@ca7018c",
+    "@rivet-gg/cloud": "https://pkg.pr.new/rivet-dev/engine-ee/@rivet-gg/cloud@87a84c0",
     "@rivet-gg/icons": "workspace:*",
     "@rivetkit/engine-api-full": "workspace:*",
     "@rivetkit/shared-data": "workspace:*",

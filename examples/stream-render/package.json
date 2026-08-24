@@ -13,7 +13,7 @@
 		"check-types": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@rivetkit/react": "^2.3.6",
+		"@rivetkit/react": "^2.3.7",
 		"@tailwindcss/postcss": "^4.2.2",
 		"@tailwindcss/typography": "^0.5.19",
 		"hono": "^4.7.7",
@@ -21,7 +21,7 @@
 		"react": "^18.2.0",
 		"react-dom": "^18.2.0",
 		"render-dds": "github:R4ph-t/DDS#v0.8.6",
-		"rivetkit": "^2.3.6",
+		"rivetkit": "^2.3.7",
 		"tailwindcss": "^4.2.2",
 		"tsx": "^4.19.0"
 	},

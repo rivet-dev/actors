@@ -26,9 +26,15 @@ impl OwnedVersionedData for UpsMessage {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			1 => Ok(UpsMessage::V1(serde_bare::from_slice(payload)?)),
-			2 => Ok(UpsMessage::V2(serde_bare::from_slice(payload)?)),
-			3 => Ok(UpsMessage::V3(serde_bare::from_slice(payload)?)),
+			1 => Ok(UpsMessage::V1(serde_bare::from_slice(
+				payload
+			)?)),
+			2 => Ok(UpsMessage::V2(serde_bare::from_slice(
+				payload
+			)?)),
+			3 => Ok(UpsMessage::V3(serde_bare::from_slice(
+				payload
+			)?)),
 			_ => bail!("invalid version: {version}"),
 		}
 	}

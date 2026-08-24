@@ -23,7 +23,9 @@ pub fn action_not_found(name: impl Into<String>) -> anyhow::Error {
 pub fn public_error_status_code(group: &str, code: &str) -> Option<u16> {
 	match (group, code) {
 		("auth", "forbidden") => Some(403),
+		("actor", "not_found") => Some(404),
 		("actor", "action_not_found") => Some(404),
+		("actor", "method_not_allowed") => Some(405),
 		("actor", "action_timed_out") => Some(408),
 		("actor", "aborted") => Some(400),
 		(

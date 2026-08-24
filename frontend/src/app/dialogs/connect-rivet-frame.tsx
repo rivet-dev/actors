@@ -7,20 +7,17 @@ import {
 } from "@rivet-gg/icons";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Suspense, useEffect } from "react";
-import { useRivetDsn } from "@/app/env-variables";
 import {
-	CodeFrame,
-	CodeGroup,
-	CodePreview,
-	type DialogContentProps,
-	Frame,
-} from "@/components";
+	AgentPromptBanner,
+	CommandBox,
+	useComputeInstructionsCode,
+} from "@/app/compute-deploy";
+import { type DialogContentProps, Frame } from "@/components";
 import {
 	ErrorDetails,
 	useCloudNamespaceDataProvider,
 } from "@/components/actors";
 import { Button } from "@/components/ui/button";
-import { getAgentInstructionsPrompt } from "@/content/agent-prompts";
 import { deriveProviderFromMetadata } from "@/lib/data";
 import { successfulBackendSetupEffect } from "@/lib/effects";
 
@@ -78,20 +75,15 @@ export default function ConnectRivetFrameContent({
 						<StepNumber n={1} />
 						<div className="flex-1 min-w-0">
 							<p className="font-medium mb-2">
-								Copy this prompt into your coding agent
+								Deploy your project
 							</p>
-							<CodeGroup className="my-0">
-								{[
-									<Suspense
-										key="agent-instructions"
-										fallback={
-											<div className="h-32 animate-pulse bg-muted rounded" />
-										}
-									>
-										<AgentInstructions />
-									</Suspense>,
-								]}
-							</CodeGroup>
+							<Suspense
+								fallback={
+									<div className="h-20 animate-pulse bg-muted rounded" />
+								}
+							>
+								<AgentInstructions />
+							</Suspense>
 						</div>
 					</div>
 					<div className="flex gap-3">
@@ -131,24 +123,19 @@ function StepNumber({ n }: { n: number }) {
 }
 
 function AgentInstructions() {
-	const publishableToken = useRivetDsn({ kind: "publishable" });
-	const secretToken = useRivetDsn({ kind: "secret" });
-
-	const code = getAgentInstructionsPrompt({
-		providerStr: "your chosen provider",
-		publishableToken,
-		secretToken,
-		runnerName: "default",
-	});
+	const { code, cloudToken, namespace } = useComputeInstructionsCode();
+	const deployCommand = `npx @rivetkit/cli deploy --token ${
+		cloudToken ?? "<RIVET_CLOUD_TOKEN>"
+	} --namespace ${namespace}`;
 
 	return (
-		<CodeFrame language="markdown" code={() => code} className="m-0">
-			<CodePreview
-				language="markdown"
-				className="text-left"
-				code={code}
-			/>
-		</CodeFrame>
+		<div className="flex flex-col gap-3 mt-4">
+			<AgentPromptBanner code={code} containsSecret />
+			<p className="text-xs text-muted-foreground">
+				Or deploy manually from your project root:
+			</p>
+			<CommandBox command={deployCommand} />
+		</div>
 	);
 }
 

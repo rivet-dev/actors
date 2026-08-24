@@ -85,7 +85,11 @@ services:
         condition: service_healthy
   postgres-dc-a:
     restart: unless-stopped
-    image: postgres:17-alpine
+    image: postgres:18-alpine
+    command:
+      - postgres
+      - '-c'
+      - max_connections=500
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -93,7 +97,7 @@ services:
     volumes:
       - >-
         ./datacenters/dc-a/postgres/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
-      - postgres-data-dc-a:/var/lib/postgresql/data
+      - postgres-data-dc-a:/var/lib/postgresql
     ports:
       - '5432:5432'
     healthcheck:
@@ -107,7 +111,7 @@ services:
       - rivet-network-dc-a
   rivet-shell-dc-a:
     build:
-      context: ../../..
+      context: ../..
       dockerfile: docker/engine/Dockerfile
       target: engine-full
       args:
@@ -173,7 +177,7 @@ services:
       - '4317:4317'
   rivet-engine-dc-a:
     build:
-      context: ../../..
+      context: ../..
       dockerfile: docker/engine/Dockerfile
       target: engine-full
       args:
@@ -182,6 +186,7 @@ services:
     restart: unless-stopped
     environment:
       - RUST_LOG_ANSI_COLOR=1
+      - RUST_LOG=universaldb::driver::postgres=debug
       - RIVET_OTEL_ENABLED=1
       - RIVET_OTEL_SAMPLER_RATIO=1
       - RIVET_OTEL_GRPC_ENDPOINT=http://otel-collector-dc-a:4317
@@ -215,27 +220,36 @@ services:
       start_period: 30s
   runner-dc-a:
     build:
-      context: ../../..
-      dockerfile: engine/sdks/rust/test-envoy/Dockerfile
+      context: ../..
+      dockerfile: examples/kitchen-sink/Dockerfile
+      args:
+        NODE_IMAGE: node:22-trixie-slim
     platform: linux/amd64
     restart: unless-stopped
     environment:
+      - RIVET_KITCHEN_SINK_MODE=serverful
       - RIVET_ENDPOINT=http://rivet-engine-dc-a:6420
-      - INTERNAL_SERVER_PORT=5050
-      - RIVET_POOL_NAME=test-envoy
-      - AUTOSTART_ENVOY=1
-      - AUTOCONFIGURE_SERVERLESS=0
+      - RIVET_TOKEN=dev
+      - RIVET_NAMESPACE=default
+      - RIVET_POOL=default
+      - PORT=8080
     stop_grace_period: 4s
     ports:
-      - '5050:5050'
+      - '5050:8080'
     depends_on:
       rivet-engine-dc-a:
         condition: service_healthy
+      runner-config-init:
+        condition: service_completed_successfully
     networks:
       - rivet-network-dc-a
   postgres-dc-b:
     restart: unless-stopped
-    image: postgres:17-alpine
+    image: postgres:18-alpine
+    command:
+      - postgres
+      - '-c'
+      - max_connections=500
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -243,7 +257,7 @@ services:
     volumes:
       - >-
         ./datacenters/dc-b/postgres/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
-      - postgres-data-dc-b:/var/lib/postgresql/data
+      - postgres-data-dc-b:/var/lib/postgresql
     healthcheck:
       test:
         - CMD-SHELL
@@ -255,7 +269,7 @@ services:
       - rivet-network-dc-b
   rivet-shell-dc-b:
     build:
-      context: ../../..
+      context: ../..
       dockerfile: docker/engine/Dockerfile
       target: engine-full
       args:
@@ -319,7 +333,7 @@ services:
       - rivet-network-dc-b-to-core
   rivet-engine-dc-b:
     build:
-      context: ../../..
+      context: ../..
       dockerfile: docker/engine/Dockerfile
       target: engine-full
       args:
@@ -328,6 +342,7 @@ services:
     restart: unless-stopped
     environment:
       - RUST_LOG_ANSI_COLOR=1
+      - RUST_LOG=universaldb::driver::postgres=debug
       - RIVET_OTEL_ENABLED=1
       - RIVET_OTEL_SAMPLER_RATIO=1
       - RIVET_OTEL_GRPC_ENDPOINT=http://otel-collector-dc-b:4317
@@ -359,25 +374,34 @@ services:
       start_period: 30s
   runner-dc-b:
     build:
-      context: ../../..
-      dockerfile: engine/sdks/rust/test-envoy/Dockerfile
+      context: ../..
+      dockerfile: examples/kitchen-sink/Dockerfile
+      args:
+        NODE_IMAGE: node:22-trixie-slim
     platform: linux/amd64
     restart: unless-stopped
     environment:
+      - RIVET_KITCHEN_SINK_MODE=serverful
       - RIVET_ENDPOINT=http://rivet-engine-dc-b:6420
-      - INTERNAL_SERVER_PORT=5050
-      - RIVET_POOL_NAME=test-envoy
-      - AUTOSTART_ENVOY=1
-      - AUTOCONFIGURE_SERVERLESS=0
+      - RIVET_TOKEN=dev
+      - RIVET_NAMESPACE=default
+      - RIVET_POOL=default
+      - PORT=8080
     stop_grace_period: 4s
     depends_on:
       rivet-engine-dc-b:
         condition: service_healthy
+      runner-config-init:
+        condition: service_completed_successfully
     networks:
       - rivet-network-dc-b
   postgres-dc-c:
     restart: unless-stopped
-    image: postgres:17-alpine
+    image: postgres:18-alpine
+    command:
+      - postgres
+      - '-c'
+      - max_connections=500
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
@@ -385,7 +409,7 @@ services:
     volumes:
       - >-
         ./datacenters/dc-c/postgres/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
-      - postgres-data-dc-c:/var/lib/postgresql/data
+      - postgres-data-dc-c:/var/lib/postgresql
     healthcheck:
       test:
         - CMD-SHELL
@@ -397,7 +421,7 @@ services:
       - rivet-network-dc-c
   rivet-shell-dc-c:
     build:
-      context: ../../..
+      context: ../..
       dockerfile: docker/engine/Dockerfile
       target: engine-full
       args:
@@ -461,7 +485,7 @@ services:
       - rivet-network-dc-c-to-core
   rivet-engine-dc-c:
     build:
-      context: ../../..
+      context: ../..
       dockerfile: docker/engine/Dockerfile
       target: engine-full
       args:
@@ -470,6 +494,7 @@ services:
     restart: unless-stopped
     environment:
       - RUST_LOG_ANSI_COLOR=1
+      - RUST_LOG=universaldb::driver::postgres=debug
       - RIVET_OTEL_ENABLED=1
       - RIVET_OTEL_SAMPLER_RATIO=1
       - RIVET_OTEL_GRPC_ENDPOINT=http://otel-collector-dc-c:4317
@@ -501,22 +526,46 @@ services:
       start_period: 30s
   runner-dc-c:
     build:
-      context: ../../..
-      dockerfile: engine/sdks/rust/test-envoy/Dockerfile
+      context: ../..
+      dockerfile: examples/kitchen-sink/Dockerfile
+      args:
+        NODE_IMAGE: node:22-trixie-slim
     platform: linux/amd64
     restart: unless-stopped
     environment:
+      - RIVET_KITCHEN_SINK_MODE=serverful
       - RIVET_ENDPOINT=http://rivet-engine-dc-c:6420
-      - INTERNAL_SERVER_PORT=5050
-      - RIVET_POOL_NAME=test-envoy
-      - AUTOSTART_ENVOY=1
-      - AUTOCONFIGURE_SERVERLESS=0
+      - RIVET_TOKEN=dev
+      - RIVET_NAMESPACE=default
+      - RIVET_POOL=default
+      - PORT=8080
     stop_grace_period: 4s
     depends_on:
       rivet-engine-dc-c:
         condition: service_healthy
+      runner-config-init:
+        condition: service_completed_successfully
     networks:
       - rivet-network-dc-c
+  runner-config-init:
+    image: curlimages/curl:latest
+    restart: 'no'
+    depends_on:
+      rivet-engine-dc-a:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - '-c'
+    command:
+      - >-
+        until curl -fsS -X PUT
+        "http://rivet-engine-dc-a:6420/runner-configs/default?namespace=default"
+        -H "Authorization: Bearer dev" -H "Content-Type: application/json" -d
+        '{"datacenters":{"dc-a":{"normal":{}},"dc-b":{"normal":{}},"dc-c":{"normal":{}}}}';
+        do echo "waiting for engine to accept runner config"; sleep 2; done;
+        echo "runner config upserted"
+    networks:
+      - rivet-network-dc-a
 networks:
   rivet-core-network:
     driver: bridge

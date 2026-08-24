@@ -484,7 +484,10 @@ export function jsonStringifyCompat(
 				return [JSON_COMPAT_BIGINT, value.toString()];
 			}
 			if (value instanceof ArrayBuffer) {
-				return [JSON_COMPAT_ARRAY_BUFFER, base64EncodeArrayBuffer(value)];
+				return [
+					JSON_COMPAT_ARRAY_BUFFER,
+					base64EncodeArrayBuffer(value),
+				];
 			}
 			if (value instanceof Uint8Array) {
 				return [JSON_COMPAT_UINT8_ARRAY, base64EncodeUint8Array(value)];

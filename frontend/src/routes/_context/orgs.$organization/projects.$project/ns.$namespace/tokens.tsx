@@ -134,7 +134,7 @@ export function PublishableToken() {
 				<>
 					Manually configuring the client is only required for{" "}
 					<a
-						href="https://www.rivet.dev/docs/general/runtime-modes/#runners"
+						href="https://www.rivet.dev/docs/general/runtime-modes/#runner"
 						target="_blank"
 						rel="noopener noreferrer"
 						className="underline"

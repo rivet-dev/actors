@@ -2,6 +2,8 @@ import getPort from "get-port";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { actor, setup } from "@/mod";
 import type { Registry } from "@/registry";
+import { loadNapiRuntime } from "@/registry/napi-runtime";
+import type { RuntimeServeConfig } from "@/registry/runtime";
 import { getRivetkitRuntimeMode, parsePortEnv } from "@/utils/env-vars";
 
 describe("getRivetkitRuntimeMode", () => {
@@ -101,6 +103,11 @@ const testActor = actor({
 describe("registry.listen() end-to-end", () => {
 	let registry: Registry<any> | undefined;
 	let listenPromise: Promise<void> | undefined;
+	let runtimeMode: string | undefined;
+
+	beforeEach(() => {
+		runtimeMode = process.env.RIVETKIT_RUNTIME_MODE;
+	});
 
 	afterEach(async () => {
 		if (registry) {
@@ -111,6 +118,8 @@ describe("registry.listen() end-to-end", () => {
 			await listenPromise.catch(() => undefined);
 			listenPromise = undefined;
 		}
+		if (runtimeMode === undefined) delete process.env.RIVETKIT_RUNTIME_MODE;
+		else process.env.RIVETKIT_RUNTIME_MODE = runtimeMode;
 	}, 30_000);
 
 	test("binds the requested port and serves /api/rivet/metadata", async () => {
@@ -161,6 +170,55 @@ describe("registry.listen() end-to-end", () => {
 		const body = await response.json();
 		expect(body.runtime).toBe("rivetkit");
 		expect(body.status).toBeDefined();
+	}, 30_000);
+
+	test("native application listener forwards requests", async () => {
+		const port = await getPort({ host: "127.0.0.1" });
+		const paths: string[] = [];
+		const { runtime } = await loadNapiRuntime();
+		const handle = runtime.createRegistry();
+		const applicationListener = runtime.serveApplicationListener(
+			handle,
+			{
+				port,
+				host: "127.0.0.1",
+				application: async (request) => {
+					const path = new URL(request.url).pathname;
+					paths.push(path);
+					return {
+						status: 201,
+						headers: { "x-application": "yes" },
+						body: new TextEncoder().encode(
+							path === "/echo"
+								? new TextDecoder().decode(request.body)
+								: `application:${path}`,
+						),
+					};
+				},
+			},
+			{
+				serverlessMaxStartPayloadBytes: 1024 * 1024,
+			} as RuntimeServeConfig,
+		);
+
+		try {
+			const baseUrl = `http://127.0.0.1:${port}`;
+			const health = await waitForResponse(`${baseUrl}/health`, 15_000);
+			expect(health.status).toBe(201);
+			expect(await health.text()).toBe("application:/health");
+
+			const echo = await fetch(`${baseUrl}/echo`, {
+				method: "POST",
+				body: "hello",
+			});
+			expect(echo.status).toBe(201);
+			expect(echo.headers.get("x-application")).toBe("yes");
+			expect(await echo.text()).toBe("hello");
+			expect(paths).toEqual(["/health", "/echo"]);
+		} finally {
+			await runtime.shutdownRegistry(handle);
+			await applicationListener;
+		}
 	}, 30_000);
 });
 

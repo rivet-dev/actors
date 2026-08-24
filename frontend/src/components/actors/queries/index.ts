@@ -39,11 +39,16 @@ export function getActorStatus(
 		return "running";
 	}
 
-	if (createTs && connectableTs && destroyTs) {
+	// A destroyed actor with no error is a graceful stop. connectableTs is NOT
+	// checked here: the engine clears connectableTs on every destroy (graceful
+	// or crash) during deallocation, so a destroyed actor's connectableTs is
+	// always null and carries no crash signal. The `error` field does.
+	if (createTs && destroyTs && !error) {
 		return "stopped";
 	}
 
-	// Error only shows if the actor is not running, but takes priority over
+	// `error` is the authoritative crash signal (the engine sets it only on
+	// Error/Lost stops, never on a graceful Ok stop). Takes priority over
 	// pending and other non-running statuses.
 	if (error) {
 		return "crashed";
@@ -63,10 +68,6 @@ export function getActorStatus(
 
 	if (createTs && !connectableTs && !destroyTs) {
 		return "starting";
-	}
-
-	if (createTs && !connectableTs && destroyTs) {
-		return "crashed";
 	}
 
 	return "unknown";

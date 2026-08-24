@@ -1,8 +1,8 @@
 import { faRotateLeft, faSave, Icon } from "@rivet-gg/icons";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { jsonParseCompat } from "rivetkit/utils";
 import { AnimatePresence, motion } from "framer-motion";
 import { useMemo, useRef, useState } from "react";
+import { jsonParseCompat } from "rivetkit/utils";
 import {
 	Badge,
 	Button,
@@ -15,10 +15,10 @@ import {
 	EditorView,
 	JsonCode,
 } from "@/components/code-mirror";
+import { formatValue } from "@/lib/format-value";
 import { useActorInspector } from "./actor-inspector-context";
 import { ActorStateChangeIndicator } from "./actor-state-change-indicator";
 import type { ActorId } from "./queries";
-import { formatValue } from "@/lib/format-value";
 
 const isValidJson = (json: string | null): json is string => {
 	if (!json) return false;
@@ -86,7 +86,9 @@ export function ActorEditableState({ actorId }: ActorEditableStateProps) {
 								isLoading={isPending}
 								disabled={!isValid || !isEditing}
 								onClick={async () => {
-									await mutateAsync(jsonParseCompat(value || ""));
+									await mutateAsync(
+										jsonParseCompat(value || ""),
+									);
 									setIsEditing(false);
 									setValue(null);
 								}}

@@ -37,7 +37,7 @@ k3d image import "${IMAGE_NAME}" -c "${CLUSTER_NAME}"
 
 # Deploy
 echo "Deploying to Kubernetes..."
-cd "${REPO_ROOT}/self-host/k8s/engine"
+cd "${REPO_ROOT}/self-host/control-plane/kubernetes"
 
 kubectl apply -f 00-namespace.yaml
 kubectl apply -f 01-serviceaccount.yaml

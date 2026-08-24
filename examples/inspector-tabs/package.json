@@ -20,7 +20,7 @@
 		"typescript": "^5.5.2"
 	},
 	"dependencies": {
-		"rivetkit": "^2.3.6"
+		"rivetkit": "^2.3.7"
 	},
 	"license": "MIT"
 }

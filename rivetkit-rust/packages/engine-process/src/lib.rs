@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use reqwest::{Client, Url};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
@@ -68,6 +68,42 @@ pub enum ResolvedEngine {
 	Binary(PathBuf),
 }
 
+/// Effective runtime parameters of a spawned engine, stamped to disk so a later
+/// process that reattaches can tell how the running engine is configured without
+/// probing it over the network.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EngineRuntimeStamp {
+	pub pid: u32,
+	pub endpoint: String,
+	pub bind_host: String,
+	pub public_url: Option<String>,
+}
+
+impl EngineRuntimeStamp {
+	/// True if the engine bound a loopback address only, so peers on other hosts
+	/// (for example a container reaching the host) cannot connect to it.
+	pub fn binds_loopback_only(&self) -> bool {
+		if self.bind_host == "localhost" {
+			return true;
+		}
+		self.bind_host
+			.parse::<std::net::IpAddr>()
+			.map(|ip| ip.is_loopback())
+			.unwrap_or(false)
+	}
+}
+
+/// How `start_or_reuse` satisfied the request.
+#[derive(Debug)]
+pub enum EngineStartup {
+	/// A new engine was spawned with the requested configuration.
+	Spawned,
+	/// An already-running engine was reused. `stamp` is its recorded runtime
+	/// parameters, or `None` when no live stamp was found (an engine from an
+	/// older CLI, started by hand, or a stale stamp whose process is gone).
+	Reused { stamp: Option<EngineRuntimeStamp> },
+}
+
 /// Manages the rivet-engine subprocess.
 ///
 /// The engine is intentionally orphaned: dropping the manager (or having the
@@ -92,12 +128,18 @@ pub enum ResolvedEngine {
 #[derive(Debug)]
 pub struct EngineProcessManager {
 	watcher: Option<JoinHandle<()>>,
+	startup: EngineStartup,
 }
 
 impl EngineProcessManager {
 	pub async fn start_or_reuse(config: EngineResolverConfig) -> Result<Self> {
 		let resolved = resolve_engine_binary(&config).await?;
 		Self::start_resolved(resolved, &config).await
+	}
+
+	/// How the engine was obtained: freshly spawned or reused.
+	pub fn startup(&self) -> &EngineStartup {
+		&self.startup
 	}
 
 	async fn start_resolved(
@@ -110,7 +152,12 @@ impl EngineProcessManager {
 				endpoint = %endpoint,
 				"reusing already-running engine process"
 			);
-			return Ok(Self { watcher: None });
+			return Ok(Self {
+				watcher: None,
+				startup: EngineStartup::Reused {
+					stamp: read_engine_stamp(),
+				},
+			});
 		}
 
 		let ResolvedEngine::Binary(binary_path) = resolved else {
@@ -124,7 +171,12 @@ impl EngineProcessManager {
 				version = ?health.version,
 				"reusing already-running engine process"
 			);
-			return Ok(Self { watcher: None });
+			return Ok(Self {
+				watcher: None,
+				startup: EngineStartup::Reused {
+					stamp: read_engine_stamp(),
+				},
+			});
 		}
 
 		if !binary_path.exists() {
@@ -224,8 +276,22 @@ impl EngineProcessManager {
 			"engine process is healthy"
 		);
 
+		// Record the effective runtime parameters so a later reattaching process
+		// can tell how this engine is bound. Best-effort: a failed write only
+		// costs that later process its reuse diagnostics.
+		let stamp = EngineRuntimeStamp {
+			pid,
+			endpoint: endpoint.clone(),
+			bind_host: resolve_bind_host(config)?,
+			public_url: config.public_url.clone(),
+		};
+		if let Err(error) = write_engine_stamp(&stamp) {
+			tracing::warn!(?error, "failed to write engine runtime stamp");
+		}
+
 		Ok(Self {
 			watcher: Some(spawn_engine_watcher(child, pid)),
+			startup: EngineStartup::Spawned,
 		})
 	}
 }
@@ -233,6 +299,67 @@ impl EngineProcessManager {
 /// Path to the rivet-engine database directory under the shared storage root.
 pub fn engine_db_path() -> Result<PathBuf> {
 	Ok(storage_root()?.join("var").join("engine").join("db"))
+}
+
+fn engine_stamp_path() -> Result<PathBuf> {
+	Ok(storage_root()?
+		.join("var")
+		.join("engine")
+		.join("runtime.json"))
+}
+
+/// The address the engine actually binds: the explicit `bind_host` override, or
+/// the endpoint host when unset. Must match `engine_env`'s guard host.
+fn resolve_bind_host(config: &EngineResolverConfig) -> Result<String> {
+	if let Some(bind_host) = &config.bind_host {
+		return Ok(bind_host.clone());
+	}
+	let endpoint = &config.endpoint;
+	let endpoint_url =
+		Url::parse(endpoint).with_context(|| format!("parse engine endpoint `{endpoint}`"))?;
+	Ok(endpoint_url
+		.host_str()
+		.ok_or_else(|| invalid_endpoint(endpoint, "missing host"))?
+		.to_owned())
+}
+
+fn write_engine_stamp(stamp: &EngineRuntimeStamp) -> Result<()> {
+	let path = engine_stamp_path()?;
+	if let Some(dir) = path.parent() {
+		ensure_dir(dir)?;
+	}
+	let contents = serde_json::to_vec_pretty(stamp).context("serialize engine stamp")?;
+	std::fs::write(&path, contents)
+		.with_context(|| format!("write engine stamp `{}`", path.display()))?;
+	Ok(())
+}
+
+/// Reads the runtime stamp of the currently running engine, if its recorded
+/// process is still alive. A stale stamp (process gone) reads as `None` so
+/// callers treat the binding as unknown rather than trusting old data. On
+/// platforms without a liveness check (see `pid_is_alive`) the stamp is always
+/// treated as unknown for the same reason.
+fn read_engine_stamp() -> Option<EngineRuntimeStamp> {
+	let path = engine_stamp_path().ok()?;
+	let contents = std::fs::read(&path).ok()?;
+	let stamp: EngineRuntimeStamp = serde_json::from_slice(&contents).ok()?;
+	pid_is_alive(stamp.pid).then_some(stamp)
+}
+
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+	// `kill(pid, 0)` sends no signal but performs the existence and permission
+	// checks: success or EPERM means the process exists, ESRCH means it is gone.
+	let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+	result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn pid_is_alive(_pid: u32) -> bool {
+	// No portable liveness check here, so fail safe: report the process as gone
+	// so a stale stamp is never trusted. The binding check then falls back to
+	// its "unknown, warn" branch instead of silently trusting old data.
+	false
 }
 
 /// Computes the environment variables that configure a rivet-engine process
@@ -245,11 +372,7 @@ pub fn engine_env(config: &EngineResolverConfig) -> Result<Vec<(String, String)>
 	let endpoint = &config.endpoint;
 	let endpoint_url =
 		Url::parse(endpoint).with_context(|| format!("parse engine endpoint `{endpoint}`"))?;
-	let guard_host = endpoint_url
-		.host_str()
-		.ok_or_else(|| invalid_endpoint(endpoint, "missing host"))?
-		.to_owned();
-	let guard_host = config.bind_host.clone().unwrap_or(guard_host);
+	let guard_host = resolve_bind_host(config)?;
 	let guard_port = endpoint_url
 		.port_or_known_default()
 		.ok_or_else(|| invalid_endpoint(endpoint, "missing port"))?;
@@ -834,6 +957,46 @@ mod tests {
 			version: "test-version".to_owned(),
 			releases_endpoint,
 		}
+	}
+
+	fn stamp_with_bind(bind_host: &str) -> EngineRuntimeStamp {
+		EngineRuntimeStamp {
+			pid: 1,
+			endpoint: "http://127.0.0.1:6420".to_owned(),
+			bind_host: bind_host.to_owned(),
+			public_url: None,
+		}
+	}
+
+	#[test]
+	fn binds_loopback_only_detects_loopback_addresses() {
+		assert!(stamp_with_bind("127.0.0.1").binds_loopback_only());
+		assert!(stamp_with_bind("localhost").binds_loopback_only());
+		assert!(stamp_with_bind("::1").binds_loopback_only());
+	}
+
+	#[test]
+	fn binds_loopback_only_false_for_reachable_addresses() {
+		assert!(!stamp_with_bind("0.0.0.0").binds_loopback_only());
+		assert!(!stamp_with_bind("::").binds_loopback_only());
+		assert!(!stamp_with_bind("192.168.1.5").binds_loopback_only());
+	}
+
+	#[test]
+	fn resolve_bind_host_prefers_override_then_endpoint() {
+		let mut config = test_config(String::new(), false);
+		config.endpoint = "http://127.0.0.1:6420".to_owned();
+		assert_eq!(resolve_bind_host(&config).unwrap(), "127.0.0.1");
+		config.bind_host = Some("0.0.0.0".to_owned());
+		assert_eq!(resolve_bind_host(&config).unwrap(), "0.0.0.0");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn pid_is_alive_true_for_self_false_for_missing() {
+		assert!(pid_is_alive(std::process::id()));
+		// PID 0 targets the process group on unix, so use a very high, unused PID.
+		assert!(!pid_is_alive(0x7FFF_FFFF));
 	}
 
 	#[tokio::test]

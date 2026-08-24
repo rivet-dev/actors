@@ -1,6 +1,6 @@
 {
 	"name": "@rivetkit/rivetkit-wasm",
-	"version": "2.3.6",
+	"version": "2.3.7",
 	"description": "WebAssembly bindings for RivetKit core on edge JavaScript runtimes",
 	"license": "Apache-2.0",
 	"type": "module",

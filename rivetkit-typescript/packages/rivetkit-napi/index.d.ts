@@ -220,6 +220,11 @@ export interface JsServerlessResponseHead {
   status: number
   headers: Record<string, string>
 }
+export interface JsApplicationResponse {
+  status: number
+  headers: Record<string, string>
+  body: Buffer
+}
 export interface JsRegistryRouteResponse {
   status: number
   headers: Record<string, string>
@@ -416,7 +421,8 @@ export declare class CoreRegistry {
   health(): Promise<JsRegistryRouteResponse>
   metadata(): JsRegistryRouteResponse
   metrics(): JsRegistryRouteResponse
-  serveListener(listener: JsListenerConfig, config: JsServeConfig): Promise<void>
+  serveApplicationListener(listener: JsListenerConfig, application: (...args: any[]) => any, config: JsServeConfig): Promise<void>
+  serveListener(listener: JsListenerConfig, config: JsServeConfig, application?: (...args: any[]) => any | undefined | null): Promise<void>
   handleServerlessRequest(req: JsServerlessRequest, onStreamEvent: (...args: any[]) => any, cancelToken: CancellationToken, config: JsServeConfig): Promise<JsServerlessResponseHead>
 }
 export declare class Schedule {

@@ -14,6 +14,8 @@ import type {
 	CoreRuntime,
 	RegistryHandle,
 	RuntimeActorConfig,
+	RuntimeApplicationFetch,
+	RuntimeApplicationListenerConfig,
 	RuntimeBytes,
 	RuntimeCronFire,
 	RuntimeCronJobInfo,
@@ -133,6 +135,31 @@ function toNapiSqlBatchStatement(
 
 function toNapiBuffer(value: RuntimeBytes): Buffer {
 	return Buffer.from(value);
+}
+
+function toNapiApplication(application: RuntimeApplicationFetch) {
+	return async (
+		error: unknown,
+		request?: {
+			method: string;
+			url: string;
+			headers: Record<string, string>;
+			body: Buffer;
+		},
+	) => {
+		if (error) throw error;
+		if (!request) {
+			throw new Error("application fetch callback received no request");
+		}
+		const response = await application({
+			...request,
+			body: new Uint8Array(request.body),
+		});
+		return {
+			...response,
+			body: toNapiBuffer(response.body),
+		};
+	};
 }
 
 function toNapiHttpRequest(
@@ -296,12 +323,32 @@ export class NapiCoreRuntime implements CoreRuntime {
 		listener: RuntimeListenerConfig,
 		config: RuntimeServeConfig,
 	): Promise<void> {
+		const application = listener.application
+			? toNapiApplication(listener.application)
+			: undefined;
 		await asNativeRegistry(registry).serveListener(
 			{
 				port: listener.port,
 				host: listener.host,
 				publicDir: listener.publicDir,
 			},
+			config,
+			application,
+		);
+	}
+
+	async serveApplicationListener(
+		registry: RegistryHandle,
+		listener: RuntimeApplicationListenerConfig,
+		config: RuntimeServeConfig,
+	): Promise<void> {
+		await asNativeRegistry(registry).serveApplicationListener(
+			{
+				port: listener.port,
+				host: listener.host,
+				publicDir: listener.publicDir,
+			},
+			toNapiApplication(listener.application),
 			config,
 		);
 	}

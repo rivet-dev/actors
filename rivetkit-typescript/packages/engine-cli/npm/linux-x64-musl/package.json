@@ -1,6 +1,6 @@
 {
 	"name": "@rivetkit/engine-cli-linux-x64-musl",
-	"version": "2.3.6",
+	"version": "2.3.7",
 	"description": "Rivet Engine binary for Linux x64 musl (static)",
 	"license": "Apache-2.0",
 	"os": [

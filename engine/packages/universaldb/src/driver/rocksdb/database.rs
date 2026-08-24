@@ -17,9 +17,9 @@ use crate::{
 	utils::{MaybeCommitted, calculate_tx_retry_backoff},
 };
 
-use super::{
-	transaction::RocksDbTransactionDriver, transaction_conflict_tracker::TransactionConflictTracker,
-};
+use crate::conflict_tracker::TransactionConflictTracker;
+
+use super::transaction::RocksDbTransactionDriver;
 
 pub struct RocksDbDatabaseDriver {
 	db: Arc<OptimisticTransactionDB>,
@@ -48,7 +48,7 @@ impl RocksDbDatabaseDriver {
 
 		Ok(RocksDbDatabaseDriver {
 			db: Arc::new(db),
-			max_retries: AtomicI32::new(100),
+			max_retries: AtomicI32::new(10),
 			txn_conflict_tracker: TransactionConflictTracker::new(),
 		})
 	}

@@ -934,8 +934,8 @@ mod tests {
 
 	#[test]
 	fn v1_start_command_deserializes_into_latest_without_sqlite_startup_data() -> Result<()> {
-		let payload =
-			serde_bare::to_vec(&v1::ToEnvoy::ToEnvoyCommands(vec![v1::CommandWrapper {
+		let payload = serde_bare::to_vec(&v1::ToEnvoy::ToEnvoyCommands(vec![
+			v1::CommandWrapper {
 				checkpoint: v1::ActorCheckpoint {
 					actor_id: "actor".into(),
 					generation: 7,
@@ -951,7 +951,8 @@ mod tests {
 					hibernating_requests: Vec::new(),
 					preloaded_kv: None,
 				}),
-			}]))?;
+			}
+		]))?;
 
 		let decoded = ToEnvoy::deserialize(&payload, 1)?;
 		let v6::ToEnvoy::ToEnvoyCommands(commands) = decoded else {

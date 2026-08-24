@@ -77,14 +77,14 @@ impl OwnedVersionedData for VersionedDatabaseBranchRecord {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			1 => Ok(Self::Current(serde_bare::from_slice(payload)?)),
+			1 => Ok(Self::Current(rivet_util::serde::bare_from_slice!(payload)?)),
 			_ => bail!("invalid depot DatabaseBranchRecord version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			Self::Current(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			Self::Current(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 }
@@ -108,14 +108,14 @@ impl OwnedVersionedData for VersionedDatabasePointer {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			1 => Ok(Self::V1(serde_bare::from_slice(payload)?)),
+			1 => Ok(Self::V1(rivet_util::serde::bare_from_slice!(payload)?)),
 			_ => bail!("invalid depot DatabasePointer version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			Self::V1(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			Self::V1(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 }
@@ -139,14 +139,14 @@ impl OwnedVersionedData for VersionedBucketBranchRecord {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			1 => Ok(Self::V1(serde_bare::from_slice(payload)?)),
+			1 => Ok(Self::V1(rivet_util::serde::bare_from_slice!(payload)?)),
 			_ => bail!("invalid depot BucketBranchRecord version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			Self::V1(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			Self::V1(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 }
@@ -170,14 +170,14 @@ impl OwnedVersionedData for VersionedBucketPointer {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			1 => Ok(Self::V1(serde_bare::from_slice(payload)?)),
+			1 => Ok(Self::V1(rivet_util::serde::bare_from_slice!(payload)?)),
 			_ => bail!("invalid depot BucketPointer version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			Self::V1(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			Self::V1(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 }
@@ -201,14 +201,14 @@ impl OwnedVersionedData for VersionedPointerSnapshot {
 
 	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
 		match version {
-			1 => Ok(Self::V1(serde_bare::from_slice(payload)?)),
+			1 => Ok(Self::V1(rivet_util::serde::bare_from_slice!(payload)?)),
 			_ => bail!("invalid depot PointerSnapshot version: {version}"),
 		}
 	}
 
 	fn serialize_version(self, _version: u16) -> Result<Vec<u8>> {
 		match self {
-			Self::V1(data) => serde_bare::to_vec(&data).map_err(Into::into),
+			Self::V1(data) => rivet_util::serde::bare_to_vec!(&data).map_err(Into::into),
 		}
 	}
 }

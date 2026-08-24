@@ -1,8 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
 import {
-	TO_SERVER_VERSIONED as toServer,
 	type ToServer,
+	TO_SERVER_VERSIONED as toServer,
 } from "rivetkit/inspector/client";
+import { describe, expect, it, vi } from "vitest";
 import {
 	buildInspectorWebSocketUrl,
 	getInspectorProtocolVersion,
@@ -30,9 +30,9 @@ describe("inspector protocol negotiation", () => {
 		const version = getInspectorProtocolVersion("2.3.3");
 		expect(version).toBe(5);
 		expect(usesNegotiatedInspectorProtocol("2.3.3")).toBe(false);
-		expect(buildInspectorWebSocketUrl("https://actor", version, false)).toBe(
-			"https://actor/inspector/connect",
-		);
+		expect(
+			buildInspectorWebSocketUrl("https://actor", version, false),
+		).toBe("https://actor/inspector/connect");
 	});
 
 	it("serializes negotiated messages without an embedded version", () => {

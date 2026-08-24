@@ -40,17 +40,6 @@
         }
       ]
     },
-    "api_public": {
-      "default": null,
-      "anyOf": [
-        {
-          "$ref": "#/definitions/ApiPublic"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
     "auth": {
       "default": null,
       "anyOf": [
@@ -210,27 +199,6 @@
           ],
           "format": "uint16",
           "minimum": 0.0
-        }
-      },
-      "additionalProperties": false
-    },
-    "ApiPublic": {
-      "description": "Configuration for the public API service.",
-      "type": "object",
-      "properties": {
-        "respect_forwarded_for": {
-          "description": "Flag to respect the X-Forwarded-For header for client IP addresses.\n\nWill be ignored in favor of CF-Connecting-IP if DNS provider is configured as Cloudflare.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        },
-        "verbose_errors": {
-          "description": "Flag to enable verbose error reporting.",
-          "type": [
-            "boolean",
-            "null"
-          ]
         }
       },
       "additionalProperties": false
@@ -855,6 +823,24 @@
           ],
           "format": "int64"
         },
+        "actor_create_rate_limit_drip_rate_ms": {
+          "description": "Time to regain one actor creation token per namespace.\n\nUnit is in milliseconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "actor_create_rate_limit_requests": {
+          "description": "Max burst of actor creations per namespace before throttling.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
         "actor_retry_duration_threshold": {
           "description": "How long to wait after starting to attempt to reallocate before before setting actor to sleep.\n\nUnit is in milliseconds.",
           "type": [
@@ -986,6 +972,24 @@
           "format": "uint64",
           "minimum": 0.0
         },
+        "envoy_websocket_rate_limit_drip_rate_us": {
+          "description": "Time to regain one inbound WebSocket message token on a single envoy connection.\n\nUnit is in microseconds. The envoy connection multiplexes every actor on a runner, so the sustained ceiling is far higher than the per-client gateway limit and needs sub-millisecond granularity to express.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "envoy_websocket_rate_limit_requests": {
+          "description": "Max burst of inbound WebSocket messages on a single envoy connection before throttling.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
         "gateway_gc_interval_ms": {
           "description": "GC interval for in-flight requests in milliseconds.",
           "type": [
@@ -1050,6 +1054,24 @@
         },
         "gateway_websocket_open_timeout_ms": {
           "description": "WebSocket open/handshake timeout in milliseconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "gateway_websocket_rate_limit_drip_rate_ms": {
+          "description": "Time to regain one inbound WebSocket message token on a single connection.\n\nUnit is in milliseconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "gateway_websocket_rate_limit_requests": {
+          "description": "Max burst of inbound WebSocket messages on a single connection before throttling.",
           "type": [
             "integer",
             "null"
@@ -1222,45 +1244,16 @@
         "url"
       ],
       "properties": {
-        "ssl": {
-          "description": "SSL configuration options",
+        "nats": {
+          "description": "NATS configuration for UniversalDB multi-node mode.\n\nWhen set, UniversalDB runs in multi-node mode and uses NATS for follower-to-leader commit transport instead of an in-process resolver. When absent, UniversalDB runs single-node. If unset but the UPS pubsub is configured for NATS, this is inherited from that config at startup (see `Root::validate_and_set_defaults`).",
           "default": null,
           "anyOf": [
             {
-              "$ref": "#/definitions/PostgresSsl"
+              "$ref": "#/definitions/Nats"
             },
             {
               "type": "null"
             }
-          ]
-        },
-        "url": {
-          "description": "URL to connect to Postgres with\n\nSupports standard PostgreSQL connection parameters including `sslmode`. Supported sslmode values: `disable`, `prefer` (default), `require`. To verify server certificates, use `sslmode=require` with `ssl.root_cert_path`.\n\nExample with sslmode: `postgresql://user:pass@host:5432/db?sslmode=require`\n\nSee: https://docs.rs/postgres/0.19.10/postgres/config/struct.Config.html#url",
-          "allOf": [
-            {
-              "$ref": "#/definitions/Secret<String>"
-            }
-          ]
-        }
-      },
-      "additionalProperties": false
-    },
-    "Postgres2": {
-      "type": "object",
-      "required": [
-        "url"
-      ],
-      "properties": {
-        "disable_memory_optimization": {
-          "description": "When true, force every UPS publish to round-trip through the postgres driver instead of taking the in-process fast path for subjects that have a local subscriber on the same engine pod. Opt-in diagnostic; default false.",
-          "default": false,
-          "type": "boolean"
-        },
-        "memory_optimization": {
-          "deprecated": true,
-          "type": [
-            "boolean",
-            "null"
           ]
         },
         "ssl": {
@@ -1276,7 +1269,7 @@
           ]
         },
         "url": {
-          "description": "URL to connect to Postgres with\n\nSupports standard PostgreSQL connection parameters including `sslmode`. Supported sslmode values: `disable`, `prefer` (default), `require`. To verify server certificates, use `sslmode=require` with `ssl.root_cert_path`.\n\nSee: https://docs.rs/postgres/0.19.10/postgres/config/struct.Config.html#url",
+          "description": "URL to connect to Postgres with\n\nSupports standard PostgreSQL connection parameters including `sslmode`. Supported sslmode values: `disable`, `prefer` (default), `require`. To verify server certificates, use `sslmode=require` with `ssl.root_cert_path`.\n\nExample with sslmode: `postgresql://user:pass@host:5432/db?sslmode=require`\n\nSee: https://docs.rs/postgres/0.19.10/postgres/config/struct.Config.html#url",
           "allOf": [
             {
               "$ref": "#/definitions/Secret<String>"

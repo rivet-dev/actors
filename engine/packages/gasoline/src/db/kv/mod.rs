@@ -2604,7 +2604,6 @@ impl Database for DatabaseKv {
 		signal_name: &str,
 		body: &serde_json::value::RawValue,
 	) -> WorkflowResult<()> {
-		let started_at = Instant::now();
 		self.pools
 			.udb()
 			.map_err(WorkflowError::PoolsGeneric)?
@@ -2618,17 +2617,6 @@ impl Database for DatabaseKv {
 			.await
 			.context("failed to publish signal")
 			.map_err(WorkflowError::Udb)?;
-
-		if signal_name == "pegboard_actor2_wake" {
-			tracing::info!(
-				?ray_id,
-				?workflow_id,
-				?signal_id,
-				signal_name,
-				elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0,
-				"published workflow wake signal",
-			);
-		}
 
 		self.bump(BumpSubSubject::SignalPublish {
 			to_workflow_id: workflow_id,

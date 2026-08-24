@@ -1,0 +1,293 @@
+---
+title: "In-Memory State"
+description: "Actors store state in memory for instant reads and writes. State can be persisted automatically or kept ephemeral."
+skill: true
+---
+
+## Types of State
+
+There are three ways to store data in an actor, depending on what it looks like and whether it needs to survive restarts.
+
+### Durable
+
+Simple, serializable data on `c.state` that is automatically persisted and restored across restarts. The default starting point.
+
+<CodeGroup>
+
+<CodeSnippet file="examples/docs/actors-state/durable-basic.ts" title="Basic" />
+
+<CodeSnippet file="examples/docs/actors-state/durable-dynamic-init.ts" title="Dynamic init" />
+
+<CodeSnippet file="examples/docs/actors-state/durable-with-input.ts" title="With input" />
+
+</CodeGroup>
+
+### Ephemeral
+
+Live objects on `c.vars` like database connections, API clients, and event emitters, or data loaded from an external source. Never persisted.
+
+<CodeGroup>
+
+<CodeSnippet file="examples/docs/actors-state/ephemeral-basic.ts" title="Basic" />
+
+<CodeSnippet file="examples/docs/actors-state/ephemeral-dynamic-init.ts" title="Dynamic init" />
+
+```typescript @nocheck External database
+import { actor } from "rivetkit";
+import { Pool } from "pg";
+
+// One shared pool for the whole process, created once and reused by every actor
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+const userActor = actor({
+  state: { profile: null as Record<string, unknown> | null },
+
+  // Load this actor's row from the shared pool on each start
+  createVars: async (c) => {
+    const { rows } = await pool.query("SELECT * FROM users WHERE id = $1", [c.key[0]]);
+    return { profile: rows[0] };
+  },
+
+  actions: {
+    updateEmail: async (c, email: string) => {
+      await pool.query("UPDATE users SET email = $1 WHERE id = $2", [email, c.key[0]]);
+    }
+  }
+});
+```
+
+</CodeGroup>
+
+### SQLite
+
+Rivet also provides an embedded SQLite database (`c.db`) for when your data needs to be queried, requires safe schema migrations, or grows too large to hold in memory. See [SQLite](/actors/docs/sqlite).
+
+<CodeGroup>
+
+```typescript @nocheck Basic
+import { actor } from "rivetkit";
+import { db } from "rivetkit/db";
+
+const todoList = actor({
+  db: db({
+    onMigrate: async (db) => {
+      await db.execute(`
+        CREATE TABLE IF NOT EXISTS todos (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL
+        );
+      `);
+    },
+  }),
+
+  actions: {
+    add: async (c, title: string) => {
+      await c.db.execute("INSERT INTO todos (title) VALUES (?)", title);
+    },
+
+    list: async (c) => {
+      return (await c.db.execute(
+        "SELECT id, title FROM todos ORDER BY id DESC",
+      )) as { id: number; title: string }[];
+    },
+  },
+});
+```
+
+```typescript @nocheck Load into memory
+import { actor } from "rivetkit";
+import { db } from "rivetkit/db";
+
+const counter = actor({
+  db: db({
+    onMigrate: async (db) => {
+      await db.execute(`
+        CREATE TABLE IF NOT EXISTS counter (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          count INTEGER NOT NULL
+        );
+      `);
+      await db.execute("INSERT OR IGNORE INTO counter (id, count) VALUES (1, 0)");
+    },
+  }),
+
+  // Load the count from SQLite into memory on every start
+  createVars: async (c) => {
+    const rows = (await c.db.execute(
+      "SELECT count FROM counter WHERE id = 1",
+    )) as { count: number }[];
+    return { count: rows[0].count };
+  },
+
+  actions: {
+    get: (c) => c.vars.count,
+
+    increment: async (c) => {
+      // Update the in-memory value and write it back to SQLite
+      c.vars.count += 1;
+      await c.db.execute("UPDATE counter SET count = ? WHERE id = 1", c.vars.count);
+      return c.vars.count;
+    },
+  },
+});
+```
+
+</CodeGroup>
+
+## State Isolation
+
+Each actor's state is fully isolated. Other actors and clients can't touch it directly; all reads and writes go through the actor's own [Actions](/actors/docs/actions). To share state across actors, see [sharing and joining state](/actors/docs/sharing-and-joining-state).
+
+## Durable State
+
+`c.state` lives in memory and is persisted automatically, so reads and writes have no added latency while the data still survives sleeps, restarts, upgrades, and crashes. Use it for small, simple values like counters, flags, and small maps.
+
+`createState` runs once when the actor is first created. On later starts, state is loaded from storage instead of recreated. See [Lifecycle](/actors/docs/lifecycle).
+
+### When state saves
+
+Mutating `c.state` schedules a save automatically. Rapid mutations are batched into a single write on a throttle (`stateSaveInterval`, default 1 second). Reads never trigger a save, saves aren't tied to action or handler boundaries, and state is also flushed when the actor sleeps or shuts down.
+
+To force a save mid-action, call `c.saveState()`:
+
+- `c.saveState({ immediate: true })` writes immediately and resolves once the write completes.
+- `c.saveState()` schedules a throttled save and returns right away, without waiting for the write.
+
+Force an immediate save before a risky side effect so a crash can't lose progress:
+
+<CodeSnippet file="examples/docs/actors-state/save-state.ts" />
+
+### Supported types
+
+State must be serializable.
+
+<AccordionGroup>
+<Accordion title="Supported types">
+
+- `null`, `undefined`, `boolean`, `string`, `number`, `BigInt`
+- `Date`, `RegExp`, `Error`
+- `ArrayBuffer` and typed arrays (`Uint8Array`, `Int8Array`, `Float32Array`, etc.)
+- `Map`, `Set`, `Array`
+- Plain objects
+
+</Accordion>
+</AccordionGroup>
+
+When data grows large or needs querying, store it in [Embedded SQLite](#embedded-sqlite) instead.
+
+## Ephemeral State
+
+`c.vars` holds data that exists only while the actor runs and is never saved. Use it for live objects that can't be serialized (connections, clients, emitters) or for data loaded from an external source. Most actors use both: `state` for durable data, `vars` for live objects.
+
+`createVars` runs on every actor start, unlike `createState` which runs once. That makes it the place to open connections and load data each time the actor wakes.
+
+### Runtime objects
+
+Build non-serializable objects in `createVars` and use them from actions:
+
+<CodeSnippet file="examples/docs/actors-state/runtime-objects.ts" />
+
+### Loading from external sources
+
+Create the connection pool once at module scope and share it across all actors, then use `createVars` (which can be `async`) to load this actor's data from it on each start:
+
+```typescript @nocheck
+import { actor } from "rivetkit";
+import { Pool } from "pg";
+
+// One shared pool for the whole process, not one per actor
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+const profile = actor({
+  state: { cachedName: "" },
+
+  createVars: async (c) => {
+    const { rows } = await pool.query("SELECT * FROM users WHERE id = $1", [c.key[0]]);
+    return { user: rows[0] };
+  },
+
+  actions: {
+    updateEmail: async (c, email: string) => {
+      await pool.query("UPDATE users SET email = $1 WHERE id = $2", [email, c.key[0]]);
+    }
+  }
+});
+```
+
+When the actor owns its data, prefer [durable state](#durable-state) or [SQLite](#embedded-sqlite), which need no external infrastructure.
+
+### Cleanup
+
+`vars` is dropped when the actor stops, but per-actor resources like timers, subscriptions, and dedicated connections aren't cleaned up for you. Release them in `onSleep` and `onDestroy`. A shared pool stays open for the whole process, so don't close it per actor.
+
+```typescript @nocheck
+const poller = actor({
+  state: { ticks: 0 },
+
+  // Per-actor timer started on each wake
+  createVars: (c) => ({ timer: setInterval(() => c.state.ticks++, 5000) }),
+
+  // Clear it before the actor sleeps or is destroyed
+  onSleep: (c) => clearInterval(c.vars.timer),
+  onDestroy: (c) => clearInterval(c.vars.timer),
+
+  actions: { /* ... */ }
+});
+```
+
+## Embedded SQLite
+
+`c.db` is a SQLite database scoped to each actor and stored on disk. Use it for queryable, relational, or larger-than-memory data. Because compute and storage live together, queries run locally with no network round trips.
+
+A common pattern is to treat SQLite as the source of truth and keep a working copy in `c.vars`: load rows in `createVars`, serve reads from memory, and write changes back to `c.db`.
+
+```typescript @nocheck
+import { actor } from "rivetkit";
+import { db } from "rivetkit/db";
+
+const leaderboard = actor({
+  db: db({
+    onMigrate: async (db) => {
+      await db.execute(`
+        CREATE TABLE IF NOT EXISTS scores (
+          player TEXT PRIMARY KEY,
+          score INTEGER NOT NULL
+        );
+      `);
+    },
+  }),
+
+  // Load the table into memory once per start
+  createVars: async (c) => {
+    const rows = (await c.db.execute("SELECT player, score FROM scores")) as {
+      player: string;
+      score: number;
+    }[];
+    return { scores: new Map(rows.map((r) => [r.player, r.score])) };
+  },
+
+  actions: {
+    top: (c) => [...c.vars.scores].sort((a, b) => b[1] - a[1]).slice(0, 10),
+
+    record: async (c, player: string, score: number) => {
+      c.vars.scores.set(player, score);
+      // Write through to SQLite
+      await c.db.execute(
+        "INSERT INTO scores (player, score) VALUES (?, ?) ON CONFLICT(player) DO UPDATE SET score = ?",
+        player, score, score,
+      );
+    },
+  },
+});
+```
+
+For the full query API, schema migrations, transactions, and the Drizzle ORM, see:
+
+- [SQLite](/actors/docs/sqlite): raw SQL against the embedded per-actor database.
+- [SQLite + Drizzle](/actors/docs/sqlite-drizzle): typed schema and query APIs.
+
+## Debugging
+
+- `GET /inspector/state` returns the actor's current state and `isStateEnabled`.
+- `PATCH /inspector/state` lets you set state directly while debugging.
+- In non-dev mode, inspector endpoints require authorization.

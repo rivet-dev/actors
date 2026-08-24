@@ -86,6 +86,8 @@ export interface GetOrCreateWithKeyInput {
 	input?: unknown;
 	region?: string;
 	crashPolicy?: CrashPolicy;
+	/** Overrides the client's configured pool name for this actor. */
+	poolName?: string;
 }
 
 export interface CreateInput {
@@ -95,6 +97,8 @@ export interface CreateInput {
 	input?: unknown;
 	region?: string;
 	crashPolicy?: CrashPolicy;
+	/** Overrides the client's configured pool name for this actor. */
+	poolName?: string;
 }
 
 export interface ListActorsInput {

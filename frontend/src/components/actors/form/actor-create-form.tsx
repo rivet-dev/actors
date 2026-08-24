@@ -7,7 +7,7 @@ import {
 import { useEffect, useRef } from "react";
 import { type UseFormReturn, useFormContext } from "react-hook-form";
 import z from "zod";
-import { CodePreview, Input, Label } from "@/components";
+import { CodePreview, Combobox, Input, Label } from "@/components";
 import { JsonCode } from "../../code-mirror";
 import { createSchemaForm } from "../../lib/create-schema-form";
 import {
@@ -160,6 +160,118 @@ export const RunnerNameSelector = () => {
 					<FormDescription>
 						Runner name selector for the actor. This is used to
 						select which runner the actor will run on.
+					</FormDescription>
+					<FormMessage />
+				</FormItem>
+			)}
+		/>
+	);
+};
+
+const selectRunnerConfigKeys = (data: {
+	pages: { runnerConfigs: Record<string, unknown> }[];
+}) => data.pages.flatMap((page) => Object.keys(page.runnerConfigs));
+
+const emptyRunnerConfigKeysQueryOptions = infiniteQueryOptions({
+	queryKey: ["noop-runner-config-keys"] as readonly unknown[],
+	queryFn: async (): Promise<Rivet.RunnerConfigsListResponse> => ({
+		runnerConfigs: {},
+		pagination: {},
+	}),
+	initialPageParam: undefined as string | undefined,
+	getNextPageParam: () => undefined,
+	select: selectRunnerConfigKeys,
+});
+
+// The pool the create form defaults to: the runner config named "default" when
+// present, otherwise the first one. Undefined when there are no runner configs.
+function resolveDefaultPool(keys: string[]): string | undefined {
+	if (keys.length === 0) return undefined;
+	return keys.includes("default") ? "default" : keys[0];
+}
+
+// Loads the namespace's runner-config keys (the pool names) and the resolved
+// default pool. Pages are fetched lazily via `fetchNextPage` (the Pool combobox
+// loads more on scroll); empty on providers without runner configs.
+function useRunnerConfigKeys() {
+	const dataProvider = useEngineCompatDataProvider();
+	const hasRunnerConfigs = "runnerConfigsQueryOptions" in dataProvider;
+	const {
+		data: keys = [],
+		hasNextPage,
+		isLoading,
+		isFetchingNextPage,
+		fetchNextPage,
+	} = useInfiniteQuery<
+		Rivet.RunnerConfigsListResponse,
+		Error,
+		string[],
+		readonly unknown[],
+		string | undefined
+	>({
+		...(hasRunnerConfigs
+			? {
+					...dataProvider.runnerConfigsQueryOptions(),
+					select: selectRunnerConfigKeys,
+				}
+			: emptyRunnerConfigKeysQueryOptions),
+		enabled: hasRunnerConfigs,
+	});
+	return {
+		keys,
+		defaultPool: resolveDefaultPool(keys),
+		hasNextPage,
+		isLoading,
+		isFetchingNextPage,
+		fetchNextPage,
+	};
+}
+
+// Lets the dialogs submit the resolved default pool even when Advanced (where
+// the Pool selector lives) is never opened. Falls back to "default".
+export function useDefaultRunnerNameSelector(): string {
+	return useRunnerConfigKeys().defaultPool ?? "default";
+}
+
+// Pool selector bound to `runnerNameSelector`. Hidden unless there is more than
+// one pool to pick between; the submit handler still sends the resolved default.
+export const Pool = () => {
+	const { control } = useFormContext<FormValues>();
+	const {
+		keys,
+		defaultPool,
+		hasNextPage,
+		isLoading,
+		isFetchingNextPage,
+		fetchNextPage,
+	} = useRunnerConfigKeys();
+
+	if (keys.length <= 1) {
+		return null;
+	}
+
+	const options = keys.map((key) => ({ label: key, value: key }));
+
+	return (
+		<FormField
+			control={control}
+			name="runnerNameSelector"
+			render={({ field }) => (
+				<FormItem>
+					<FormLabel>Pool</FormLabel>
+					<FormControl>
+						<Combobox
+							placeholder="Choose a pool..."
+							options={options}
+							value={field.value || defaultPool || ""}
+							onValueChange={field.onChange}
+							className="w-full"
+							isLoading={isLoading || isFetchingNextPage}
+							onLoadMore={hasNextPage ? fetchNextPage : undefined}
+						/>
+					</FormControl>
+					<FormDescription>
+						The pool the Actor will run on.
 					</FormDescription>
 					<FormMessage />
 				</FormItem>

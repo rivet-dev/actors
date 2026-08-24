@@ -213,7 +213,9 @@ where
 
 fn actor_config<A: Actor>(mut config: ActorConfig) -> ActorConfig {
 	config.has_database |= A::HAS_DATABASE;
-	if A::HAS_DATABASE && !cfg!(feature = "sqlite-local") {
+	// Internal storage (state, KV, queue) always uses SQLite, so without local
+	// SQLite compiled in every actor must route it through the engine.
+	if !cfg!(feature = "sqlite-local") {
 		config.remote_sqlite = true;
 	}
 	config
@@ -297,12 +299,24 @@ mod tests {
 
 	#[test]
 	fn actor_database_declaration_enables_core_database_config() {
-		let config = actor_config::<DatabaseActor>(ActorConfig::default());
-		assert!(config.has_database);
-		assert!(config.remote_sqlite);
+		let db = actor_config::<DatabaseActor>(ActorConfig::default());
+		assert!(db.has_database);
 
-		let config = actor_config::<EmptyActor>(ActorConfig::default());
-		assert!(!config.has_database);
-		assert!(!config.remote_sqlite);
+		let empty = actor_config::<EmptyActor>(ActorConfig::default());
+		assert!(!empty.has_database);
+
+		// Internal storage always uses SQLite, so without local SQLite compiled
+		// in every actor routes SQLite through the engine regardless of whether
+		// it declares a user database.
+		#[cfg(not(feature = "sqlite-local"))]
+		{
+			assert!(db.remote_sqlite);
+			assert!(empty.remote_sqlite);
+		}
+		#[cfg(feature = "sqlite-local")]
+		{
+			assert!(!db.remote_sqlite);
+			assert!(!empty.remote_sqlite);
+		}
 	}
 }

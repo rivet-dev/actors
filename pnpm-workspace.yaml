@@ -13,14 +13,13 @@ packages:
   - frontend/packages/icons/
   - frontend/packages/shared-data/
   - integrations/*
+  - integrations/*/examples/*
   - rivetkit-typescript/packages/*
   - rivetkit-swift/examples/*/server
   - scripts/publish
   - scripts/tests
   - scripts/vercel-examples
   - shared/typescript/*
-  - website
-
 ignoredBuiltDependencies:
   - '@parcel/watcher'
   - '@sentry/cli'

@@ -1,0 +1,124 @@
+---
+title: "Pool Configuration"
+description: "Reference for runner pool configuration, including drain behavior, actor eviction rate limiting, and serverless-specific options."
+skill: true
+---
+
+A **runner pool** is the set of runners Rivet manages for a given runner name within a namespace. The pool configuration controls how runners are scaled, drained on version upgrades, and how quickly actors are evicted from drained runners.
+
+There are two pool kinds:
+
+- **`normal`** — runners connect to the control plane themselves (for example a long-running process started by you, Docker, or Kubernetes). The control plane does not start or stop runners.
+- **`serverless`** — the control plane calls an HTTP endpoint to wake runners on demand. Used by serverless platforms (Vercel, Cloudflare Workers, Freestyle, etc.). See [Runtime Modes](/actors/docs/general/runtime-modes).
+
+## Setting the Configuration
+
+Configure a pool from the [Rivet dashboard](https://dashboard.rivet.dev) under your namespace's runner settings. The dashboard is the recommended way to manage pool configuration.
+
+<Accordion title="Advanced: set the configuration manually">
+
+You can also set pool configuration directly through the API or the TypeScript SDK:
+
+<CodeGroup>
+
+```typescript SDK @nocheck
+import { RivetClient } from "@rivetkit/engine-api-full";
+
+const rivet = new RivetClient({
+  environment: "https://api.rivet.dev",
+  token: process.env.RIVET_TOKEN!,
+});
+
+await rivet.runnerConfigsUpsert("default", {
+  namespace: "default",
+  datacenters: {
+    default: {
+      serverless: {
+        url: "https://my-app.example.com/api/rivet",
+        requestLifespan: 60 * 15,
+        actorEvictionDelay: 5,
+        actorEvictionPeriod: 60,
+        actorEvictionRate: 1,
+      },
+    },
+  },
+});
+```
+
+```bash curl
+curl -X PUT "https://api.rivet.dev/runner-configs/default?namespace=default" \
+  -H "Authorization: Bearer $RIVET_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "datacenters": {
+      "default": {
+        "serverless": {
+          "url": "https://my-app.example.com/api/rivet",
+          "request_lifespan": 900,
+          "actor_eviction_delay": 5,
+          "actor_eviction_period": 60,
+          "actor_eviction_rate": 1
+        }
+      }
+    }
+  }'
+```
+
+</CodeGroup>
+
+The HTTP API uses `snake_case`. The TypeScript SDK uses `camelCase`. The field names below use `camelCase`.
+
+</Accordion>
+
+## Common Options
+
+These options apply to both `normal` and `serverless` pools.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `drainOnVersionUpgrade` | `bool` | `true` | When a new runner version is deployed, stop old runners and migrate their actors. See [Versions & Upgrades](/actors/docs/versions#drain-on-version-upgrade). |
+| `actorEvictionDelay` | `u32` (seconds) | `0` | Delay before actor eviction begins after a drain is triggered. Gives clients time to receive the drain signal before migrations start. |
+| `actorEvictionPeriod` | `u32` (seconds) | `0` | Window over which evictions are batched. Used together with `actorEvictionRate` to smooth eviction load on the rest of the pool. |
+| `actorEvictionRate` | `f32` (actors/sec) | `1.0` | Maximum number of actors evicted per second once eviction is underway. Set higher for fast cutovers, lower to spread reschedule load. |
+| `metadata` | `object` | — | Arbitrary JSON metadata attached to the pool. Useful for tagging and dashboards. |
+
+### Tuning eviction rate limiting
+
+Eviction kicks in whenever a runner is drained — most commonly during a version upgrade with `drainOnVersionUpgrade: true`, but also when a runner disconnects ungracefully or is replaced.
+
+A typical tuning starts from:
+
+- `actorEvictionDelay: 5` — five-second head start so clients see the drain notification before migrations begin.
+- `actorEvictionPeriod: 60` — batch over a one-minute window.
+- `actorEvictionRate: 1` — evict one actor per second.
+
+Increase `actorEvictionRate` for small pools where a full cutover finishes in seconds. Decrease it for large pools to avoid bursts of reschedule traffic.
+
+## Serverless-Only Options
+
+These options only apply when `kind: "serverless"`.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `url` | `string` | — | HTTP endpoint the control plane calls to wake a runner. |
+| `headers` | `map<string, string>` | `{}` | Additional headers sent with the wake request (for example an auth token). |
+| `requestLifespan` | `u32` (seconds) | — | Total lifespan of a serverless request before drain begins. Must be shorter than your platform's request timeout. |
+| `maxConcurrentActors` | `u64` | `1000` | Soft cap on concurrent actors hosted across the pool. |
+| `drainGracePeriod` | `u32` (seconds) | `1800` (30 min) | Time a serverless runner reserves at the end of its lifespan for actors to stop gracefully. |
+| `metadataPollInterval` | `u64` (ms) | engine default | How often each runner re-fetches pool metadata to detect new versions. |
+
+### Deprecated options
+
+The following options still parse for backwards compatibility but should not be used in new configurations:
+
+- `slotsPerRunner`
+- `minRunners`
+- `maxRunners`
+- `runnersMargin`
+
+## Related
+
+- [Runtime Modes](/actors/docs/general/runtime-modes) — runner vs serverless behavior.
+- [Versions & Upgrades](/actors/docs/versions) — how `drainOnVersionUpgrade` interacts with version detection.
+- [Limits](/actors/docs/limits) — request lifespan and drain grace period limits.
+- [Debugging](/actors/docs/debugging) — inspect a pool configuration via the API.

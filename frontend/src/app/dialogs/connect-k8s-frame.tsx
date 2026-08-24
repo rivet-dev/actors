@@ -1,6 +1,6 @@
 import { faKubernetes, Icon } from "@rivet-gg/icons";
 import { type DialogContentProps, Frame } from "@/components";
-import ConnectManualServerlfullFrameContent from "./connect-manual-serverfull-frame";
+import ConnectManualServerfulFrameContent from "./connect-manual-serverful-frame";
 
 interface ConnectK8sFrameContentProps extends DialogContentProps {
 	footer?: React.ReactNode;
@@ -25,7 +25,7 @@ export default function ConnectK8sFrameContent({
 				</Frame.Title>
 			</Frame.Header>
 			<Frame.Content>
-				<ConnectManualServerlfullFrameContent
+				<ConnectManualServerfulFrameContent
 					provider="kubernetes"
 					onClose={onClose}
 					footer={footer}

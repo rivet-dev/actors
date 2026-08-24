@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CONTAINER_NAME="rivet-engine-postgres"
-POSTGRES_IMAGE="postgres:17"
+POSTGRES_IMAGE="postgres:18"
 
 if [ $# -ne 1 ]; then
 	echo "Usage: $0 <backup-path>"

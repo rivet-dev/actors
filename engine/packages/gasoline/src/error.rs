@@ -193,7 +193,7 @@ impl WorkflowError {
 			| WorkflowError::ActivityTimeout(_, error_count)
 			| WorkflowError::OperationTimeout(_, error_count) => {
 				// NOTE: Max retry is handled in `WorkflowCtx::activity`
-				let mut backoff = rivet_util::backoff::Backoff::new_at(
+				let mut backoff = rivet_util::throttle::Backoff::new_at(
 					8,
 					None,
 					RETRY_TIMEOUT_MS,

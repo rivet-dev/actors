@@ -12,8 +12,8 @@ import {
 	TableHeader,
 	TableRow,
 } from "@/components/ui/table";
-import { cn } from "../lib/utils";
 import { formatValue } from "@/lib/format-value";
+import { cn } from "../lib/utils";
 import {
 	type InspectorSchedule,
 	type InspectorScheduleFire,
@@ -49,7 +49,10 @@ export function ActorSchedulesTab({ actorId }: { actorId: ActorId }) {
 	}
 
 	return (
-		<div className="flex min-h-0 flex-1 flex-col" data-testid="schedules-tab">
+		<div
+			className="flex min-h-0 flex-1 flex-col"
+			data-testid="schedules-tab"
+		>
 			{isLoading ? (
 				<div className="flex flex-1 items-center justify-center text-muted-foreground">
 					<Icon icon={faSpinnerThird} className="mr-2 animate-spin" />
@@ -72,18 +75,27 @@ export function ActorSchedulesTab({ actorId }: { actorId: ActorId }) {
 						{schedules.map((schedule) => {
 							const isSelected = schedule.id === selectedId;
 							const toggle = () =>
-								setSelectedId(isSelected ? undefined : schedule.id);
+								setSelectedId(
+									isSelected ? undefined : schedule.id,
+								);
 
 							return (
-								<Fragment key={`${schedule.kind}:${schedule.id}`}>
+								<Fragment
+									key={`${schedule.kind}:${schedule.id}`}
+								>
 									<TableRow
 										isClickable
-										data-state={isSelected ? "selected" : undefined}
+										data-state={
+											isSelected ? "selected" : undefined
+										}
 										aria-expanded={isSelected}
 										tabIndex={0}
 										onClick={toggle}
 										onKeyDown={(event) => {
-											if (event.key === "Enter" || event.key === " ") {
+											if (
+												event.key === "Enter" ||
+												event.key === " "
+											) {
 												event.preventDefault();
 												toggle();
 											}
@@ -97,14 +109,24 @@ export function ActorSchedulesTab({ actorId }: { actorId: ActorId }) {
 											{schedule.action}
 										</TableCell>
 										<TableCell>
-											<ScheduleValue schedule={schedule} />
+											<ScheduleValue
+												schedule={schedule}
+											/>
 										</TableCell>
 										<TableCell>
-											<RelativeTime timestamp={schedule.nextRunAt} now={now} />
+											<RelativeTime
+												timestamp={schedule.nextRunAt}
+												now={now}
+											/>
 										</TableCell>
 										<TableCell className="text-muted-foreground">
 											{schedule.lastRunAt ? (
-												<RelativeTime timestamp={schedule.lastRunAt} now={now} />
+												<RelativeTime
+													timestamp={
+														schedule.lastRunAt
+													}
+													now={now}
+												/>
 											) : (
 												"—"
 											)}
@@ -112,12 +134,17 @@ export function ActorSchedulesTab({ actorId }: { actorId: ActorId }) {
 									</TableRow>
 									{isSelected && (
 										<TableRow className="bg-muted/20 hover:bg-muted/20">
-											<TableCell colSpan={5} className="p-0">
+											<TableCell
+												colSpan={5}
+												className="p-0"
+											>
 												<ScheduleDetails
 													actorId={actorId}
 													schedule={schedule}
 													now={now}
-													onClose={() => setSelectedId(undefined)}
+													onClose={() =>
+														setSelectedId(undefined)
+													}
 												/>
 											</TableCell>
 										</TableRow>
@@ -232,7 +259,10 @@ function ScheduleDetails({
 					<Detail label="Next run">
 						<div>{formatTimestamp(schedule.nextRunAt)}</div>
 						<div className="text-xs text-muted-foreground">
-							<RelativeTime timestamp={schedule.nextRunAt} now={now} />
+							<RelativeTime
+								timestamp={schedule.nextRunAt}
+								now={now}
+							/>
 						</div>
 					</Detail>
 					{schedule.lastRunAt && (
@@ -266,7 +296,10 @@ function ScheduleDetails({
 					</h3>
 					{isLoading ? (
 						<div className="py-6 text-center text-sm text-muted-foreground">
-							<Icon icon={faSpinnerThird} className="mr-2 animate-spin" />
+							<Icon
+								icon={faSpinnerThird}
+								className="mr-2 animate-spin"
+							/>
 							Loading history…
 						</div>
 					) : history.length ? (
@@ -347,7 +380,9 @@ function HistoryList({
 						)}
 					</div>
 					<div className="text-right text-muted-foreground">
-						{formatDuration((fire.finishedAt ?? now) - fire.firedAt)}
+						{formatDuration(
+							(fire.finishedAt ?? now) - fire.firedAt,
+						)}
 					</div>
 				</div>
 			))}
@@ -377,12 +412,17 @@ function RelativeTime({ timestamp, now }: { timestamp: number; now: number }) {
 	const future = delta >= 0;
 	const absolute = Math.abs(delta);
 	let value: string;
-	if (absolute < 60_000) value = `${Math.max(1, Math.round(absolute / 1_000))}s`;
+	if (absolute < 60_000)
+		value = `${Math.max(1, Math.round(absolute / 1_000))}s`;
 	else if (absolute < 3_600_000) value = `${Math.round(absolute / 60_000)}m`;
-	else if (absolute < 86_400_000) value = `${Math.round(absolute / 3_600_000)}h`;
+	else if (absolute < 86_400_000)
+		value = `${Math.round(absolute / 3_600_000)}h`;
 	else value = `${Math.round(absolute / 86_400_000)}d`;
 	return (
-		<time dateTime={new Date(timestamp).toISOString()} title={formatTimestamp(timestamp)}>
+		<time
+			dateTime={new Date(timestamp).toISOString()}
+			title={formatTimestamp(timestamp)}
+		>
 			{future ? `in ${value}` : `${value} ago`}
 		</time>
 	);

@@ -14,7 +14,7 @@ import { convertStringToId } from "@/lib/utils";
 export const formSchema = z.object({
 	name: z
 		.string()
-		.max(16)
+		.max(128)
 		.refine((value) => value.trim() !== "" && value.trim() === value, {
 			message: "Name cannot be empty or contain whitespaces",
 		}),
@@ -42,7 +42,7 @@ export const Name = ({ className }: { className?: string }) => {
 					<FormControl className="row-start-2">
 						<Input
 							placeholder="Enter a namespace name..."
-							maxLength={25}
+							maxLength={128}
 							{...field}
 						/>
 					</FormControl>

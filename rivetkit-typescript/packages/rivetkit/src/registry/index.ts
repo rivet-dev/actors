@@ -1,4 +1,5 @@
 import { isLocalEngineEndpoint } from "@/common/engine";
+import { isResponseLike } from "@/common/fetch-like";
 import { configureBaseLogger } from "@/common/log";
 import { configureServerlessPool } from "@/serverless/configure";
 import { VERSION } from "@/utils";
@@ -15,7 +16,10 @@ import {
 } from "./config";
 import { logger } from "./log";
 import { buildConfiguredRegistry } from "./native";
-import type { RuntimeServerlessResponseHead } from "./runtime";
+import type {
+	RuntimeApplicationFetch,
+	RuntimeServerlessResponseHead,
+} from "./runtime";
 
 type ShutdownSignal = "SIGINT" | "SIGTERM";
 
@@ -37,6 +41,35 @@ function finishShutdownSignal(signal: ShutdownSignal): void {
 	process.kill(process.pid, signal);
 }
 
+function createApplicationFetch(
+	application: RegistryApplication,
+): RuntimeApplicationFetch {
+	return async (request) => {
+		const method = request.method.toUpperCase();
+		const body =
+			method === "GET" || method === "HEAD" || request.body.length === 0
+				? undefined
+				: Uint8Array.from(request.body).buffer;
+		const response = await application.fetch(
+			new Request(request.url, {
+				method,
+				headers: request.headers,
+				body,
+			}),
+		);
+		if (!isResponseLike(response)) {
+			throw new TypeError(
+				"registry.listen() application fetch must return a Response",
+			);
+		}
+		return {
+			status: response.status,
+			headers: Object.fromEntries(response.headers.entries()),
+			body: new Uint8Array(await response.arrayBuffer()),
+		};
+	};
+}
+
 export type FetchHandler = (
 	request: Request,
 	...args: any
@@ -44,6 +77,17 @@ export type FetchHandler = (
 
 export interface ServerlessHandler {
 	fetch: FetchHandler;
+}
+
+export interface RegistryApplication {
+	fetch: FetchHandler;
+}
+
+export interface RegistryListenOptions {
+	port?: number;
+	host?: string;
+	publicDir?: string;
+	application?: RegistryApplication;
 }
 
 export interface RegistryRoutes {
@@ -79,6 +123,7 @@ export class Registry<A extends RegistryActors> {
 	#runtimeReadyPromise?: Promise<void>;
 	#runtimeServeConfiguredPromise?: ReturnType<typeof buildConfiguredRegistry>;
 	#runtimeServerlessPromise?: ReturnType<typeof buildConfiguredRegistry>;
+	#applicationListenerPromise?: Promise<void>;
 	#configureServerlessPoolPromise?: Promise<void>;
 	#welcomePrinted = false;
 	#shutdownInstalled = false;
@@ -348,19 +393,68 @@ export class Registry<A extends RegistryActors> {
 	 * @param opts.host      Address to bind. Defaults to `0.0.0.0`.
 	 * @param opts.publicDir If set, serves static files from this directory
 	 *                       as a fallback below the framework routes.
+	 * @param opts.application If set, handles requests that do not match a
+	 *                         framework route.
 	 *
 	 * @example
 	 * ```ts
 	 * await registry.listen();
-	 * await registry.listen({ port: 8080, publicDir: "./public" });
+	 * await registry.listen({ application: app });
 	 * ```
 	 */
-	public async listen(
-		opts: { port?: number; host?: string; publicDir?: string } = {},
-	): Promise<void> {
+	public async listen(opts: RegistryListenOptions = {}): Promise<void> {
 		const port = opts.port ?? parsePortEnv(process.env.RIVET_PORT) ?? 3000;
 		const publicDir = opts.publicDir ?? getRivetkitPublicDir();
 		const config = this.parseConfig();
+		const application = opts.application
+			? createApplicationFetch(opts.application)
+			: undefined;
+
+		if (application && getRivetkitRuntimeMode() !== "serverless") {
+			if (config.runtime === "wasm") {
+				throw new Error(
+					"registry.listen() requires the native runtime; use an application-owned HTTP server with WebAssembly",
+				);
+			}
+			this.#installSignalHandlers(config);
+			this.#printWelcome(config, "serverful", {
+				port,
+				host: opts.host,
+				publicDir,
+			});
+			this.#startEnvoy(config, true);
+			const readyPromise = this.startAndWait();
+			const configuredRegistryPromise =
+				this.#runtimeServeConfiguredPromise;
+			if (!configuredRegistryPromise) {
+				throw new Error("registry envoy startup did not initialize");
+			}
+			const { runtime, registry, serveConfig } =
+				await configuredRegistryPromise;
+			const listenerPromise = runtime.serveApplicationListener(
+				registry,
+				{
+					port,
+					host: opts.host,
+					publicDir,
+					application,
+				},
+				serveConfig,
+			);
+			this.#applicationListenerPromise = listenerPromise;
+			const serveLifecyclePromise = this.#runtimeServeLifecyclePromise;
+			if (!serveLifecyclePromise) {
+				throw new Error(
+					"registry envoy serve lifecycle did not initialize",
+				);
+			}
+			await Promise.all([
+				readyPromise,
+				listenerPromise,
+				serveLifecyclePromise,
+			]);
+			return;
+		}
 
 		// Cache on both promise fields so the shutdown drain sees Mode A and B.
 		const configuredRegistryPromise = buildConfiguredRegistry(config);
@@ -381,7 +475,12 @@ export class Registry<A extends RegistryActors> {
 			await configuredRegistryPromise;
 		await runtime.serveListener(
 			registry,
-			{ port, host: opts.host, publicDir },
+			{
+				port,
+				host: opts.host,
+				publicDir,
+				application,
+			},
 			serveConfig,
 		);
 	}
@@ -499,15 +598,14 @@ export class Registry<A extends RegistryActors> {
 					await runtime.serveRegistry(registry, serveConfig);
 				},
 			);
-			this.#runtimeServePromise = this.#runtimeServeLifecyclePromise.catch(
-				(error) => {
+			this.#runtimeServePromise =
+				this.#runtimeServeLifecyclePromise.catch((error) => {
 					// Always-attached catch so the stored promise never leaves a
 					// rejection unhandled. Downstream awaits (e.g. #runShutdown's
 					// Promise.race) attach their own catches and still observe
 					// resolution via the race.
 					logger().warn({ error }, "runtime registry serve errored");
-				},
-			);
+				});
 			// Install signal handlers once an envoy lifecycle has begun. Only
 			// Mode A ever reaches here. Mode B (handler(request)) intentionally
 			// does not install handlers because it runs on Workers/Vercel/Deno
@@ -653,6 +751,9 @@ export class Registry<A extends RegistryActors> {
 				// already logged any serve-side error.
 				await runtimeServePromise.catch(() => undefined);
 			}
+			if (this.#applicationListenerPromise !== undefined) {
+				await this.#applicationListenerPromise.catch(() => undefined);
+			}
 		};
 		await Promise.race([
 			drain(),
@@ -712,7 +813,9 @@ export class Registry<A extends RegistryActors> {
 	public startAndWait(): Promise<void> {
 		if (this.#shutdownInFlight !== null) {
 			return Promise.reject(
-				new Error("registry.startAndWait() cannot run after shutdown has begun"),
+				new Error(
+					"registry.startAndWait() cannot run after shutdown has begun",
+				),
 			);
 		}
 		if (this.#runtimeReadyPromise) return this.#runtimeReadyPromise;
@@ -755,7 +858,9 @@ export class Registry<A extends RegistryActors> {
 		const readinessPromise = (async () => {
 			const { runtime, registry } = await configuredRegistryPromise;
 			const stoppedBeforeReady = serveLifecyclePromise.then(() => {
-				throw new Error("RivetKit registry stopped before becoming ready");
+				throw new Error(
+					"RivetKit registry stopped before becoming ready",
+				);
 			});
 			await Promise.race([
 				runtime.waitRegistryReady(registry),

@@ -1,6 +1,6 @@
 {
 	"name": "@rivetkit/cli",
-	"version": "2.3.6",
+	"version": "2.3.7",
 	"description": "Rivet Cloud CLI",
 	"license": "LicenseRef-RivetEnterprise",
 	"main": "index.js",

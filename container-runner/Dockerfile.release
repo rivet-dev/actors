@@ -9,6 +9,12 @@
 # -> ./dist/rivet-container-runner  (x86_64 ELF)
 
 FROM --platform=linux/amd64 rust:1-bookworm AS builder
+# The build context excludes `.git` (see `.dockerignore`), so pass the commit SHA
+# in to embed it in the binary's startup version log. Defaults to empty, which
+# the build resolves to "unknown".
+#   docker build --build-arg OVERRIDE_GIT_SHA=$(git rev-parse HEAD) ...
+ARG OVERRIDE_GIT_SHA=
+ENV OVERRIDE_GIT_SHA=${OVERRIDE_GIT_SHA}
 WORKDIR /build
 # The crate depends on in-repo workspace crates (rivet-envoy-client), so the whole
 # workspace is the build context. Build from the rivet repo root.

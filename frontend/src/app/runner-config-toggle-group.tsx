@@ -20,7 +20,7 @@ export function RunnerConfigToggleGroup({
 			)}
 		>
 			<ToggleGroup
-				defaultValue="serverless"
+				defaultValue="serverful"
 				type="single"
 				className="border rounded-md gap-0 w-full"
 				value={mode}
@@ -38,7 +38,7 @@ export function RunnerConfigToggleGroup({
 					Serverless
 				</ToggleGroupItem>
 				<ToggleGroupItem
-					value="serverfull"
+					value="serverful"
 					className="border-l rounded-none w-full"
 				>
 					Runner

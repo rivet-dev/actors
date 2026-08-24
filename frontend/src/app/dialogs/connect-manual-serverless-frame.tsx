@@ -1,5 +1,5 @@
 import type { Rivet } from "@rivetkit/engine-api-full";
-import type { Provider } from "@rivetkit/shared-data";
+import { deployOptions, type Provider } from "@rivetkit/shared-data";
 import {
 	useMutation,
 	usePrefetchInfiniteQuery,
@@ -22,7 +22,7 @@ import { successfulBackendSetupEffect } from "@/lib/effects";
 import { queryClient } from "@/queries/global";
 import { EnvVariables } from "../env-variables";
 import { StepperForm } from "../forms/stepper-form";
-import { useEndpoint } from "./connect-manual-serverfull-frame";
+import { useEndpoint } from "./connect-manual-serverful-frame";
 
 const stepper = defineStepper(
 	{
@@ -122,7 +122,7 @@ function FormStepper({
 			}}
 			content={{
 				"step-1": () => <Step1 provider={provider} />,
-				"step-2": () => <Step2 />,
+				"step-2": () => <Step2 provider={provider} />,
 				"step-3": () => <Step3 provider={provider} />,
 			}}
 		/>
@@ -225,10 +225,23 @@ function Step1({ provider }: { provider: Provider }) {
 	);
 }
 
-function Step2() {
+function Step2({ provider }: { provider: Provider }) {
+	const providerOptions = deployOptions.find(
+		(option) => option.name === provider,
+	);
 	return (
 		<>
-			<p>Set the following environment variables.</p>
+			<p>
+				<a
+					href={`https://www.rivet.dev${providerOptions?.href || "/docs/getting-started"}`}
+					className="underline"
+					target="_blank"
+					rel="noopener"
+				>
+					Follow the integration guide here
+				</a>
+				, and make sure to set the following environment variables:
+			</p>
 			<EnvVariables
 				endpoint={useEndpoint()}
 				runnerName={useWatch({ name: "runnerName" })}

@@ -372,6 +372,7 @@ export async function publishAll(
 		for (const r of results.filter((x) => x.status === "failed")) {
 			log.error(`    - ${r.pkg.name}: ${r.lastError}`);
 		}
+		throw new Error(`${counts.failed} npm package(s) failed to publish`);
 	}
 
 	// In release mode, if *every* package was already published, treat it as

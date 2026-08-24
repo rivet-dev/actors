@@ -1,0 +1,209 @@
+---
+title: "Workflow SDK (Beta)"
+description: "Vercel's Workflow SDK backed by Rivet Actors."
+skill: false
+---
+
+<Info>
+This integration is in beta. APIs may change between releases.
+</Info>
+
+`@rivet-dev/workflow-world` implements the Workflow SDK's [World](https://workflow-sdk.dev/worlds) API with native Rivet Actors.
+
+[View the complete example →](https://github.com/rivet-dev/rivet/tree/main/examples/workflow-sdk)
+
+## Quickstart
+
+<Steps>
+
+<Step title="Create a project">
+
+Set up a [Workflow SDK](https://workflow-sdk.dev) project for your framework on
+Node.js 22 or newer. The
+[getting-started guides](https://workflow-sdk.dev/docs/getting-started)
+cover Next.js, Astro, Express, Fastify, Hono, Nitro, Nuxt, SvelteKit, TanStack
+Start, and Vite.
+
+</Step>
+
+<Step title="Install the World">
+
+```sh
+npm install workflow @rivet-dev/workflow-world
+```
+
+</Step>
+
+<Step title="Write a workflow">
+
+Create `workflows/order.ts`:
+
+<CodeSnippet file="examples/workflow-sdk/workflows/order.ts" title="workflows/order.ts" />
+
+</Step>
+
+<Step title="Serve the Workflow SDK and Rivet together">
+
+The World starts Rivet lazily in the Workflow SDK process. You do not need a
+second server or a framework instrumentation hook.
+
+<Tabs>
+
+<Tab title="Next.js">
+
+Mark `rivetkit` as a server external package. RivetKit loads its runtime through
+a dynamic import that a bundler cannot resolve statically, so bundling it makes
+the flow route fail at request time with `Cannot find module`:
+
+```ts next.config.ts
+import { withWorkflow } from "workflow/next";
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+	serverExternalPackages: ["rivetkit"],
+};
+
+export default withWorkflow(nextConfig);
+```
+
+<Warning>
+List `rivetkit` here, not `@rivet-dev/workflow-world`. The two need opposite
+treatment: `withWorkflow` resolves the target World through a build alias and
+compiles it into the server bundle, while `serverExternalPackages` means the
+package is left to Node at runtime. Next.js rejects a package asked to do both.
+</Warning>
+
+Create `app/api/orders/[id]/route.ts`:
+
+```ts app/api/orders/[id]/route.ts
+import { start } from "workflow/api";
+import { processOrder } from "@/workflows/order";
+
+export async function POST(
+	_request: Request,
+	{ params }: { params: Promise<{ id: string }> },
+) {
+	const { id } = await params;
+	const run = await start(processOrder, [id]);
+	return Response.json({ runId: run.runId });
+}
+```
+
+</Tab>
+
+<Tab title="Hono">
+
+Hono has no build system of its own, so use Nitro to compile the workflow and
+serve its handler in the same process.
+
+Create `nitro.config.ts`:
+
+<CodeSnippet file="examples/workflow-sdk/nitro.config.ts" title="nitro.config.ts" />
+
+Create `src/server.ts`:
+
+<CodeSnippet file="examples/workflow-sdk/src/server.ts" title="src/server.ts" />
+
+</Tab>
+
+</Tabs>
+
+Create `.env` with the variables under [Configuration](#configuration), then
+build and run:
+
+```sh
+npm run build
+npm run dev
+```
+
+</Step>
+
+<Step title="Validate the workflow">
+
+Start a run:
+
+```sh
+curl -X POST http://localhost:3000/orders/42
+```
+
+Use the Workflow SDK's Vitest harness. The first World operation starts the
+native Rivet registry and control plane in the test process:
+
+```sh
+npm test
+```
+
+</Step>
+
+</Steps>
+
+## Configuration
+
+Select the World and point it at your own HTTP server:
+
+<CodeSnippet file="examples/workflow-sdk/.env.example" title=".env" />
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `WORKFLOW_TARGET_WORLD` | Yes | Loads `@rivet-dev/workflow-world` as the World |
+| `WORKFLOW_RUNTIME_URL` | Yes | Externally reachable base URL of your Workflow SDK HTTP server |
+| `WORKFLOW_QUEUE_NAMESPACE` | No | Shared queue namespace used by the Workflow SDK and crash-safe initial dispatch |
+| `RIVET_WORKFLOW_SECRET` | Recommended when public | Shared bearer secret for World-to-runtime delivery |
+
+The World does not read the Rivet connection itself. It hands configuration to
+RivetKit, so the [standard RivetKit environment
+variables](/actors/docs/general/environment-variables) apply unchanged. Local
+development starts the control plane automatically and needs none of them; set
+them to run against a remote control plane.
+
+Run the combined server at `WORKFLOW_RUNTIME_URL`; its World client and native
+registry use the same endpoint, namespace, and pool.
+
+## HTTP routes
+
+Your framework integration serves the combined workflow handler at
+`.well-known/workflow/v1/flow`. `WORKFLOW_RUNTIME_URL` must resolve to the
+service hosting that route. Do not point it at the control plane. If
+`RIVET_WORKFLOW_SECRET` is set, delivery carries that value as a bearer token and
+rejects requests without it.
+
+## Deploying
+
+Deploy the app as a Rivet worker like any other. See [Self-Host](/actors/self-host/workers)
+for the per-platform guides. Two constraints come from this World specifically:
+
+- **The process must be long-lived.** The first World operation opens a
+  persistent worker connection and waits for it. This World does not use
+  RivetKit's serverless request handler, so a host that only runs per-request
+  functions cannot serve it.
+- **`WORKFLOW_RUNTIME_URL` must be reachable from your workers**, not just from
+  browsers. The dispatcher calls it to run every queued step. Point it at the
+  app's load-balanced base URL when running more than one replica, and secure the
+  route as described in [HTTP routes](#http-routes) once it is publicly
+  reachable.
+
+## Durability
+
+The World stores runs, event logs, queues, streams, hook tokens, and recovery
+alarms in Rivet Actors.
+
+Recovery is local to each run; startup does not scan all actors. Queue an initial
+workflow with the default namespace or `WORKFLOW_QUEUE_NAMESPACE`. The current
+Workflow SDK does not include a per-call `start({ namespace })` value in the
+`run_created` event, so that per-call override cannot be reconstructed after a
+crash and is not supported by this World.
+
+Application code continues to use `"use workflow"`, `"use step"`,
+`workflow/api`, hooks, sleeps, and streams exactly as documented by the Workflow
+SDK.
+
+## Testing
+
+<CodeSnippet file="examples/workflow-sdk/vitest.integration.config.ts" title="vitest.integration.config.ts" />
+
+<CodeSnippet file="examples/workflow-sdk/workflows/order.integration.test.ts" title="workflows/order.integration.test.ts" />
+
+`waitForSleep` observes the durable sleep, `wakeUp` resumes that exact
+correlation, and the assertions wait for the final persisted result.
+
+See the [Workflow SDK documentation](https://workflow-sdk.dev) for the SDK itself.

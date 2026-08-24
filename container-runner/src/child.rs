@@ -86,7 +86,7 @@ impl ChildProcess {
 				"child port {child_port} is already in use before spawning `{program}`: a \
                  previous game server is still running in this container. container-runner \
                  hosts one actor per container — configure the serverless runner with \
-                 max_concurrent_actors=1 and Cloud Run request concurrency=1."
+                 max_concurrent_actors=1 and platform request concurrency=1."
 			);
 		}
 

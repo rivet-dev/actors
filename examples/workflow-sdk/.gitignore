@@ -1,0 +1,7 @@
+node_modules
+.env
+.output
+.swc
+.well-known
+.workflow-data
+.workflow-vitest

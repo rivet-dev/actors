@@ -50,7 +50,7 @@ const defaultServerlessConfig: Rivet.RunnerConfigServerless = {
 	headers: {},
 };
 
-type RuntimeMode = "serverless" | "serverfull";
+type RuntimeMode = "serverless" | "serverful";
 
 function hasProtocolVersion(
 	datacenters: Record<string, Rivet.RunnerConfigResponse>,
@@ -67,8 +67,8 @@ function dcMode(
 ): RuntimeMode | undefined {
 	if (!dc) return undefined;
 	if (dc.serverless) return "serverless";
-	// `normal` may be present as `{}` for serverfull configs.
-	if ((dc as { normal?: unknown }).normal !== undefined) return "serverfull";
+	// `normal` may be present as `{}` for serverful configs.
+	if ((dc as { normal?: unknown }).normal !== undefined) return "serverful";
 	return undefined;
 }
 
@@ -202,7 +202,7 @@ function labelForMode(mode: RuntimeMode): string {
 	return mode === "serverless" ? "Serverless" : "Runner";
 }
 
-function ServerfullModeNotice() {
+function ServerfulModeNotice() {
 	return (
 		<div className="text-sm text-muted-foreground border rounded-md p-4">
 			This is a Runner configuration. Runners connect to Rivet directly
@@ -408,8 +408,8 @@ function SharedSettingsForm({
 						<EditRunnerConfigForm.Headers />
 					</div>
 				</WhenMode>
-				<WhenMode value="serverfull">
-					<ServerfullModeNotice />
+				<WhenMode value="serverful">
+					<ServerfulModeNotice />
 				</WhenMode>
 				<Separator />
 				<EditRunnerConfigForm.Regions />
@@ -659,9 +659,9 @@ function DatacenterAccordion({
 				</WhenMode>
 				<WhenMode
 					name={`datacenters.${regionId}.mode`}
-					value="serverfull"
+					value="serverful"
 				>
-					<ServerfullModeNotice />
+					<ServerfulModeNotice />
 				</WhenMode>
 			</AccordionContent>
 		</AccordionItem>

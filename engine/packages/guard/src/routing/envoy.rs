@@ -93,6 +93,6 @@ async fn route_envoy_internal(
 		tracing::debug!("authenticated envoy connection");
 	}
 
-	let tunnel = pegboard_envoy::PegboardEnvoyWs::new(ctx.clone());
+	let tunnel = pegboard_envoy::PegboardEnvoyWs::new(&ctx);
 	Ok(RoutingOutput::CustomServe(Arc::new(tunnel)))
 }

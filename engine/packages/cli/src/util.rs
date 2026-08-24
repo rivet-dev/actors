@@ -1,6 +1,6 @@
 use std::{
 	collections::BTreeMap,
-	io::Write,
+	io::{IsTerminal, Write},
 	path::Path,
 	process::{Command as StdCommand, Stdio},
 	time::{SystemTime, UNIX_EPOCH},
@@ -12,6 +12,13 @@ use serde_json::{Value, json};
 /// URL-encodes a path or query segment.
 pub fn encode(value: &str) -> String {
 	url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+/// Reports whether colored output should be used. Color is on by default and
+/// disabled when `NO_COLOR` is set to a non-empty value or stdout is not a TTY.
+pub fn color_enabled() -> bool {
+	let no_color = std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty());
+	!no_color && std::io::stdout().is_terminal()
 }
 
 /// Parses repeated `KEY=VAL` arguments into a map.

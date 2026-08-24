@@ -60,7 +60,7 @@ const LabelWithInfo = ({
 	</div>
 );
 
-export const runtimeModeSchema = z.enum(["serverless", "serverfull"]);
+export const runtimeModeSchema = z.enum(["serverless", "serverful"]);
 export type RuntimeMode = z.infer<typeof runtimeModeSchema>;
 
 export const baseFormSchema = z.object({

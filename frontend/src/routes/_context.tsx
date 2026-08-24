@@ -6,7 +6,6 @@ import {
 	useNavigate,
 	useSearch,
 } from "@tanstack/react-router";
-import { zodValidator } from "@tanstack/zod-adapter";
 import posthog from "posthog-js";
 import { useEffect } from "react";
 import z from "zod";
@@ -38,12 +37,23 @@ const searchSchema = z
 		t: z.string().optional(),
 		from: z.string().optional(),
 		project: z.string().optional(),
+		pool: z.string().optional(),
 	})
 	.and(z.record(z.string(), z.any()));
 
 export const Route = createFileRoute("/_context")({
 	component: RouteComponent,
-	validateSearch: zodValidator(searchSchema),
+	validateSearch: (search) => {
+		const validated = searchSchema.parse(search);
+		// `pool` is scoped to the pages that actually use it: the Logs route
+		// re-declares it in its own validateSearch, and the compute settings tab
+		// needs it while open. Drop it everywhere else so the selected pool does
+		// not cling to unrelated pages after navigating away.
+		if (validated.settings !== "compute") {
+			delete (validated as { pool?: string }).pool;
+		}
+		return validated;
+	},
 	context: ({ context }) => {
 		if (features.platform) {
 			return {
