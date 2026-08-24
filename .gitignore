@@ -37,11 +37,6 @@ frontend/build/
 .idea/
 *.swp
 *.swo
-
-# Nix env
-flake.nix
-flake.lock
-rust-toolchain.toml
 .envrc
 
 # OS
