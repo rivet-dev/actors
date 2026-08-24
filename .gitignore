@@ -38,6 +38,12 @@ frontend/build/
 *.swp
 *.swo
 
+# Nix env
+flake.nix
+flake.lock
+rust-toolchain.toml
+.envrc
+
 # OS
 .DS_Store
 Thumbs.db
