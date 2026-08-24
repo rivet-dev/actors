@@ -25,7 +25,6 @@
             toolchain
             clang
             llvmPackages.bintools
-            nixpkgs-unstable.legacyPackages.${pkgs.system}.typst
           ];
           LIBCLANG_PATH = pkgs.lib.makeLibraryPath [ pkgs.llvmPackages_latest.libclang.lib ];
           RUSTFLAGS = (builtins.map (a: ''-L ${a}/lib'') []);
