@@ -571,6 +571,9 @@ jobs:
 
       - name: Publish npm packages
         env:
+          # setup-node provides a dummy token value; clear it so token-only
+          # post-publish operations stay disabled for trusted publishing.
+          NODE_AUTH_TOKEN: ""
           SKIP_WASM_BUILD: "1"
         run: |
           pnpm --filter=publish exec tsx src/ci/bin.ts publish-npm \
