@@ -224,16 +224,26 @@ pub async fn delete(
 }
 
 #[tracing::instrument(skip_all)]
-async fn delete_inner(
-	ctx: ApiCtx,
-	_path: DeletePath,
-	_query: DeleteQuery,
-) -> Result<DeleteResponse> {
+async fn delete_inner(ctx: ApiCtx, path: DeletePath, query: DeleteQuery) -> Result<DeleteResponse> {
 	ctx.auth().await?;
 
-	// TODO: Remove the webhook config from epoxy and let the workflow
-	// auto-exit once it observes the config is gone (see webhook spec).
-	bail!("webhooks_delete is not implemented yet");
+	let namespace = ctx
+		.op(namespace::ops::resolve_for_name_global::Input {
+			name: query.namespace.clone(),
+		})
+		.await?
+		.ok_or_else(|| namespace::errors::Namespace::NotFound.build())?;
+
+	ctx.op(webhook::ops::delete::Input {
+		namespace_id: namespace.namespace_id,
+		name: path.webhook_name.clone(),
+	})
+	.await?;
+
+	// TODO: Let the webhook workflow auto-exit once it observes the config is
+	// gone (see webhook spec).
+
+	Ok(DeleteResponse {})
 }
 
 // MARK: Events
