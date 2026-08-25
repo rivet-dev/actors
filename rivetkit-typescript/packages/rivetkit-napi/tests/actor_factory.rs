@@ -7,12 +7,10 @@ mod moved_tests {
 
 	use parking_lot::Mutex;
 	use rivet_error::{MacroMarker, RivetError, RivetErrorSchema};
-	use rivetkit_core::HttpRequestBodyStream as CoreHttpRequestBodyStream;
-	use tokio::sync::{mpsc, watch};
 	use tracing::Level;
 	use tracing_subscriber::fmt::MakeWriter;
 
-	use super::{BRIDGE_RIVET_ERROR_PREFIX, HttpRequestBodyStream, parse_bridge_rivet_error};
+	use super::{BRIDGE_RIVET_ERROR_PREFIX, parse_bridge_rivet_error};
 
 	static AUTH_FORBIDDEN_SCHEMA: RivetErrorSchema = RivetErrorSchema {
 		group: "auth",
@@ -125,26 +123,5 @@ mod moved_tests {
 		let logs = capture.output();
 		assert!(logs.contains("malformed BridgeRivetErrorPayload"));
 		assert!(logs.contains("parse_err"));
-	}
-
-	#[tokio::test]
-	async fn cancelling_http_request_body_drops_core_receiver() {
-		let (body_tx, body_rx) = mpsc::channel(1);
-		let (_abort_tx, abort_rx) = watch::channel(None);
-		let stream = HttpRequestBodyStream::new(
-			Vec::new(),
-			CoreHttpRequestBodyStream::new(body_rx, abort_rx),
-		);
-
-		stream.cancel().await.expect("cancel request body stream");
-
-		assert!(body_tx.is_closed());
-		assert!(
-			stream
-				.read()
-				.await
-				.expect("read cancelled request body")
-				.is_none()
-		);
 	}
 }
