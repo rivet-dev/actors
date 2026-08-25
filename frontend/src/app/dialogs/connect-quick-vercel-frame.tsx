@@ -18,7 +18,6 @@ import {
 	buildServerlessConfig,
 	ConfigurationAccordion,
 } from "./connect-manual-serverless-frame";
-import { VERCEL_SERVERLESS_MAX_DURATION } from "./connect-vercel-frame";
 
 const { stepper } = ConnectVercelForm;
 
@@ -91,7 +90,8 @@ function FormStepper({
 					provider,
 					{
 						...values,
-						requestLifespan: VERCEL_SERVERLESS_MAX_DURATION - 5,
+						requestLifespan:
+							ConnectVercelForm.VERCEL_REQUEST_LIFESPAN,
 					},
 					{ provider: "vercel" },
 				);
@@ -104,7 +104,7 @@ function FormStepper({
 			defaultValues={{
 				runnerName: "default",
 				headers: [],
-				drainGracePeriod: 0,
+				drainGracePeriod: ConnectVercelForm.VERCEL_DRAIN_GRACE_PERIOD,
 				plan: "hobby",
 				datacenters: Object.fromEntries(
 					datacenters.map((dc) => [dc.name, true]),
