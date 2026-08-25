@@ -13,10 +13,13 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        toolchain = fenix.packages.${system}.fromToolchainFile {
-          file = ./rust-toolchain.toml;
-          sha256 = "sha256-P30Tm3O7vQAE725YtDCDHGjNrSsfZO4us11UwJGZSJo=";
-        };
+        toolchain = fenix.packages.${system}.combine [
+          (fenix.packages.${system}.fromToolchainFile {
+            file = ./rust-toolchain.toml;
+            sha256 = "sha256-P30Tm3O7vQAE725YtDCDHGjNrSsfZO4us11UwJGZSJo=";
+          })
+          fenix.packages.${system}.targets.wasm32-unknown-unknown.stable.rust-std
+        ];
       in
       {
         devShells.default = pkgs.mkShell rec {
@@ -25,9 +28,11 @@
             toolchain
             clang
             llvmPackages.bintools
+            stdenv.cc.cc.lib
+            nodejs_22
+            pnpm
           ];
           LIBCLANG_PATH = pkgs.lib.makeLibraryPath [ pkgs.llvmPackages_latest.libclang.lib ];
-          RUSTFLAGS = (builtins.map (a: ''-L ${a}/lib'') []);
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (buildInputs ++ nativeBuildInputs);
           BINDGEN_EXTRA_CLANG_ARGS =
             (builtins.map (a: ''-I"${a}/include"'') [ pkgs.glibc.dev ])
