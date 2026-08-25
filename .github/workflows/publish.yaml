@@ -55,7 +55,7 @@ jobs:
       - run: corepack enable
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: pnpm
       - name: Install publish scripts
         run: pnpm install --frozen-lockfile --filter=publish
@@ -287,7 +287,7 @@ jobs:
       - run: corepack enable
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: pnpm
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -381,7 +381,8 @@ jobs:
       needs.build.result == 'success' &&
       needs.build-wasm.result == 'success' &&
       needs.docker-images.result == 'success'
-    runs-on: depot-ubuntu-24.04-8
+    # npm trusted publishing currently requires a GitHub-hosted runner.
+    runs-on: ubuntu-24.04
     permissions:
       contents: write # git tag + gh release (release only)
       id-token: write
@@ -396,7 +397,7 @@ jobs:
       - run: corepack enable
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
           cache: pnpm
       - run: pnpm install --frozen-lockfile
@@ -560,7 +561,7 @@ jobs:
         run: |
           pnpm build -F rivetkit
           pnpm build -F rivetkit -F '@rivetkit/*' -F '!@rivetkit/shared-data' -F '!@rivetkit/engine-frontend' -F '!@rivetkit/mcp-hub' -F '!@rivetkit/rivetkit-napi' -F '!@rivetkit/rivetkit-wasm'
-          pnpm build -F '@rivet-dev/vercel-world'
+          pnpm build -F '@rivet-dev/workflow-world'
 
       # ---- shared publish (runs for all triggers) ----
       - name: Finalize package versions for publish
@@ -568,7 +569,9 @@ jobs:
 
       - name: Publish npm packages
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # setup-node provides a dummy token value; clear it so token-only
+          # post-publish operations stay disabled for trusted publishing.
+          NODE_AUTH_TOKEN: ""
           SKIP_WASM_BUILD: "1"
         run: |
           pnpm --filter=publish exec tsx src/ci/bin.ts publish-npm \

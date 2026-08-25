@@ -274,6 +274,8 @@ const bootstrapHookTokenDb = async (database: MigrationDatabase) => {
 	);
 };
 
+// Durable schema-version trackers. A renamed table reads as version 0 and
+// replays the ladder, so these names must not change.
 export const migrateWorkflowDb = migrations({
 	tableName: "vercel_world_workflow_schema_version",
 	migrations: [{ version: 1, up: bootstrapWorkflowDb }],

@@ -144,6 +144,8 @@ type WorkflowContext = Omit<DispatchContext, "vars"> & {
 	};
 };
 
+// Durable schedule id. Runs armed by an earlier release still hold this name,
+// and only a delete under the exact name stops them, so it must not change.
 const RECOVERY_CRON = "vercel-world-recovery";
 const RECOVERY_INTERVAL_MS = 5_000;
 

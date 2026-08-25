@@ -1,3 +1,5 @@
+// Harness entry: runs the World registry as a standalone worker against an
+// externally managed Engine. Not part of the package exports.
 import { registry } from "./actors.js";
 
 const endpoint = process.env.RIVET_ENDPOINT;

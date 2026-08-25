@@ -18,7 +18,7 @@ function columns(ctx: TestCtx, table: string): string[] {
 		.map((row) => String(row.name));
 }
 
-describe("Vercel World database migrations", () => {
+describe("Workflow World database migrations", () => {
 	test("creates the consolidated workflowRun schema at v1", async () => {
 		const ctx = await makeCtx(migrateWorkflowDb);
 		contexts.push(ctx);

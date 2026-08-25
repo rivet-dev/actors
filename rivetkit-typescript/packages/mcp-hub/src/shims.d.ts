@@ -40,8 +40,3 @@ declare module "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js" {
 		): Promise<Response>;
 	}
 }
-
-declare module "rivet-website/dist/metadata/docs.json" {
-	const metadata: import("./types").DocsMetadata;
-	export default metadata;
-}

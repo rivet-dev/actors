@@ -116,7 +116,7 @@ async function startEngine(): Promise<EngineProcess> {
 	const apiPeerPort = await freePort(host);
 	const metricsPort = await freePort(host);
 	const endpoint = `http://${host}:${guardPort}`;
-	const dbRoot = mkdtempSync(join(tmpdir(), "vercel-world-rivet-it-"));
+	const dbRoot = mkdtempSync(join(tmpdir(), "workflow-world-rivet-it-"));
 	const configPath = join(dbRoot, "config.json");
 
 	mkdirSync(join(dbRoot, "db"), { recursive: true });

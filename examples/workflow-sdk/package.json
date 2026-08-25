@@ -1,5 +1,5 @@
 {
-	"name": "example-vercel-workflow",
+	"name": "example-workflow-sdk",
 	"version": "2.0.21",
 	"private": true,
 	"type": "module",
@@ -10,7 +10,7 @@
 		"test": "RIVET_RUN_ENGINE_PORT=16420 RIVETKIT_STORAGE_PATH=$PWD/.workflow-data vitest --config vitest.integration.config.ts run"
 	},
 	"dependencies": {
-		"@rivet-dev/vercel-world": "workspace:*",
+		"@rivet-dev/workflow-world": "workspace:*",
 		"hono": "^4.12.25",
 		"nitro": "3.0.260610-beta",
 		"rollup": "^4.62.2",
@@ -27,7 +27,7 @@
 		"node": ">=22.0.0"
 	},
 	"template": {
-		"technologies": ["typescript", "vercel-workflow"],
+		"technologies": ["typescript", "workflow-sdk"],
 		"tags": ["workflow", "durable"],
 		"noFrontend": true,
 		"skipVercel": true

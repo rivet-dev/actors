@@ -30,9 +30,8 @@ COPY rivetkit-typescript/packages/workflow-engine/ rivetkit-typescript/packages/
 # Copy shared libraries
 COPY shared/typescript/virtual-websocket/ shared/typescript/virtual-websocket/
 
-# Copy examples and public assets
+# Copy examples
 COPY examples/ examples/
-COPY frontend/public/examples/ frontend/public/examples/
 
 # Copy generated API docs
 COPY rivetkit-asyncapi/ rivetkit-asyncapi/

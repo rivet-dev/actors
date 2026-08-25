@@ -7,12 +7,12 @@ export { coordinator } from "./actors/coordinator.js";
 export { hookToken } from "./actors/hook-token.js";
 export { workflowRun } from "./actors/workflow-run.js";
 
-export const vercelWorldActors = {
+export const workflowWorldActors = {
 	workflowRun,
 	coordinator,
 	hookToken,
 };
 
 export const registry = setup({
-	use: vercelWorldActors,
+	use: workflowWorldActors,
 });

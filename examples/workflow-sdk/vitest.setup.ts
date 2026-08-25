@@ -1,4 +1,4 @@
-import { registry } from "@rivet-dev/vercel-world/registry";
+import { registry } from "@rivet-dev/workflow-world/registry";
 import { afterAll } from "vitest";
 
 registry.config.shutdown = {

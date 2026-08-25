@@ -428,8 +428,8 @@
 					"href": "/actors/integrations/vercel-eve"
 				},
 				{
-					"title": "Vercel Workflows (Beta)",
-					"href": "/actors/integrations/vercel-workflows"
+					"title": "Workflow SDK (Beta)",
+					"href": "/actors/integrations/workflow-sdk"
 				}
 			]
 		}

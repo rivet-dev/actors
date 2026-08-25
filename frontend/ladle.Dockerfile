@@ -13,9 +13,6 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.base.json turbo.js
 # Copy frontend package
 COPY frontend/ frontend/
 
-# Copy public examples (required by Vite during ladle build)
-COPY frontend/public/examples/ frontend/public/examples/
-
 # Copy engine SDK dependencies
 COPY engine/sdks/typescript/api-full/ engine/sdks/typescript/api-full/
 COPY engine/sdks/typescript/envoy-protocol/ engine/sdks/typescript/envoy-protocol/

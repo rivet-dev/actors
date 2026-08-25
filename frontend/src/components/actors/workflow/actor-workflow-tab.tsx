@@ -33,6 +33,7 @@ export function ActorWorkflowTab({ actorId }: ActorWorkflowTabProps) {
 
 	const isLoading = isEnabledLoading || isHistoryLoading;
 	const workflow = workflowData?.history ?? null;
+	const historyError = workflowData?.error ?? null;
 	const currentStep = useMemo(() => getCurrentStep(workflow), [workflow]);
 	const hasHiddenRunningStep =
 		actorStatus === "running" &&
@@ -53,13 +54,8 @@ export function ActorWorkflowTab({ actorId }: ActorWorkflowTabProps) {
 	const handleReplay = async (entryId?: string) => {
 		try {
 			const result = await replayMutation.mutateAsync(entryId);
-			queryClient.setQueryData(
-				actorInspectorQueriesKeys.actorWorkflowHistory(actorId),
-				{
-					history: result.history,
-					isEnabled: result.isEnabled,
-				},
-			);
+			// History itself is refreshed over the websocket below; the replay
+			// response does not carry it in a form this tab can render.
 			queryClient.setQueryData(
 				actorInspectorQueriesKeys.actorIsWorkflowEnabled(actorId),
 				result.isEnabled,
@@ -100,6 +96,17 @@ export function ActorWorkflowTab({ actorId }: ActorWorkflowTabProps) {
 				<p>
 					Workflow Visualizer is not enabled for this Actor. <br />{" "}
 					This feature requires a workflow-based Actor.
+				</p>
+			</Info>
+		);
+	}
+
+	if (historyError) {
+		return (
+			<Info>
+				<p>
+					Workflow history could not be read from this Actor. <br />
+					{historyError}
 				</p>
 			</Info>
 		);

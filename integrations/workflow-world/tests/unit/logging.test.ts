@@ -19,7 +19,7 @@ describe("structured debug logging", () => {
 		expect(spy).toHaveBeenCalledTimes(1);
 		const line = JSON.parse(spy.mock.calls[0][0] as string);
 		expect(line).toMatchObject({
-			scope: "@rivet-dev/vercel-world",
+			scope: "@rivet-dev/workflow-world",
 			event: "dispatcher.deliver",
 			traceId: "msg_1",
 			route: "flow",

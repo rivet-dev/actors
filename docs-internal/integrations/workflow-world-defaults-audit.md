@@ -1,10 +1,10 @@
-# Vercel World defaults audit
+# Workflow World defaults audit
 
-`@rivet-dev/vercel-world` should implement Vercel World semantics while
+`@rivet-dev/workflow-world` should implement Workflow World semantics while
 delegating Rivet connection and runtime behavior to RivetKit. It must not copy
 RivetKit's environment resolution or invent integration-specific defaults.
 
-This audit is scoped only to `@rivet-dev/vercel-world`, including its package
+This audit is scoped only to `@rivet-dev/workflow-world`, including its package
 tests, examples, and documentation. References to Eve and RivetKit below define
 the external contracts the World should use; they are not audits of those
 projects.
@@ -35,9 +35,9 @@ Add `registry.startAndWait()` as the public RivetKit method with these semantics
   never independently spawns an Engine.
 
 The lazy World integration must receive the application's combined registry,
-containing both `vercelWorldActors` and optional application actors such as
+containing both `workflowWorldActors` and optional application actors such as
 agentOS `vm`, and call `startAndWait()` before its first outgoing actor request.
-The Vercel World package remains independent of agentOS and must not create a
+The Workflow World package remains independent of agentOS and must not create a
 second private registry. Keep `registry.start()` as the fire-and-forget
 compatibility API; a separate public `waitForReady()` is unnecessary without a
 concrete wait-without-start caller.
@@ -98,7 +98,7 @@ local Engine or public package default.
 Status: known limitation; add an inline code comment.
 
 The World currently returns a constant deployment ID and dispatches wakes to the
-current `WORKFLOW_RUNTIME_URL`. It therefore cannot guarantee Vercel Workflows's
+current `WORKFLOW_RUNTIME_URL`. It therefore cannot guarantee the Workflow SDK's
 immutable-deployment behavior: an unfinished run may resume against newer code.
 `RIVET_ENVOY_VERSION` supports runner upgrades, but it does not make a historical
 version addressable or route an HTTP request to an exact version.
@@ -107,7 +107,7 @@ Add a concise comment beside `getDeploymentId()` explaining this limitation and
 why `resolveLatestDeploymentId()` is intentionally not implemented. Full support
 requires either an immutable runtime deployment address retained per run or a
 versioned workflow bundle loader. Do not imply that `RIVET_ENVOY_VERSION` alone
-provides Vercel Workflows deployment pinning.
+provides the Workflow SDK deployment pinning.
 
 ## Additional audit findings
 
@@ -124,7 +124,7 @@ Rivet behavior is:
 | Hardcoded token `"dev"` | Remove; an unauthenticated local Engine uses no token |
 | `disableMetadataLookup: true` | Remove unless a concrete incompatibility proves it necessary |
 | `startRegistry()` HTTP-health polling | Replace with `registry.startAndWait()` using RivetKit's actual envoy-readiness signal |
-| Rivet-specific workflow runtime URL aliases | Remove; retain the canonical World/Vercel Workflows setting |
+| Rivet-specific workflow runtime URL aliases | Remove; retain the canonical World / Workflow SDK setting |
 | Native runtime, local SQLite, and external Engine overrides in test runtime | Keep only as explicit test-harness controls; never document as public defaults |
 
 ### Registry readiness
@@ -140,10 +140,10 @@ integration-owned polling protocol.
 
 Status: simplify and document intentional behavior.
 
-The World owns the callback URL because it must deliver Vercel Workflows queue
+The World owns the callback URL because it must deliver the Workflow SDK queue
 messages to the application. Keep one explicit `runtimeUrl` option and the
 canonical `WORKFLOW_RUNTIME_URL`. Remove Rivet-specific aliases such as
-`RIVET_WORKFLOW_BASE_URL`. Retain an upstream Vercel Workflows alias or local port
+`RIVET_WORKFLOW_BASE_URL`. Retain an upstream Workflow SDK alias or local port
 fallback only if its documented behavior and tests require it.
 
 ### Test runtime overrides

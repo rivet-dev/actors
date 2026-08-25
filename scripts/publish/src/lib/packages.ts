@@ -163,7 +163,7 @@ export function discoverPackages(
 		if (
 			!p.name.startsWith("@rivetkit/") &&
 			p.name !== "rivetkit" &&
-			p.name !== "@rivet-dev/vercel-world"
+			p.name !== "@rivet-dev/workflow-world"
 		) continue;
 		add(p.path);
 	}

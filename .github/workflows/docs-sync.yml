@@ -20,7 +20,7 @@ jobs:
           token: ${{ secrets.RIVET_WEBSITE_TOKEN }}
           extra-paths: >-
             examples/docs
-            examples/vercel-workflow
+            examples/workflow-sdk
             self-host/workers
             self-host/control-plane
             rivetkit-typescript/artifacts

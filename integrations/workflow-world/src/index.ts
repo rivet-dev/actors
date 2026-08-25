@@ -32,10 +32,10 @@ import { HookNotFoundError, WorkflowWorldError } from "@workflow/errors";
 import { setup, type Registry } from "rivetkit";
 import { createClient, type Client } from "rivetkit/client";
 import { monotonicFactory } from "ulid";
-import { registry, vercelWorldActors } from "./actors.js";
+import { registry, workflowWorldActors } from "./actors.js";
 
 export type RivetWorldConfig = {
-	/** The application's combined registry, including `vercelWorldActors`. */
+	/** The application's combined registry, including `workflowWorldActors`. */
 	registry?: RegistryWithReadiness;
 	runtimeUrl?: string;
 	/**
@@ -67,7 +67,7 @@ function env(name: string) {
 function required(value: string | undefined, name: string) {
 	if (!value) {
 		throw new Error(
-			`${name} is required for @rivet-dev/vercel-world. Set it in the app process environment.`,
+			`${name} is required for @rivet-dev/workflow-world. Set it in the app process environment.`,
 		);
 	}
 	return value;
@@ -149,7 +149,7 @@ function partitionForQueuePayload(message: QueuePayload) {
 	const data = QueuePayloadSchema.parse(message);
 	const runId = "runId" in data ? data.runId : "workflowRunId" in data ? data.workflowRunId : undefined;
 	if (typeof runId !== "string" || runId.length === 0) {
-		throw new Error("Vercel World queue payload requires a non-empty runId");
+		throw new Error("Workflow World queue payload requires a non-empty runId");
 	}
 	return runId;
 }
@@ -265,7 +265,7 @@ export class RivetClientWorld {
 			config.registry ??
 			(config.client
 				? undefined
-				: (setup({ use: vercelWorldActors }) as RegistryWithReadiness));
+				: (setup({ use: workflowWorldActors }) as RegistryWithReadiness));
 		const registryConfig = this.#registry?.parseConfig();
 		this.#client = withRegistryReadiness(
 			config.client ??

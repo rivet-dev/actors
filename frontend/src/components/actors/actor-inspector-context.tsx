@@ -154,9 +154,9 @@ interface ActorInspectorApi {
 	getWorkflowHistory: () => Promise<{
 		history: WorkflowHistory | null;
 		isEnabled: boolean;
+		error: string | null;
 	}>;
 	replayWorkflowFromStep: (entryId?: string) => Promise<{
-		history: WorkflowHistory | null;
 		isEnabled: boolean;
 	}>;
 	getDatabaseSchema: () => Promise<DatabaseSchema>;
@@ -188,7 +188,11 @@ type FeatureSupport = {
 };
 
 type WorkflowHistoryHttpResponse = {
-	history: number[] | null;
+	// `history` is the decoded workflow JSON documented for the inspector HTTP
+	// routes. It is deliberately not read here: the tab refreshes history over
+	// the websocket after a replay, and the BARE transform expects transport
+	// bytes rather than this shape.
+	history: unknown;
 	isWorkflowEnabled: boolean;
 };
 
@@ -661,19 +665,6 @@ export const createDefaultActorInspectorContext = ({
 const computeActorUrl = ({ url, actorId }: { url: string; actorId: ActorId }) =>
 	new URL(`/gateway/${actorId}`, url).href;
 
-function transformWorkflowHistoryFromJson(raw: number[] | null): {
-	history: WorkflowHistory | null;
-	isEnabled: boolean;
-} {
-	if (!raw) {
-		return { history: null, isEnabled: true };
-	}
-
-	return transformWorkflowHistoryFromInspector(
-		new Uint8Array(raw).buffer as ArrayBuffer,
-	);
-}
-
 const replayWorkflowFromStepHttp = async ({
 	actorId,
 	credentials,
@@ -710,16 +701,10 @@ const replayWorkflowFromStepHttp = async ({
 	}
 
 	const data = z
-		.object({
-			history: z.array(z.number().int().min(0).max(255)).nullable(),
-			isWorkflowEnabled: z.boolean(),
-		})
+		.object({ isWorkflowEnabled: z.boolean() })
 		.parse((await response.json()) satisfies WorkflowHistoryHttpResponse);
 
-	return {
-		history: transformWorkflowHistoryFromJson(data.history).history,
-		isEnabled: data.isWorkflowEnabled,
-	};
+	return { isEnabled: data.isWorkflowEnabled };
 };
 
 export const actorWakeUpMutationOptions = () =>
@@ -1115,6 +1100,7 @@ export const ActorInspectorProvider = ({
 				const { id, promise } = actionsManager.current.createResolver<{
 					history: WorkflowHistory | null;
 					isEnabled: boolean;
+					error: string | null;
 				}>({
 					name: "getWorkflowHistory",
 					timeoutMs: 10_000,
@@ -1533,6 +1519,7 @@ const createMessageHandler =
 				actionsManager.current.resolve(Number(rid), {
 					history: transformed?.history ?? null,
 					isEnabled: body.val.isWorkflowEnabled,
+					error: transformed?.error ?? null,
 				});
 			})
 			.with({ tag: "WorkflowReplayResponse" }, (body) => {
@@ -1551,6 +1538,7 @@ const createMessageHandler =
 				actionsManager.current.resolve(Number(rid), {
 					history: transformed?.history ?? null,
 					isEnabled: body.val.isWorkflowEnabled,
+					error: transformed?.error ?? null,
 				});
 			})
 			.with({ tag: "DatabaseSchemaResponse" }, (body) => {
@@ -1618,16 +1606,27 @@ function transformState(state: ArrayBuffer) {
 function transformWorkflowHistoryFromInspector(raw: ArrayBuffer): {
 	history: WorkflowHistory | null;
 	isEnabled: boolean;
+	error: string | null;
 } {
 	try {
 		const decoded = decodeWorkflowHistoryTransport(raw);
 		return {
 			history: transformWorkflowHistory(decoded),
 			isEnabled: true,
+			error: null,
 		};
 	} catch (error) {
-		console.warn("Failed to decode workflow history", error);
-		return { history: null, isEnabled: true };
+		// A decode failure is a protocol mismatch, not an empty workflow. It is
+		// reported so the tab cannot render it as "nothing recorded yet".
+		console.error("Failed to decode workflow history", error);
+		return {
+			history: null,
+			isEnabled: true,
+			error:
+				error instanceof Error
+					? error.message
+					: "Workflow history could not be decoded.",
+		};
 	}
 }
 

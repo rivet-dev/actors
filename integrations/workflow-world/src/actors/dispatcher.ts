@@ -141,7 +141,7 @@ export function debugLog(event: string, data?: Record<string, unknown>) {
 	const traceId = data?.messageId ?? data?.partition ?? data?.runId;
 	console.error(
 		JSON.stringify({
-			scope: "@rivet-dev/vercel-world",
+			scope: "@rivet-dev/workflow-world",
 			event,
 			...(traceId == null ? {} : { traceId }),
 			...safe,

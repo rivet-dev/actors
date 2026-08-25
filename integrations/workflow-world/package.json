@@ -1,7 +1,7 @@
 {
-	"name": "@rivet-dev/vercel-world",
+	"name": "@rivet-dev/workflow-world",
 	"version": "2.3.7",
-	"description": "Vercel Workflows backed by Rivet Actors",
+	"description": "Vercel's Workflow SDK backed by Rivet Actors",
 	"license": "Apache-2.0",
 	"publishConfig": {
 		"access": "public"
