@@ -1,0 +1,4 @@
+type Data struct {
+	url: str
+	headers: map<str><str>
+}

@@ -5106,6 +5106,7 @@ dependencies = [
  "tracing",
  "urlencoding",
  "utoipa",
+ "webhook",
 ]
 
 [[package]]
@@ -8720,6 +8721,24 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webhook"
+version = "2.3.7"
+dependencies = [
+ "anyhow",
+ "epoxy",
+ "futures-util",
+ "gasoline",
+ "namespace",
+ "rivet-data",
+ "serde",
+ "serde_bare",
+ "tracing",
+ "universaldb",
+ "url",
+ "vbare",
 ]
 
 [[package]]

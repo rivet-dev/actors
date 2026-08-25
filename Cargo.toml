@@ -56,6 +56,7 @@ members = [
   "engine/packages/universalpubsub",
   "engine/packages/util",
   "engine/packages/util-id",
+  "engine/packages/webhook",
   "engine/packages/util-serde",
   "engine/packages/workflow-worker",
   "engine/sdks/rust/api-full",
@@ -572,6 +573,9 @@ members = [
 
     [workspace.dependencies.rivet-util-id]
     path = "engine/packages/util-id"
+
+    [workspace.dependencies.webhook]
+    path = "engine/packages/webhook"
 
     [workspace.dependencies.rivet-util-serde]
     path = "engine/packages/util-serde"

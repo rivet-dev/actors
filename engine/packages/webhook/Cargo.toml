@@ -1,0 +1,21 @@
+[package]
+name = "webhook"
+publish = false
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+epoxy.workspace = true
+futures-util.workspace = true
+gas.workspace = true
+namespace.workspace = true
+rivet-data.workspace = true
+serde.workspace = true
+serde_bare.workspace = true
+tracing.workspace = true
+universaldb.workspace = true
+url.workspace = true
+vbare.workspace = true

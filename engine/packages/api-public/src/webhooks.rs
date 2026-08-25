@@ -58,12 +58,37 @@ pub async fn list(Extension(ctx): Extension<ApiCtx>, Query(query): Query<ListQue
 }
 
 #[tracing::instrument(skip_all)]
-async fn list_inner(ctx: ApiCtx, _query: ListQuery) -> Result<ListResponse> {
+async fn list_inner(ctx: ApiCtx, query: ListQuery) -> Result<ListResponse> {
 	ctx.auth().await?;
 
-	// TODO: Read webhook configs for this namespace from epoxy, following the
-	// runner-configs pattern (see `engine/packages/api-peer/src/runner_configs.rs`).
-	bail!("webhooks_list is not implemented yet");
+	let namespace = ctx
+		.op(namespace::ops::resolve_for_name_global::Input {
+			name: query.namespace.clone(),
+		})
+		.await?
+		.ok_or_else(|| namespace::errors::Namespace::NotFound.build())?;
+
+	let webhooks = ctx
+		.op(webhook::ops::list::Input {
+			namespace_id: namespace.namespace_id,
+		})
+		.await?;
+
+	Ok(ListResponse {
+		webhooks: webhooks
+			.into_iter()
+			.map(|w| {
+				(
+					w.name,
+					WebhookConfig {
+						url: w.config.url,
+						headers: w.config.headers,
+					},
+				)
+			})
+			.collect(),
+		pagination: Pagination { cursor: None },
+	})
 }
 
 // MARK: Upsert
@@ -121,15 +146,36 @@ pub async fn upsert(
 #[tracing::instrument(skip_all)]
 async fn upsert_inner(
 	ctx: ApiCtx,
-	_path: UpsertPath,
-	_query: UpsertQuery,
-	_body: UpsertRequest,
+	path: UpsertPath,
+	query: UpsertQuery,
+	body: UpsertRequest,
 ) -> Result<UpsertResponse> {
 	ctx.auth().await?;
 
-	// TODO: Validate and write the webhook config to epoxy, then spawn or signal
-	// the per-(namespace, webhook name, dc) webhook workflow (see webhook spec).
-	bail!("webhooks_upsert is not implemented yet");
+	// Resolve and validate namespace
+	let namespace = ctx
+		.op(namespace::ops::resolve_for_name_global::Input {
+			name: query.namespace.clone(),
+		})
+		.await?
+		.ok_or_else(|| namespace::errors::Namespace::NotFound.build())?;
+
+	// Upsert operation
+	ctx.op(webhook::ops::upsert::Input {
+		namespace_id: namespace.namespace_id,
+		name: path.webhook_name.clone(),
+		config: webhook::types::WebhookConfig {
+			url: body.0.url,
+			headers: body.0.headers,
+		},
+	})
+	.await?;
+
+	// TODO: Spawn or signal the per-(namespace, webhook name, dc) webhook workflow
+	// (see webhook spec). The config is now durable in epoxy; the workflow still
+	// needs to be built to actually deliver events.
+
+	Ok(UpsertResponse {})
 }
 
 // MARK: Delete
