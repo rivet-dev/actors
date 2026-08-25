@@ -64,7 +64,10 @@ export function createRivetKitWithClient<Registry extends AnyActorRegistry>(
 	 * Hook to connect to a actor and retrieve its state. Using this hook with the same options
 	 * will return the same actor instance. This simplifies passing around the actor state in your components.
 	 * It also provides a method to listen for events emitted by the actor.
-	 * @param opts - Options for the actor, including its name, key, and parameters.
+	 *
+	 * The actor is identified either by its `name` and `key`, or by its `name` and raw
+	 * actor `id`. The id form always resolves an existing actor and never creates one.
+	 * @param opts - Options for the actor, including its name, key or id, and parameters.
 	 * @returns An object containing the actor's state and a method to listen for events.
 	 */
 	function useActor<

@@ -13,6 +13,44 @@ export type AnyActorRegistry = Registry<any>;
 
 export type { ActorConnStatus };
 
+/**
+ * Registry-erased form of {@link ActorOptions} stored on {@link ActorStateReference}.
+ * Mirrors the public discriminated union so an actor is identified by either
+ * `key` or `id`, never both at once.
+ */
+type StoredActorOptions =
+	| {
+			name: string;
+			/**
+			 * Unique key for the actor instance.
+			 * This can be a string or an array of strings to create multiple instances.
+			 * @example "abc" or ["abc", "def"]
+			 */
+			key: string | string[];
+			/** Parameters for the actor. */
+			params?: unknown;
+			/** Region to create the actor in if it doesn't exist. */
+			createInRegion?: string;
+			/** Input data to pass to the actor. */
+			createWithInput?: unknown;
+			/** Whether the actor is enabled. Defaults to true. */
+			enabled?: boolean;
+			/**
+			 * If true, only gets the actor if it already exists. Does not create it.
+			 * Defaults to false.
+			 */
+			noCreate?: boolean;
+	  }
+	| {
+			name: string;
+			/** The raw ID of an existing actor instance. */
+			id: string;
+			/** Parameters for the actor. */
+			params?: unknown;
+			/** Whether the actor is enabled. Defaults to true. */
+			enabled?: boolean;
+	  };
+
 interface ActorStateReference {
 	/**
 	 * The unique identifier for the actor.
@@ -40,37 +78,10 @@ interface ActorStateReference {
 	 */
 	error: Error | null;
 	/**
-	 * Options for the actor, including its name, key, parameters, and whether it is enabled.
+	 * Options for the actor, including its name, key or id, parameters, and whether
+	 * it is enabled.
 	 */
-	opts: {
-		name: string;
-		/**
-		 * Unique key for the actor instance.
-		 * This can be a string or an array of strings to create multiple instances.
-		 * @example "abc" or ["abc", "def"]
-		 */
-		key: string | string[];
-		/**
-		 * Parameters for the actor.
-		 * These are additional options that can be passed to the actor.
-		 */
-		params?: unknown;
-		/** Region to create the actor in if it doesn't exist. */
-		createInRegion?: string;
-		/** Input data to pass to the actor. */
-		createWithInput?: unknown;
-		/**
-		 * Whether the actor is enabled.
-		 * Defaults to true.
-		 */
-		enabled?: boolean;
-		/**
-		 * If true, only gets the actor if it already exists. Does not create the actor.
-		 * Throws an error if the actor is not found.
-		 * Defaults to false.
-		 */
-		noCreate?: boolean;
-	};
+	opts: StoredActorOptions;
 }
 
 interface InternalRivetKitStore {
@@ -78,9 +89,9 @@ interface InternalRivetKitStore {
 }
 
 /**
- * Options for configuring a actor in RivetKit.
+ * Options shared by every way of identifying an actor.
  */
-export interface ActorOptions<
+interface ActorOptionsBase<
 	Registry extends AnyActorRegistry,
 	ActorName extends keyof ExtractActorsFromRegistry<Registry> & string,
 > {
@@ -91,24 +102,33 @@ export interface ActorOptions<
 	 */
 	name: ActorName;
 	/**
-	 * Unique key for the actor instance.
-	 * This can be a string or an array of strings to create multiple instances.
-	 * @example "abc" or ["abc", "def"]
-	 */
-	key: string | string[];
-	/**
 	 * Parameters for the actor.
 	 */
 	params?: ExtractActorsFromRegistry<Registry>[ActorName]["params"];
-	/** Region to create the actor in if it doesn't exist. */
-	createInRegion?: string;
-	/** Input data to pass to the actor. */
-	createWithInput?: unknown;
 	/**
 	 * Whether the actor is enabled.
 	 * Defaults to true.
 	 */
 	enabled?: boolean;
+}
+
+/**
+ * Options for identifying an actor by its name and key.
+ */
+export interface ActorByKeyOptions<
+	Registry extends AnyActorRegistry,
+	ActorName extends keyof ExtractActorsFromRegistry<Registry> & string,
+> extends ActorOptionsBase<Registry, ActorName> {
+	/**
+	 * Unique key for the actor instance.
+	 * This can be a string or an array of strings to create multiple instances.
+	 * @example "abc" or ["abc", "def"]
+	 */
+	key: string | string[];
+	/** Region to create the actor in if it doesn't exist. */
+	createInRegion?: string;
+	/** Input data to pass to the actor. */
+	createWithInput?: unknown;
 	/**
 	 * If true, only gets the actor if it already exists. Does not create the actor.
 	 * Throws an error if the actor is not found.
@@ -116,6 +136,33 @@ export interface ActorOptions<
 	 */
 	noCreate?: boolean;
 }
+
+/**
+ * Options for identifying an existing actor by its raw actor ID.
+ * Unlike key-based options, this always resolves an existing actor and never
+ * creates one, so create-only options do not apply.
+ */
+export interface ActorByIdOptions<
+	Registry extends AnyActorRegistry,
+	ActorName extends keyof ExtractActorsFromRegistry<Registry> & string,
+> extends ActorOptionsBase<Registry, ActorName> {
+	/**
+	 * The raw ID of an existing actor instance.
+	 * @example "a1b2c3d4-..."
+	 */
+	id: string;
+}
+
+/**
+ * Options for configuring a actor in RivetKit. An actor is identified either by
+ * its name and key or by its raw actor id.
+ */
+export type ActorOptions<
+	Registry extends AnyActorRegistry,
+	ActorName extends keyof ExtractActorsFromRegistry<Registry> & string,
+> =
+	| ActorByKeyOptions<Registry, ActorName>
+	| ActorByIdOptions<Registry, ActorName>;
 
 export type ActorsStateDerived<
 	Registry extends AnyActorRegistry,
@@ -419,15 +466,22 @@ function create<Registry extends AnyActorRegistry>(
 	});
 
 	try {
-		const handle = actor.opts.noCreate
-			? client.get(actor.opts.name as string, actor.opts.key, {
-					params: actor.opts.params,
-				})
-			: client.getOrCreate(actor.opts.name as string, actor.opts.key, {
-					params: actor.opts.params,
-					createInRegion: actor.opts.createInRegion,
-					createWithInput: actor.opts.createWithInput,
-				});
+		let handle: ActorHandle<AnyActorDefinition>;
+		if ("id" in actor.opts) {
+			handle = client.getForId(actor.opts.name as string, actor.opts.id, {
+				params: actor.opts.params,
+			});
+		} else if (actor.opts.noCreate) {
+			handle = client.get(actor.opts.name as string, actor.opts.key, {
+				params: actor.opts.params,
+			});
+		} else {
+			handle = client.getOrCreate(actor.opts.name as string, actor.opts.key, {
+				params: actor.opts.params,
+				createInRegion: actor.opts.createInRegion,
+				createWithInput: actor.opts.createWithInput,
+			});
+		}
 
 		const connection = handle.connect();
 		const storedHandle = handle as ActorHandle<AnyActorDefinition>;
@@ -495,10 +549,16 @@ function create<Registry extends AnyActorRegistry>(
 	}
 }
 
-function defaultHashFunction({ name, key, params, noCreate }: AnyActorOptions) {
-	return JSON.stringify({ name, key, params, noCreate });
+function defaultHashFunction(opts: AnyActorOptions) {
+	const key = "key" in opts ? opts.key : undefined;
+	const id = "id" in opts ? opts.id : undefined;
+	const noCreate = "noCreate" in opts ? opts.noCreate : undefined;
+	return JSON.stringify({ name: opts.name, key, id, params: opts.params, noCreate });
 }
 
-function optsEqual(a: AnyActorOptions, b: AnyActorOptions) {
+function optsEqual(
+	a: ActorStateReference["opts"],
+	b: ActorStateReference["opts"],
+) {
 	return equal(a, b);
 }

@@ -73,3 +73,28 @@ const connectionTypeCheck: Assert<
 	IsEqual<ActualConnection, ExpectedConnection>
 > = true;
 void connectionTypeCheck;
+
+// An actor may also be identified by its raw id. The typed surface (actions,
+// events, params) must match the key-based form.
+const idActorState = rivet.useActor({
+	name: "counter",
+	id: "a1b2c3d4-typecheck",
+});
+
+if (idActorState.connection) {
+	void idActorState.connection.increment(1);
+}
+
+idActorState.useEvent("updated", (payload) => {
+	const count: number = payload.count;
+	void count;
+});
+
+type IdActualConnection = typeof idActorState.connection;
+const idConnectionTypeCheck: Assert<
+	IsEqual<IdActualConnection, ExpectedConnection>
+> = true;
+void idConnectionTypeCheck;
+
+// @ts-expect-error must provide either a key or an id
+rivet.useActor({ name: "counter" });
