@@ -27,6 +27,7 @@ import {
 	appendName,
 	emptyLocation,
 	isLocationPrefix,
+	isLoopIterationMarker,
 	locationToKey,
 	registerName,
 } from "./location.js";
@@ -496,6 +497,81 @@ export class WorkflowContextImpl implements WorkflowContextInterface {
 	 */
 	private markVisited(key: string): void {
 		this.visitedKeys.add(key);
+	}
+
+	/**
+	 * Mark history entries for a loop's already-completed iterations visited so
+	 * an enclosing branch's validateComplete does not reject the iterations this
+	 * run intentionally skips. The resumed iteration and later replay normally.
+	 */
+	private markCompletedLoopIterationsVisited(
+		loopLocation: Location,
+		resumedIteration: number,
+	): void {
+		if (resumedIteration <= 0) {
+			return;
+		}
+
+		const loopSegment = loopLocation[loopLocation.length - 1];
+		if (typeof loopSegment !== "number") {
+			throw new Error("Expected loop location to end with a name index");
+		}
+
+		for (const [key, entry] of this.storage.history.entries) {
+			if (!isLocationPrefix(loopLocation, entry.location)) {
+				continue;
+			}
+
+			const iterationSegment = entry.location[loopLocation.length];
+			if (
+				!iterationSegment ||
+				!isLoopIterationMarker(iterationSegment) ||
+				// Defensive: redundant under the prefix invariant, guards against marking a foreign loop's entries if it ever changes.
+				iterationSegment.loop !== loopSegment ||
+				iterationSegment.iteration >= resumedIteration
+			) {
+				continue;
+			}
+
+			this.markVisited(key);
+		}
+	}
+
+	/**
+	 * Find the earliest loop iteration still present in history. Bounded loop
+	 * history prunes earlier iterations, so rollback replay must start here to
+	 * avoid aborting on a missing entry.
+	 */
+	private firstRetainedLoopIteration(
+		loopLocation: Location,
+		maxIteration: number,
+	): number {
+		const loopSegment = loopLocation[loopLocation.length - 1];
+		if (typeof loopSegment !== "number") {
+			throw new Error("Expected loop location to end with a name index");
+		}
+
+		let first = maxIteration;
+		for (const [, entry] of this.storage.history.entries) {
+			if (!isLocationPrefix(loopLocation, entry.location)) {
+				continue;
+			}
+
+			const iterationSegment = entry.location[loopLocation.length];
+			if (
+				!iterationSegment ||
+				!isLoopIterationMarker(iterationSegment) ||
+				iterationSegment.loop !== loopSegment
+			) {
+				continue;
+			}
+
+			if (iterationSegment.iteration < first) {
+				first = iterationSegment.iteration;
+			}
+		}
+
+		return first;
 	}
 
 	/**
@@ -1173,7 +1249,59 @@ export class WorkflowContextImpl implements WorkflowContextInterface {
 			);
 
 			if (rollbackMode) {
-				if (loopData.output !== undefined) {
+				if (metadata.status === "completed") {
+					// Re-walk the completed loop's retained iterations so nested
+					// steps register their rollback handlers. Keyed on completion
+					// status, not output, so a Loop.break(undefined) still
+					// replays. Bounded loop history may have pruned early
+					// iterations; start at the first retained one to avoid
+					// aborting on a missing entry. Only the final loop state is
+					// persisted, so once the prefix is pruned we can reconstruct
+					// only the last iteration. This collects; it does not persist.
+					const firstRetained = this.firstRetainedLoopIteration(
+						location,
+						loopData.iteration,
+					);
+					let rollbackIteration: number;
+					let rollbackState: S;
+					if (firstRetained === 0) {
+						rollbackIteration = 0;
+						rollbackState = config.state as S;
+					} else {
+						rollbackIteration = loopData.iteration;
+						rollbackState = loopData.state as S;
+					}
+					for (
+						;
+						rollbackIteration <= loopData.iteration;
+						rollbackIteration++
+					) {
+						const iterationLocation = appendLoopIteration(
+							this.storage,
+							location,
+							config.name,
+							rollbackIteration,
+						);
+						const branchCtx = this.createBranch(iterationLocation);
+						const iterationResult = await config.run(
+							branchCtx,
+							rollbackState,
+						);
+						branchCtx.validateComplete();
+						const result =
+							iterationResult === undefined
+								? ({
+										continue: true,
+										state: rollbackState,
+									} as LoopResult<S, T>)
+								: iterationResult;
+						if ("break" in result && result.break) {
+							break;
+						}
+						if ("continue" in result && result.continue) {
+							rollbackState = result.state;
+						}
+					}
 					return loopData.output as T;
 				}
 				rollbackSingleIteration = true;
@@ -1182,11 +1310,19 @@ export class WorkflowContextImpl implements WorkflowContextInterface {
 			}
 
 			if (metadata.status === "completed") {
+				this.markCompletedLoopIterationsVisited(
+					location,
+					loopData.iteration + 1,
+				);
 				return loopData.output as T;
 			}
 
 			// Loop already completed
 			if (loopData.output !== undefined) {
+				this.markCompletedLoopIterationsVisited(
+					location,
+					loopData.iteration + 1,
+				);
 				return loopData.output as T;
 			}
 
@@ -1194,6 +1330,7 @@ export class WorkflowContextImpl implements WorkflowContextInterface {
 			entry = existing;
 			state = loopData.state as S;
 			iteration = loopData.iteration;
+			this.markCompletedLoopIterationsVisited(location, iteration);
 			if (rollbackMode) {
 				rollbackOutput = loopData.output as T | undefined;
 				rollbackIterationRan = rollbackOutput !== undefined;
@@ -1381,6 +1518,7 @@ export class WorkflowContextImpl implements WorkflowContextInterface {
 			if (
 				!iterationSegment ||
 				typeof iterationSegment === "number" ||
+				// Defensive: redundant under the prefix invariant, guards against pruning a foreign loop's entries if it ever changes.
 				iterationSegment.loop !== loopSegment ||
 				iterationSegment.iteration < fromIteration ||
 				iterationSegment.iteration >= keepFrom
