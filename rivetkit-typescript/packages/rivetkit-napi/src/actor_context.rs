@@ -377,6 +377,7 @@ impl ActorContext {
 					message: Some(message),
 					public_: Some(true),
 					status_code: Some(401),
+					ray_id: None,
 				}))
 			})
 	}

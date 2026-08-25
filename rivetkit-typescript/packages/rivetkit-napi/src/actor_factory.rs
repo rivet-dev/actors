@@ -288,6 +288,8 @@ struct BridgeRivetErrorPayload {
 	code: String,
 	message: String,
 	metadata: Option<serde_json::Value>,
+	#[serde(rename = "rayId")]
+	ray_id: Option<String>,
 	#[serde(rename = "public")]
 	public_: Option<bool>,
 	#[serde(rename = "statusCode")]
@@ -300,6 +302,7 @@ pub(crate) struct BridgeRivetErrorContext {
 	pub message: Option<String>,
 	pub public_: Option<bool>,
 	pub status_code: Option<u16>,
+	pub ray_id: Option<String>,
 }
 
 impl std::fmt::Display for BridgeRivetErrorContext {
@@ -1047,6 +1050,7 @@ fn parse_bridge_rivet_error(reason: &str) -> Option<anyhow::Error> {
 		message: Some(message),
 		public_: payload.public_,
 		status_code: payload.status_code,
+		ray_id: payload.ray_id,
 	}))
 }
 

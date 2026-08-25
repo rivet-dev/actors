@@ -51,12 +51,13 @@ export function actorSchedulingError(
 	code: string,
 	actorId: string,
 	details: unknown,
+	rayId?: string,
 ): RivetError {
 	return new RivetError(
 		group,
 		code,
 		`Actor failed to start (${actorId}): ${JSON.stringify(details)}`,
-		{ metadata: { actorId, details } },
+		{ metadata: { actorId, details }, rayId },
 	);
 }
 

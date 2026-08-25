@@ -31,6 +31,9 @@ export class Forbidden extends Schema.TaggedErrorClass<Forbidden>(
 	get public() {
 		return this.cause.public;
 	}
+	get rayId() {
+		return this.cause.rayId;
+	}
 	get isRetryable(): boolean {
 		return false;
 	}
@@ -62,6 +65,9 @@ export class ActorNotFound extends Schema.TaggedErrorClass<ActorNotFound>(
 	}
 	get public() {
 		return this.cause.public;
+	}
+	get rayId() {
+		return this.cause.rayId;
 	}
 	get isRetryable(): boolean {
 		return false;
@@ -95,6 +101,9 @@ export class ActorStopping extends Schema.TaggedErrorClass<ActorStopping>(
 	get public() {
 		return this.cause.public;
 	}
+	get rayId() {
+		return this.cause.rayId;
+	}
 	get isRetryable(): boolean {
 		return true;
 	}
@@ -126,6 +135,9 @@ export class ActorRestarting extends Schema.TaggedErrorClass<ActorRestarting>(
 	}
 	get public() {
 		return this.cause.public;
+	}
+	get rayId() {
+		return this.cause.rayId;
 	}
 	get isRetryable(): boolean {
 		return true;
@@ -167,6 +179,9 @@ export class ActionNotFound extends Schema.TaggedErrorClass<ActionNotFound>(
 	get public() {
 		return this.cause.public;
 	}
+	get rayId() {
+		return this.cause.rayId;
+	}
 	get isRetryable(): boolean {
 		return false;
 	}
@@ -196,6 +211,9 @@ export class ActionTimedOut extends Schema.TaggedErrorClass<ActionTimedOut>(
 	}
 	get public() {
 		return this.cause.public;
+	}
+	get rayId() {
+		return this.cause.rayId;
 	}
 	get isRetryable(): boolean {
 		return true;
@@ -229,6 +247,9 @@ export class ActionAborted extends Schema.TaggedErrorClass<ActionAborted>(
 	get public() {
 		return this.cause.public;
 	}
+	get rayId() {
+		return this.cause.rayId;
+	}
 	get isRetryable(): boolean {
 		return false;
 	}
@@ -260,6 +281,9 @@ export class ActorOverloaded extends Schema.TaggedErrorClass<ActorOverloaded>(
 	}
 	get public() {
 		return this.cause.public;
+	}
+	get rayId() {
+		return this.cause.rayId;
 	}
 	get isRetryable(): boolean {
 		return true;
@@ -293,6 +317,9 @@ export class IncomingMessageTooLong extends Schema.TaggedErrorClass<IncomingMess
 	get public() {
 		return this.cause.public;
 	}
+	get rayId() {
+		return this.cause.rayId;
+	}
 	get isRetryable(): boolean {
 		return false;
 	}
@@ -324,6 +351,9 @@ export class OutgoingMessageTooLong extends Schema.TaggedErrorClass<OutgoingMess
 	}
 	get public() {
 		return this.cause.public;
+	}
+	get rayId() {
+		return this.cause.rayId;
 	}
 	get isRetryable(): boolean {
 		return false;
@@ -357,6 +387,9 @@ export class InvalidEncoding extends Schema.TaggedErrorClass<InvalidEncoding>(
 	get public() {
 		return this.cause.public;
 	}
+	get rayId() {
+		return this.cause.rayId;
+	}
 	get isRetryable(): boolean {
 		return false;
 	}
@@ -388,6 +421,9 @@ export class InvalidRequest extends Schema.TaggedErrorClass<InvalidRequest>(
 	}
 	get public() {
 		return this.cause.public;
+	}
+	get rayId() {
+		return this.cause.rayId;
 	}
 	get isRetryable(): boolean {
 		return false;
@@ -421,6 +457,9 @@ export class GuardActorReadyTimeout extends Schema.TaggedErrorClass<GuardActorRe
 	get public() {
 		return this.cause.public;
 	}
+	get rayId() {
+		return this.cause.rayId;
+	}
 	get isRetryable(): boolean {
 		return true;
 	}
@@ -452,6 +491,9 @@ export class GuardActorWakeRetriesExceeded extends Schema.TaggedErrorClass<Guard
 	}
 	get public() {
 		return this.cause.public;
+	}
+	get rayId() {
+		return this.cause.rayId;
 	}
 	get isRetryable(): boolean {
 		return true;
@@ -485,6 +527,9 @@ export class GuardActorRunnerFailed extends Schema.TaggedErrorClass<GuardActorRu
 	get public() {
 		return this.cause.public;
 	}
+	get rayId() {
+		return this.cause.rayId;
+	}
 	get isRetryable(): boolean {
 		return false;
 	}
@@ -516,6 +561,9 @@ export class GuardServiceUnavailable extends Schema.TaggedErrorClass<GuardServic
 	}
 	get public() {
 		return this.cause.public;
+	}
+	get rayId() {
+		return this.cause.rayId;
 	}
 	get isRetryable(): boolean {
 		return true;
@@ -549,6 +597,9 @@ export class GuardActorStoppedWhileWaiting extends Schema.TaggedErrorClass<Guard
 	get public() {
 		return this.cause.public;
 	}
+	get rayId() {
+		return this.cause.rayId;
+	}
 	get isRetryable(): boolean {
 		return true;
 	}
@@ -580,6 +631,9 @@ export class GuardTunnelRequestAborted extends Schema.TaggedErrorClass<GuardTunn
 	}
 	get public() {
 		return this.cause.public;
+	}
+	get rayId() {
+		return this.cause.rayId;
 	}
 	get isRetryable(): boolean {
 		return true;
@@ -613,6 +667,9 @@ export class GuardTunnelMessageTimeout extends Schema.TaggedErrorClass<GuardTunn
 	get public() {
 		return this.cause.public;
 	}
+	get rayId() {
+		return this.cause.rayId;
+	}
 	get isRetryable(): boolean {
 		return true;
 	}
@@ -644,6 +701,9 @@ export class GuardTunnelResponseClosed extends Schema.TaggedErrorClass<GuardTunn
 	}
 	get public() {
 		return this.cause.public;
+	}
+	get rayId() {
+		return this.cause.rayId;
 	}
 	get isRetryable(): boolean {
 		return true;
@@ -677,6 +737,9 @@ export class GuardGatewayResponseStartTimeout extends Schema.TaggedErrorClass<Gu
 	get public() {
 		return this.cause.public;
 	}
+	get rayId() {
+		return this.cause.rayId;
+	}
 	get isRetryable(): boolean {
 		return true;
 	}
@@ -708,6 +771,9 @@ export class InternalError extends Schema.TaggedErrorClass<InternalError>(
 	}
 	get public() {
 		return this.cause.public;
+	}
+	get rayId() {
+		return this.cause.rayId;
 	}
 	get isRetryable(): boolean {
 		return false;
@@ -741,6 +807,9 @@ export class ActionErrorDecodeFailed extends Schema.TaggedErrorClass<ActionError
 	}
 	get public() {
 		return this.rivetError.public;
+	}
+	get rayId() {
+		return this.rivetError.rayId;
 	}
 	get isRetryable(): boolean {
 		return false;
@@ -781,6 +850,9 @@ export class UnknownUserError extends Schema.TaggedErrorClass<UnknownUserError>(
 	}
 	get public() {
 		return this.cause.public;
+	}
+	get rayId() {
+		return this.cause.rayId;
 	}
 	get isRetryable(): boolean {
 		return false;
@@ -827,6 +899,11 @@ export class UnknownError extends Schema.TaggedErrorClass<UnknownError>(
 	get public() {
 		return this.cause instanceof RivetkitErrors.RivetError
 			? this.cause.public
+			: undefined;
+	}
+	get rayId() {
+		return this.cause instanceof RivetkitErrors.RivetError
+			? this.cause.rayId
 			: undefined;
 	}
 	get isRetryable(): boolean {
@@ -985,6 +1062,11 @@ export class RivetError extends Schema.TaggedErrorClass<RivetError>(
 	/** Delegates to the underlying reason's `public` if present. */
 	get public(): boolean | undefined {
 		return "public" in this.reason ? this.reason.public : undefined;
+	}
+
+	/** Delegates to the underlying reason's `rayId` if present. */
+	get rayId(): string | undefined {
+		return "rayId" in this.reason ? this.reason.rayId : undefined;
 	}
 
 	/** Delegates to the underlying reason's `isRetryable` getter. */
