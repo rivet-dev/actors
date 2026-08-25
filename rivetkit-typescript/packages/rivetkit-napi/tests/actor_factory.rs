@@ -68,6 +68,7 @@ mod moved_tests {
 				"code": "same_code",
 				"message": "same message",
 				"metadata": { "count": 1 },
+				"rayId": "ray-123",
 			})
 		);
 
@@ -78,6 +79,12 @@ mod moved_tests {
 		assert!(transport_error(&first).schema().is_none());
 		assert_eq!(transport_error(&second).group(), "actor");
 		assert_eq!(transport_error(&second).code(), "same_code");
+
+		let payload = crate::anyhow_to_bridge_rivet_error_payload(first);
+		assert_eq!(
+			payload.get("rayId").and_then(|value| value.as_str()),
+			Some("ray-123")
+		);
 	}
 
 	#[test]

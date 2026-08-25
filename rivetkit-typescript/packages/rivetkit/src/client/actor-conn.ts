@@ -874,7 +874,7 @@ export class ActorConnRaw {
 			const parsed = parseWebSocketCloseReason(reason);
 
 			if (parsed) {
-				const { group, code } = parsed;
+				const { group, code, rayId } = parsed;
 
 				if (this.#shouldReconnectForStaleActor(group, code)) {
 					this.#clearResolvedActorIdentity();
@@ -883,7 +883,7 @@ export class ActorConnRaw {
 							group,
 							code,
 							`Connection closed: ${reason}`,
-							undefined,
+							{ rayId },
 						),
 					);
 					return;
@@ -897,6 +897,7 @@ export class ActorConnRaw {
 						this.#actorId,
 						this.#actorResolutionState,
 						this.#driver,
+						rayId,
 					);
 					if (schedulingError) {
 						error = schedulingError;
@@ -905,7 +906,7 @@ export class ActorConnRaw {
 							group,
 							code,
 							`Connection closed: ${reason}`,
-							undefined,
+							{ rayId },
 						);
 					}
 				} else {
@@ -913,7 +914,7 @@ export class ActorConnRaw {
 						group,
 						code,
 						`Connection closed: ${reason}`,
-						undefined,
+						{ rayId },
 					);
 				}
 

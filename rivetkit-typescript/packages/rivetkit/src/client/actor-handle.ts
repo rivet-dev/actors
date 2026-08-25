@@ -166,7 +166,7 @@ export class ActorHandleRaw {
 						},
 					}).send(name, body, options as any);
 				} catch (err) {
-					const { group, code, message, metadata, actor } =
+					const { group, code, message, metadata, rayId, actor } =
 						deconstructError(err, true);
 
 					if (
@@ -189,6 +189,7 @@ export class ActorHandleRaw {
 							actorId,
 							attempt,
 							maxAttempts,
+							rayId,
 						)
 					) {
 						useQueryTarget = true;
@@ -227,6 +228,7 @@ export class ActorHandleRaw {
 
 					throw new ActorError(group, code, message, {
 						metadata,
+						rayId,
 						actor,
 					});
 				}
@@ -357,7 +359,7 @@ export class ActorHandleRaw {
 				}
 				return output;
 			} catch (err) {
-				const { group, code, message, metadata, actor } =
+				const { group, code, message, metadata, rayId, actor } =
 					deconstructError(err, true);
 
 				if (
@@ -367,6 +369,7 @@ export class ActorHandleRaw {
 						actorId,
 						attempt,
 						maxAttempts,
+						rayId,
 					)
 				) {
 					useQueryTarget = true;
@@ -398,7 +401,7 @@ export class ActorHandleRaw {
 						"actor",
 						"not_found",
 						"The actor does not exist or was destroyed.",
-						{ metadata, actor },
+						{ metadata, rayId, actor },
 					);
 				}
 
@@ -419,7 +422,11 @@ export class ActorHandleRaw {
 					continue;
 				}
 
-				throw new ActorError(group, code, message, { metadata, actor });
+				throw new ActorError(group, code, message, {
+					metadata,
+					rayId,
+					actor,
+				});
 			}
 		}
 
@@ -514,6 +521,7 @@ export class ActorHandleRaw {
 		actorId: string | undefined,
 		attempt: number,
 		maxAttempts: number,
+		rayId?: string,
 	): Promise<boolean> {
 		if (
 			!isDynamicActorQuery(this.#actorResolutionState) ||
@@ -530,6 +538,7 @@ export class ActorHandleRaw {
 				actorId,
 				this.#actorResolutionState,
 				this.#driver,
+				rayId,
 			);
 			if (schedulingError) {
 				throw schedulingError;
@@ -679,7 +688,7 @@ export class ActorHandleRaw {
 				}
 				return response;
 			} catch (err) {
-				const { group, code, message, metadata, actor } =
+				const { group, code, message, metadata, rayId, actor } =
 					deconstructError(err, true);
 
 				if (
@@ -689,6 +698,7 @@ export class ActorHandleRaw {
 						actorId,
 						attempt,
 						maxAttempts,
+						rayId,
 					)
 				) {
 					useQueryTarget = true;
@@ -725,7 +735,11 @@ export class ActorHandleRaw {
 					continue;
 				}
 
-				throw new ActorError(group, code, message, { metadata, actor });
+				throw new ActorError(group, code, message, {
+					metadata,
+					rayId,
+					actor,
+				});
 			}
 		}
 
@@ -750,7 +764,7 @@ export class ActorHandleRaw {
 			return null;
 		}
 
-		const { group, code } = error;
+		const { group, code, rayId } = error;
 
 		if (
 			await this.#shouldRetrySchedulingError(
@@ -759,6 +773,7 @@ export class ActorHandleRaw {
 				actorId,
 				attempt,
 				maxAttempts,
+				rayId,
 			)
 		) {
 			return {
@@ -802,6 +817,7 @@ export class ActorHandleRaw {
 		code: string;
 		message: string;
 		metadata?: unknown;
+		rayId?: string;
 		actor?: ActorSpecifier;
 	} | null> {
 		if (response.ok) {
@@ -814,7 +830,7 @@ export class ActorHandleRaw {
 			: this.#encoding;
 
 		try {
-			return deserializeWithEncoding<
+			const error = deserializeWithEncoding<
 				protocol.HttpResponseError,
 				HttpResponseErrorJson,
 				{
@@ -822,6 +838,7 @@ export class ActorHandleRaw {
 					code: string;
 					message: string;
 					metadata?: unknown;
+					rayId?: string;
 					actor?: ActorSpecifier;
 				}
 			>(
@@ -854,6 +871,10 @@ export class ActorHandleRaw {
 						: undefined,
 				}),
 			);
+			return {
+				...error,
+				rayId: response.headers.get("x-rivet-ray-id") ?? undefined,
+			};
 		} catch {
 			return null;
 		}
@@ -927,7 +948,9 @@ export class ActorHandleRaw {
 				"actor",
 				"reload_failed",
 				`reload failed with status ${response.status}: ${body}`,
-				{},
+				{
+					rayId: response.headers.get("x-rivet-ray-id") ?? undefined,
+				},
 			);
 		}
 	}

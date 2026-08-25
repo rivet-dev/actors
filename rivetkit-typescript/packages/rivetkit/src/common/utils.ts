@@ -44,6 +44,7 @@ export interface DeconstructedError {
 	code: string;
 	message: string;
 	metadata?: unknown;
+	rayId?: string;
 	actor?: errors.ActorSpecifier;
 }
 
@@ -80,6 +81,7 @@ export function deconstructError(
 	let code: string;
 	let message: string;
 	let metadata: unknown;
+	let rayId: string | undefined;
 	let actor: errors.ActorSpecifier | undefined;
 	// Structured errors from core or from pre-built `RivetError` instances are canonical.
 	// Only unstructured errors go through the classifier below.
@@ -96,6 +98,7 @@ export function deconstructError(
 		code = error.code;
 		message = error.message;
 		metadata = error.metadata;
+		rayId = error.rayId;
 		actor = error.actor;
 	} else if (errors.ActorError.isActorError(error) && error.public) {
 		// Check if error has statusCode (could be ActorError instance or DeconstructedError)
@@ -107,6 +110,7 @@ export function deconstructError(
 		code = error.code;
 		message = getErrorMessage(error);
 		metadata = error.metadata;
+		rayId = error.rayId;
 		actor = error.actor;
 	} else if (exposeInternalError) {
 		if (errors.ActorError.isActorError(error)) {
@@ -116,6 +120,7 @@ export function deconstructError(
 			code = error.code;
 			message = getErrorMessage(error);
 			metadata = error.metadata;
+			rayId = error.rayId;
 			actor = error.actor;
 		} else {
 			statusCode = 500;
@@ -146,6 +151,7 @@ export function deconstructError(
 		code,
 		message,
 		metadata,
+		rayId,
 		actor,
 	};
 }
