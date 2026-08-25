@@ -761,6 +761,7 @@ function encodeNativeCallbackError(error: unknown): Error {
 		group: structuredError.group,
 		code: structuredError.code,
 		metadata: structuredError.metadata,
+		rayId: structuredError.rayId,
 	});
 }
 

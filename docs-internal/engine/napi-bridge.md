@@ -25,7 +25,7 @@ Rules for `rivetkit-typescript/packages/rivetkit-napi/`. The bridge is pure plum
 ## Payload + error conventions
 
 - `#[napi(object)]` bridge payloads stay plain-data only. If TypeScript needs to cancel native work, use primitives or JS-side polling instead of trying to pass a `#[napi]` class instance through an object field.
-- N-API structured errors cross the JS<->Rust boundary by prefix-encoding `{ group, code, message, metadata }` into `napi::Error.reason`, then normalizing that prefix back into a `RivetError` on the other side.
+- N-API structured errors cross the JS<->Rust boundary by prefix-encoding `{ group, code, message, metadata, rayId }` into `napi::Error.reason`, then normalizing that prefix back into a `RivetError` on the other side.
 - N-API bridge debug logs use stable `kind` plus compact payload summaries, never raw buffers or full request bodies.
 
 ## Receive-loop state lifecycle

@@ -215,6 +215,7 @@ export async function sendHttpRequest<
 				code: responseData.code,
 				message: responseData.message,
 				metadata: responseData.metadata,
+				rayId,
 				actorId: responseData.actor?.actorId,
 				generation: responseData.actor?.generation,
 				actorKey: responseData.actor?.key,
@@ -226,6 +227,7 @@ export async function sendHttpRequest<
 				responseData.message,
 				{
 					metadata: responseData.metadata,
+					rayId: rayId ?? undefined,
 					actor: responseData.actor,
 				},
 			);
