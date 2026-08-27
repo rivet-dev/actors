@@ -8729,18 +8729,22 @@ name = "webhook"
 version = "2.3.7"
 dependencies = [
  "anyhow",
+ "chrono",
  "epoxy",
  "futures-util",
  "gasoline",
  "namespace",
+ "reqwest 0.12.22",
  "rivet-data",
  "rivet-error",
  "rivet-util",
  "serde",
  "serde_bare",
+ "serde_json",
  "tracing",
  "universaldb",
  "url",
+ "uuid",
  "vbare",
 ]
 

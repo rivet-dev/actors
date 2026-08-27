@@ -16,4 +16,10 @@ pub enum Webhook {
 		"Webhook config was modified concurrently, please retry."
 	)]
 	Conflict,
+	#[error(
+		"delivery_failed",
+		"Webhook delivery failed.",
+		"Webhook delivery failed with status {status}."
+	)]
+	DeliveryFailed { status: u16 },
 }
