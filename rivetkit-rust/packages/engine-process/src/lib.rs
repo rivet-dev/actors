@@ -415,6 +415,14 @@ pub fn engine_env(config: &EngineResolverConfig) -> Result<Vec<(String, String)>
 			"1".to_owned(),
 		),
 		(
+			"RIVET__PEGBOARD__RUNNER_ELIGIBLE_THRESHOLD".to_owned(),
+			"5000".to_owned(),
+		),
+		(
+			"RIVET__PEGBOARD__RUNNER_LOST_THRESHOLD".to_owned(),
+			"7000".to_owned(),
+		),
+		(
 			"RIVET__PEGBOARD__ENVOY_ELIGIBLE_THRESHOLD".to_owned(),
 			"5000".to_owned(),
 		),
@@ -1037,6 +1045,8 @@ mod tests {
 		assert_eq!(env["RIVET__PEGBOARD__RETRY_RESET_DURATION"], "100");
 		assert_eq!(env["RIVET__PEGBOARD__BASE_RETRY_TIMEOUT"], "100");
 		assert_eq!(env["RIVET__PEGBOARD__RESCHEDULE_BACKOFF_MAX_EXPONENT"], "1");
+		assert_eq!(env["RIVET__PEGBOARD__RUNNER_ELIGIBLE_THRESHOLD"], "5000");
+		assert_eq!(env["RIVET__PEGBOARD__RUNNER_LOST_THRESHOLD"], "7000");
 		assert_eq!(env["RIVET__PEGBOARD__ENVOY_ELIGIBLE_THRESHOLD"], "5000");
 		assert_eq!(env["RIVET__PEGBOARD__ENVOY_LOST_THRESHOLD"], "7000");
 		assert_eq!(env["RIVET__PEGBOARD__MIN_METADATA_POLL_INTERVAL"], "1000");

@@ -10,6 +10,10 @@ export RIVET__PEGBOARD__BASE_RETRY_TIMEOUT="100"
 export RIVET__PEGBOARD__RESCHEDULE_BACKOFF_MAX_EXPONENT="1"
 
 # Reduce thresholds for faster development iteration (in milliseconds)
+# Legacy runner paths still exist in older Engine builds, while RivetKit uses
+# the Envoy path. Keep both tuned for local development.
+export RIVET__PEGBOARD__RUNNER_ELIGIBLE_THRESHOLD="5000"
+export RIVET__PEGBOARD__RUNNER_LOST_THRESHOLD="7000"
 export RIVET__PEGBOARD__ENVOY_ELIGIBLE_THRESHOLD="5000"
 export RIVET__PEGBOARD__ENVOY_LOST_THRESHOLD="7000"
 
