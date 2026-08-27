@@ -171,9 +171,9 @@ async fn upsert_inner(
 	})
 	.await?;
 
-	// TODO: Spawn or signal the per-(namespace, webhook name, dc) webhook workflow
-	// (see webhook spec). The config is now durable in epoxy; the workflow still
-	// needs to be built to actually deliver events.
+	// The config is durable in epoxy and the webhook workflow is dispatched or signaled by
+	// the op above. Delivering triggered events over HTTP still needs to be built (see webhook
+	// spec).
 
 	Ok(UpsertResponse {})
 }
@@ -239,9 +239,6 @@ async fn delete_inner(ctx: ApiCtx, path: DeletePath, query: DeleteQuery) -> Resu
 		name: path.webhook_name.clone(),
 	})
 	.await?;
-
-	// TODO: Let the webhook workflow auto-exit once it observes the config is
-	// gone (see webhook spec).
 
 	Ok(DeleteResponse {})
 }

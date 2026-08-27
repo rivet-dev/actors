@@ -19,6 +19,7 @@
             sha256 = "sha256-P30Tm3O7vQAE725YtDCDHGjNrSsfZO4us11UwJGZSJo=";
           })
           fenix.packages.${system}.targets.wasm32-unknown-unknown.stable.rust-std
+          fenix.packages.${system}.stable.rust-src
         ];
       in
       {

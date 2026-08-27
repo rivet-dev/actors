@@ -1,8 +1,6 @@
-use epoxy::ops::propose::{Command, CommandKind, Proposal, SetCommand};
 use gas::prelude::*;
-use universaldb::prelude::*;
 
-use crate::{keys, types::WebhookConfig};
+use crate::{types::WebhookConfig, workflows};
 
 #[derive(Debug)]
 pub struct Input {
@@ -11,50 +9,52 @@ pub struct Input {
 	pub config: WebhookConfig,
 }
 
-// Writes the webhook config to epoxy (the durable, replicated copy) and mirrors it into local
-// UDB (what `list` reads, since epoxy is slow and not meant for frequent/scan-style reads).
-// Does not yet spawn or signal the per-(namespace, webhook name, dc) webhook workflow (see
-// webhook spec) - that comes in a follow-up change.
+// Signals the existing webhook workflow to update its config, or dispatches it for the first
+// time if it doesn't exist yet, then waits for the workflow to report success or failure. The
+// workflow itself does the validation and the epoxy/UDB write (see `workflows::webhook`),
+// mirroring `namespace.rs`'s dispatch-then-wait pattern.
 #[operation]
 pub async fn webhook_config_upsert(ctx: &OperationCtx, input: &Input) -> Result<()> {
-	if let Err(err) = url::Url::parse(&input.config.url) {
-		bail!("invalid webhook url: {err}");
+	let topic = workflows::webhook::topic(input.namespace_id, &input.name);
+
+	let mut complete_sub = ctx
+		.subscribe::<workflows::webhook::UpsertComplete>(topic.clone())
+		.await?;
+	let mut failed_sub = ctx
+		.subscribe::<workflows::webhook::Failed>(topic.clone())
+		.await?;
+
+	let signal_res = ctx
+		.signal(workflows::webhook::Update {
+			config: input.config.clone(),
+		})
+		.to_workflow::<workflows::webhook::Workflow>()
+		.tag("namespace_id", input.namespace_id)
+		.tag("name", input.name.clone())
+		.graceful_not_found()
+		.send()
+		.await?;
+
+	if signal_res.is_none() {
+		ctx.workflow(workflows::webhook::Input {
+			namespace_id: input.namespace_id,
+			name: input.name.clone(),
+			config: input.config.clone(),
+		})
+		.tag("namespace_id", input.namespace_id)
+		.tag("name", input.name.clone())
+		.unique()
+		.dispatch()
+		.await?;
 	}
 
-	let global_key = keys::GlobalDataKey::new(input.namespace_id, input.name.clone());
-
-	ctx.op(epoxy::ops::propose::Input {
-		proposal: Proposal {
-			commands: vec![Command {
-				kind: CommandKind::SetCommand(SetCommand {
-					key: namespace::keys::subspace().pack(&global_key),
-					value: Some(global_key.serialize(input.config.clone())?),
-				}),
-			}],
-		},
-		purge_cache: true,
-		mutable: true,
-		target_replicas: None,
-	})
-	.await?;
-
-	// We still have to write locally for listing.
-	// TODO: non-transactional. Epoxy propose and the local UDB write can diverge if we crash or
-	// error between them.
-	let namespace_id = input.namespace_id;
-	let name = input.name.clone();
-	let config = input.config.clone();
-	ctx.udb()?
-		.txn("webhook_config_upsert", |tx| {
-			let name = name.clone();
-			let config = config.clone();
-			async move {
-				let tx = tx.with_subspace(namespace::keys::subspace());
-				tx.write(&keys::DataKey::new(namespace_id, name), config)?;
-				Ok(())
-			}
-		})
-		.await?;
+	tokio::select! {
+		res = complete_sub.next() => { res?; }
+		res = failed_sub.next() => {
+			let msg = res?;
+			return Err(msg.into_body().error.build());
+		}
+	}
 
 	Ok(())
 }

@@ -17,3 +17,4 @@ namespace.workspace = true
 pegboard.workspace = true
 rivet-config.workspace = true
 tracing.workspace = true
+webhook.workspace = true

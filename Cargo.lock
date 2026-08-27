@@ -6078,6 +6078,7 @@ dependencies = [
  "pegboard",
  "rivet-config",
  "tracing",
+ "webhook",
 ]
 
 [[package]]
@@ -8733,6 +8734,8 @@ dependencies = [
  "gasoline",
  "namespace",
  "rivet-data",
+ "rivet-error",
+ "rivet-util",
  "serde",
  "serde_bare",
  "tracing",

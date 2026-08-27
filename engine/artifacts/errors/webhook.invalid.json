@@ -1,0 +1,5 @@
+{
+  "code": "invalid",
+  "group": "webhook",
+  "message": "Invalid webhook config."
+}
