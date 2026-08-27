@@ -580,6 +580,13 @@ jobs:
             --retries 3 \
             ${{ needs.context.outputs.trigger == 'release' && '--release-mode' || '' }}
 
+      - name: Generate engine checksum manifest
+        run: |
+          (
+            cd engine-artifacts
+            sha256sum rivet-engine-* > SHA256SUMS
+          )
+
       - name: Upload engine binaries to R2
         env:
           R2_RELEASES_ACCESS_KEY_ID: ${{ secrets.R2_RELEASES_ACCESS_KEY_ID }}
