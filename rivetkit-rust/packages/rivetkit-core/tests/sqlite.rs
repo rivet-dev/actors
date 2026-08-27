@@ -408,6 +408,14 @@ async fn transaction_arguments_are_structured_errors() {
 			.await
 			.err()
 			.expect("zero timeout should fail"),
+		db.begin_named_transaction(Some(""), None)
+			.await
+			.err()
+			.expect("empty name should fail"),
+		db.begin_named_transaction(Some(&"x".repeat(129)), None)
+			.await
+			.err()
+			.expect("oversized name should fail"),
 	] {
 		let structured = RivetError::extract(&error);
 		assert_eq!(structured.group(), "sqlite");

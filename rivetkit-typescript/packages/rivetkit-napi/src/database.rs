@@ -192,11 +192,12 @@ impl JsNativeDatabase {
 	pub async fn begin_transaction(
 		&self,
 		timeout_ms: Option<f64>,
+		name: Option<String>,
 	) -> napi::Result<JsSqliteTransaction> {
 		let timeout = timeout_ms.map(transaction_timeout).transpose()?;
 		let transaction = self
 			.db
-			.begin_transaction(timeout)
+			.begin_named_transaction(name.as_deref(), timeout)
 			.await
 			.map_err(crate::napi_anyhow_error)?;
 		Ok(JsSqliteTransaction { transaction })

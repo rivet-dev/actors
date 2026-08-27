@@ -748,9 +748,10 @@ export class WasmCoreRuntime implements CoreRuntime {
 	async actorSqlBeginTransaction(
 		ctx: ActorContextHandle,
 		timeoutMs?: number,
+		name?: string,
 	): Promise<SqliteTransactionHandle> {
 		return (await callWasm(() =>
-			this.#actorSql(ctx).beginTransaction(timeoutMs),
+			this.#actorSql(ctx).beginTransaction(timeoutMs, name),
 		)) as unknown as SqliteTransactionHandle;
 	}
 

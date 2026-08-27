@@ -28,6 +28,30 @@ export interface SqliteBatchStatement {
 	params?: SqliteBindings;
 }
 
+export interface SqliteTransactionOptions {
+	/** Static operation name used to aggregate transaction performance. */
+	name?: string;
+	/** Deadlock-safety timeout in milliseconds. */
+	timeout?: number;
+}
+
+export interface SqliteProfilingOptions {
+	enabled?: boolean;
+	maxTrackedStatementFingerprints?: number;
+	maxTrackedTransactionFingerprints?: number;
+	maxPrometheusSeries?: number;
+	maxStatementsPerTransactionTrace?: number;
+	maxGetPagesRequestsPerTrace?: number;
+	maxSqlBytesToNormalize?: number;
+	maxCatalogSqlShapeBytes?: number;
+	maxTransactionNameBytes?: number;
+	fingerprintComputationCacheEntries?: number;
+	slowOperationThresholdMs?: number;
+	baselineSampleRate?: number;
+	maxDiagnosticEventsPerMinute?: number;
+	diagnosticEventQueueCapacity?: number;
+}
+
 export interface SqliteNativeMetrics {
 	requestBuildNs: number;
 	serializeNs: number;
@@ -51,7 +75,10 @@ export interface SqliteDatabase {
 	executeBatch(
 		statements: SqliteBatchStatement[],
 	): Promise<SqliteExecuteResult[]>;
-	beginTransaction(timeoutMs?: number): Promise<SqliteTransactionDatabase>;
+	beginTransaction(
+		timeoutMs?: number,
+		name?: string,
+	): Promise<SqliteTransactionDatabase>;
 	run(sql: string, params?: SqliteBindings): Promise<void>;
 	query(sql: string, params?: SqliteBindings): Promise<SqliteQueryResult>;
 	nativeMetrics?():
@@ -121,6 +148,8 @@ export interface DatabaseProviderContext {
 }
 
 export type DatabaseProvider<DB extends RawAccess> = {
+	/** Local SQLite profiling controls consumed by the actor runtime. */
+	sqliteProfiling?: SqliteProfilingOptions;
 	/**
 	 * Creates a new database client for the actor.
 	 * The result is passed to the actor context as `c.db`.
@@ -165,7 +194,7 @@ export type RawAccess = {
 	/** Runs a callback in an isolated SQLite transaction. */
 	transaction: <T>(
 		callback: (tx: RawAccess) => Promise<T> | T,
-		options?: { timeout?: number },
+		options?: SqliteTransactionOptions,
 	) => Promise<T>;
 	/**
 	 * Returns native SQLite metrics when the active runtime supports them.

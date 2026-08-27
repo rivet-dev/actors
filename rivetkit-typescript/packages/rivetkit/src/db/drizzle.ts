@@ -7,6 +7,8 @@ import type {
 	DatabaseProvider,
 	DatabaseProviderContext,
 	RawAccess,
+	SqliteProfilingOptions,
+	SqliteTransactionOptions,
 	SqliteDatabase,
 	SqliteTransactionDatabase,
 } from "@/common/database/config";
@@ -15,6 +17,7 @@ import {
 	isManualTransactionControl,
 	MIGRATION_TRANSACTION_TIMEOUT_MS,
 	toSqliteBindings,
+	validateTransactionName,
 	validateTransactionTimeout,
 } from "@/common/database/shared";
 import { sha256Hex } from "@/utils/crypto";
@@ -42,7 +45,7 @@ type DrizzleDatabase<TSchema extends DrizzleSchema> = Omit<
 	Omit<RawAccess, "transaction"> & {
 		transaction: <T>(
 			callback: (tx: DrizzleDatabase<TSchema>) => Promise<T> | T,
-			options?: { timeout?: number },
+			options?: SqliteTransactionOptions,
 		) => Promise<T>;
 	};
 
@@ -58,11 +61,12 @@ interface DrizzleMigrations {
 	migrations: Record<string, string>;
 }
 
-interface DrizzleDatabaseFactoryConfig<TSchema extends DrizzleSchema> {
+export interface DrizzleDatabaseFactoryConfig<TSchema extends DrizzleSchema> {
 	schema?: TSchema;
 	migrations?: DrizzleMigrations;
 	onMigrate?: (db: DrizzleDatabase<TSchema>) => Promise<void> | void;
 	warnOnManualTransactions?: boolean;
+	profiling?: SqliteProfilingOptions;
 }
 
 interface DrizzleKitConfig {
@@ -86,10 +90,12 @@ export function db<TSchema extends DrizzleSchema = Record<string, never>>({
 	migrations,
 	onMigrate,
 	warnOnManualTransactions = true,
+	profiling,
 }: DrizzleDatabaseFactoryConfig<TSchema> = {}): DatabaseProvider<
 	DrizzleDatabase<TSchema>
 > {
 	return {
+		sqliteProfiling: profiling,
 		createClient: async (ctx) => {
 			const override = ctx.overrideDrizzleDatabaseClient
 				? await ctx.overrideDrizzleDatabaseClient()
@@ -194,11 +200,13 @@ export function db<TSchema extends DrizzleSchema = Record<string, never>>({
 					transactionCallback: (
 						tx: DrizzleDatabase<TSchema>,
 					) => Promise<T> | T,
-					options?: { timeout?: number },
+					options?: SqliteTransactionOptions,
 				): Promise<T> => {
 					validateTransactionTimeout(options?.timeout);
+					validateTransactionName(options?.name);
 					const transaction = await nativeDb.beginTransaction(
 						options?.timeout,
+						options?.name,
 					);
 					const tx = createDrizzleClient(transaction, true);
 					try {
@@ -286,7 +294,10 @@ async function withMigrationSavepoint<TSchema extends DrizzleSchema, T>(
 				throw error;
 			}
 		},
-		{ timeout: MIGRATION_TRANSACTION_TIMEOUT_MS },
+		{
+			name: "rivetkit-drizzle-migration",
+			timeout: MIGRATION_TRANSACTION_TIMEOUT_MS,
+		},
 	);
 }
 

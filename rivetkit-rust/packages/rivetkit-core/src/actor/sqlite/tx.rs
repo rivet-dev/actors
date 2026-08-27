@@ -23,11 +23,17 @@ use tokio_util::sync::CancellationToken;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::RuntimeSpawner;
 
+#[cfg(feature = "sqlite-local")]
+use super::profiling::TransactionProfile;
 use super::{BindParam, ExecuteResult, QueryResult, SqliteDb, report_sqlite_worker_fatal};
 
 pub const DEFAULT_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(not(feature = "sqlite-local"))]
+const MAX_TRANSACTION_NAME_BYTES: usize = 128;
 pub const TRANSACTION_COORDINATOR_QUEUE_CAPACITY: usize = 128;
 pub(super) const TRANSACTION_TERMINAL_CAPACITY: usize = 1024;
+#[cfg(feature = "sqlite-local")]
+static UNNAMED_TRANSACTION_WARNINGS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 pub struct SqliteTransaction {
@@ -72,6 +78,7 @@ pub(super) struct TransactionCoordinator {
 	pub(super) admission: Arc<Semaphore>,
 	pub(super) state: AsyncMutex<TransactionCoordinatorState>,
 	epoch: AtomicU64,
+	waiters: AtomicU64,
 }
 
 pub(super) struct TransactionCoordinatorState {
@@ -92,6 +99,8 @@ pub(super) struct ActiveTransaction {
 	gate_guard: Option<OwnedRwLockWriteGuard<()>>,
 	operation: Arc<AsyncMutex<()>>,
 	timeout_task: Option<CancellationToken>,
+	#[cfg(feature = "sqlite-local")]
+	profile: Option<TransactionProfile>,
 }
 
 #[derive(Clone, Copy)]
@@ -105,6 +114,40 @@ pub(super) enum TransactionTerminalState {
 pub(super) struct RegularOperationGuard {
 	_gate: OwnedRwLockReadGuard<()>,
 	_permit: OwnedSemaphorePermit,
+}
+
+struct CoordinatorWaitGuard<'a> {
+	db: &'a SqliteDb,
+}
+
+impl<'a> CoordinatorWaitGuard<'a> {
+	fn new(db: &'a SqliteDb) -> Self {
+		let _depth = db
+			.transaction_coordinator
+			.waiters
+			.fetch_add(1, Ordering::AcqRel)
+			.saturating_add(1);
+		#[cfg(feature = "sqlite-local")]
+		if let Some(metrics) = &db.vfs_metrics {
+			metrics.set_coordinator_queue_depth(_depth);
+		}
+		Self { db }
+	}
+}
+
+impl Drop for CoordinatorWaitGuard<'_> {
+	fn drop(&mut self) {
+		let _depth = self
+			.db
+			.transaction_coordinator
+			.waiters
+			.fetch_sub(1, Ordering::AcqRel)
+			.saturating_sub(1);
+		#[cfg(feature = "sqlite-local")]
+		if let Some(metrics) = &self.db.vfs_metrics {
+			metrics.set_coordinator_queue_depth(_depth);
+		}
+	}
 }
 
 impl Default for TransactionCoordinator {
@@ -121,6 +164,7 @@ impl Default for TransactionCoordinator {
 				closed: false,
 			}),
 			epoch: AtomicU64::new(0),
+			waiters: AtomicU64::new(0),
 		}
 	}
 }
@@ -137,9 +181,11 @@ impl SqliteDb {
 	pub(super) async fn begin_regular_operation(&self) -> Result<RegularOperationGuard> {
 		let epoch = self.transaction_coordinator.epoch.load(Ordering::Acquire);
 		let permit = self.try_transaction_admission()?;
+		let wait = CoordinatorWaitGuard::new(self);
 		let gate = Arc::clone(&self.transaction_coordinator.gate)
 			.read_owned()
 			.await;
+		drop(wait);
 		let state = self.transaction_coordinator.state.lock().await;
 		if state.closed {
 			return Err(transaction_coordinator_closed_error());
@@ -159,8 +205,36 @@ impl SqliteDb {
 	}
 
 	pub async fn begin_transaction(&self, timeout: Option<Duration>) -> Result<SqliteTransaction> {
-		self.begin_transaction_with_key(uuid::Uuid::new_v4().to_string(), timeout)
-			.await
+		self.begin_named_transaction(None, timeout).await
+	}
+
+	pub async fn begin_named_transaction(
+		&self,
+		name: Option<&str>,
+		timeout: Option<Duration>,
+	) -> Result<SqliteTransaction> {
+		#[cfg(feature = "sqlite-local")]
+		let max_name_bytes = self.profiling.config.max_transaction_name_bytes;
+		#[cfg(not(feature = "sqlite-local"))]
+		let max_name_bytes = MAX_TRANSACTION_NAME_BYTES;
+		if let Some(name) = name {
+			if name.is_empty() {
+				return Err(transaction_invalid_argument_error(
+					"transaction name must not be empty",
+				));
+			}
+			if name.len() > max_name_bytes {
+				return Err(transaction_invalid_argument_error(
+					"transaction name exceeds the configured byte limit",
+				));
+			}
+		}
+		self.begin_transaction_with_key_and_name(
+			uuid::Uuid::new_v4().to_string(),
+			name.map(ToOwned::to_owned),
+			timeout,
+		)
+		.await
 	}
 
 	pub async fn begin_transaction_with_key(
@@ -168,6 +242,20 @@ impl SqliteDb {
 		key: impl Into<String>,
 		timeout: Option<Duration>,
 	) -> Result<SqliteTransaction> {
+		self.begin_transaction_with_key_and_name(key, None, timeout)
+			.await
+	}
+
+	async fn begin_transaction_with_key_and_name(
+		&self,
+		key: impl Into<String>,
+		name: Option<String>,
+		timeout: Option<Duration>,
+	) -> Result<SqliteTransaction> {
+		#[cfg(feature = "sqlite-local")]
+		let started_at = (self.profiling.config.enabled
+			&& self.backend() == super::SqliteBackend::LocalNative)
+			.then(crate::time::Instant::now);
 		let key = key.into();
 		let timeout = timeout.unwrap_or(DEFAULT_TRANSACTION_TIMEOUT);
 		if key.is_empty() {
@@ -183,22 +271,56 @@ impl SqliteDb {
 
 		let db = self.clone();
 		run_detached_transaction_task(
-			async move { db.begin_transaction_inner(key, timeout).await },
+			async move {
+				db.begin_transaction_profiled_inner(
+					key,
+					timeout,
+					name,
+					#[cfg(feature = "sqlite-local")]
+					started_at,
+				)
+				.await
+			},
 			"sqlite transaction begin task failed",
 		)
 		.await
 	}
 
+	#[cfg(test)]
 	pub(super) async fn begin_transaction_inner(
 		&self,
 		key: String,
 		timeout: Duration,
 	) -> Result<SqliteTransaction> {
+		self.begin_transaction_profiled_inner(
+			key,
+			timeout,
+			None,
+			#[cfg(feature = "sqlite-local")]
+			(self.profiling.config.enabled && self.backend() == super::SqliteBackend::LocalNative)
+				.then(crate::time::Instant::now),
+		)
+		.await
+	}
+
+	async fn begin_transaction_profiled_inner(
+		&self,
+		key: String,
+		timeout: Duration,
+		_name: Option<String>,
+		#[cfg(feature = "sqlite-local")] started_at: Option<crate::time::Instant>,
+	) -> Result<SqliteTransaction> {
+		#[cfg(feature = "sqlite-local")]
+		let transaction_wait_started_at = started_at.map(|_| crate::time::Instant::now());
 		let epoch = self.transaction_coordinator.epoch.load(Ordering::Acquire);
 		let permit = self.try_transaction_admission()?;
+		let wait = CoordinatorWaitGuard::new(self);
 		let gate_guard = Arc::clone(&self.transaction_coordinator.gate)
 			.write_owned()
 			.await;
+		drop(wait);
+		#[cfg(feature = "sqlite-local")]
+		let transaction_wait = transaction_wait_started_at.map(|started| started.elapsed());
 		{
 			let state = self.transaction_coordinator.state.lock().await;
 			if state.closed {
@@ -216,10 +338,31 @@ impl SqliteDb {
 			}
 		}
 
-		let (_, remote_session) = self
+		#[cfg(feature = "sqlite-local")]
+		let begin_started_at = started_at.map(|_| crate::time::Instant::now());
+		#[cfg(feature = "sqlite-local")]
+		let (begin_result, begin_profile) = if begin_started_at.is_some() {
+			let profiled = self
+				.execute_backend_profiled("BEGIN".to_owned(), None)
+				.await;
+			(
+				profiled.result.map(|result| (result, None)),
+				profiled.profile,
+			)
+		} else {
+			(
+				self.execute_backend_in_session("BEGIN".to_owned(), None, None)
+					.await,
+				None,
+			)
+		};
+		#[cfg(feature = "sqlite-local")]
+		let begin_duration = begin_started_at.map(|started| started.elapsed());
+		#[cfg(not(feature = "sqlite-local"))]
+		let begin_result = self
 			.execute_backend_in_session("BEGIN".to_owned(), None, None)
-			.await
-			.map_err(map_transaction_connection_error)?;
+			.await;
+		let (_, remote_session) = begin_result.map_err(map_transaction_connection_error)?;
 		// A successful BEGIN response and the coordinator state update are two
 		// separate async events. If the socket disconnected in that narrow gap,
 		// pegboard-envoy has already dropped the connection-owned database handle
@@ -252,6 +395,30 @@ impl SqliteDb {
 				gate_guard: Some(gate_guard),
 				operation,
 				timeout_task: None,
+				#[cfg(feature = "sqlite-local")]
+				profile: started_at.map(|started_at| {
+					let mut profile = TransactionProfile::new(
+						_name,
+						started_at,
+						self.profiling.config.max_statements_per_transaction_trace,
+					);
+					profile.transaction_wait_ns = transaction_wait
+						.unwrap_or_default()
+						.as_nanos()
+						.try_into()
+						.unwrap_or(u64::MAX);
+					let default_profile = depot_client::vfs::SqliteOperationProfile::default();
+					profile.record_control(
+						begin_profile.as_ref().unwrap_or(&default_profile),
+						begin_duration
+							.unwrap_or_default()
+							.as_nanos()
+							.try_into()
+							.unwrap_or(u64::MAX),
+						false,
+					);
+					profile
+				}),
 			});
 		}
 		drop(permit);
@@ -329,9 +496,36 @@ impl SqliteDb {
 	}
 
 	async fn transaction_exec_inner(&self, key: &str, sql: String) -> Result<QueryResult> {
+		#[cfg(feature = "sqlite-local")]
+		let started_at = (self.profiling.config.enabled
+			&& self.backend() == super::SqliteBackend::LocalNative)
+			.then(crate::time::Instant::now);
 		let (operation, remote_session) = self.transaction_operation(key).await?;
 		let _operation = operation.lock().await;
+		#[cfg(feature = "sqlite-local")]
+		let transaction_wait = started_at.map(|started| started.elapsed());
 		self.ensure_active_transaction(key).await?;
+		#[cfg(feature = "sqlite-local")]
+		if let Some(started_at) = started_at {
+			let sql_for_profile = sql.clone();
+			let profiled = self.exec_backend_profiled(sql).await;
+			let result = profiled.result;
+			let profile = profiled.profile;
+			if let Some(observation) = self.observe_statement_profile(
+				&sql_for_profile,
+				started_at,
+				transaction_wait.unwrap_or_default(),
+				profile,
+				if result.is_ok() { "success" } else { "error" },
+				"explicit",
+			) {
+				self.record_transaction_statement(key, &observation).await;
+			}
+			return match result {
+				Ok(result) => Ok(result),
+				Err(error) => Err(self.handle_transaction_backend_error(key, error).await),
+			};
+		}
 		match self.exec_backend_in_session(sql, remote_session).await {
 			Ok((result, _)) => Ok(result),
 			Err(error) => Err(self.handle_transaction_backend_error(key, error).await),
@@ -359,15 +553,56 @@ impl SqliteDb {
 		sql: String,
 		params: Option<Vec<BindParam>>,
 	) -> Result<ExecuteResult> {
+		#[cfg(feature = "sqlite-local")]
+		let started_at = (self.profiling.config.enabled
+			&& self.backend() == super::SqliteBackend::LocalNative)
+			.then(crate::time::Instant::now);
 		let (operation, remote_session) = self.transaction_operation(key).await?;
 		let _operation = operation.lock().await;
+		#[cfg(feature = "sqlite-local")]
+		let transaction_wait = started_at.map(|started| started.elapsed());
 		self.ensure_active_transaction(key).await?;
+		#[cfg(feature = "sqlite-local")]
+		if let Some(started_at) = started_at {
+			let sql_for_profile = sql.clone();
+			let profiled = self.execute_backend_profiled(sql, params).await;
+			let result = profiled.result;
+			let profile = profiled.profile;
+			if let Some(observation) = self.observe_statement_profile(
+				&sql_for_profile,
+				started_at,
+				transaction_wait.unwrap_or_default(),
+				profile,
+				if result.is_ok() { "success" } else { "error" },
+				"explicit",
+			) {
+				self.record_transaction_statement(key, &observation).await;
+			}
+			return match result {
+				Ok(result) => Ok(result),
+				Err(error) => Err(self.handle_transaction_backend_error(key, error).await),
+			};
+		}
 		match self
 			.execute_backend_in_session(sql, params, remote_session)
 			.await
 		{
 			Ok((result, _)) => Ok(result),
 			Err(error) => Err(self.handle_transaction_backend_error(key, error).await),
+		}
+	}
+
+	#[cfg(feature = "sqlite-local")]
+	async fn record_transaction_statement(
+		&self,
+		key: &str,
+		observation: &super::profiling::StatementObservation,
+	) {
+		let mut state = self.transaction_coordinator.state.lock().await;
+		if let Some(active) = state.active.as_mut().filter(|active| active.key == key) {
+			if let Some(profile) = &mut active.profile {
+				profile.record_statement(observation);
+			}
 		}
 	}
 
@@ -387,9 +622,40 @@ impl SqliteDb {
 		self.ensure_active_transaction(key).await?;
 
 		let statement = if commit { "COMMIT" } else { "ROLLBACK" };
+		#[cfg(feature = "sqlite-local")]
+		let control_started_at = (self.profiling.config.enabled
+			&& self.backend() == super::SqliteBackend::LocalNative)
+			.then(crate::time::Instant::now);
+		#[cfg(feature = "sqlite-local")]
+		let (result, control_profile) = if control_started_at.is_some() {
+			let profiled = self
+				.execute_backend_profiled(statement.to_owned(), None)
+				.await;
+			(
+				profiled.result.map(|result| (result, None)),
+				profiled.profile,
+			)
+		} else {
+			(
+				self.execute_backend_in_session(statement.to_owned(), None, remote_session)
+					.await,
+				None,
+			)
+		};
+		#[cfg(not(feature = "sqlite-local"))]
 		let result = self
 			.execute_backend_in_session(statement.to_owned(), None, remote_session)
 			.await;
+		#[cfg(feature = "sqlite-local")]
+		if let Some(control_started_at) = control_started_at {
+			self.record_transaction_control(
+				key,
+				control_profile.as_ref(),
+				control_started_at.elapsed(),
+				commit,
+			)
+			.await;
+		}
 		if let Err(primary) = result {
 			if is_remote_connection_error(&primary) {
 				self.release_transaction(key, TransactionTerminalState::ConnectionLost, false)
@@ -438,6 +704,27 @@ impl SqliteDb {
 		)
 		.await;
 		Ok(())
+	}
+
+	#[cfg(feature = "sqlite-local")]
+	async fn record_transaction_control(
+		&self,
+		key: &str,
+		profile: Option<&depot_client::vfs::SqliteOperationProfile>,
+		duration: Duration,
+		is_commit: bool,
+	) {
+		let mut state = self.transaction_coordinator.state.lock().await;
+		if let Some(active) = state.active.as_mut().filter(|active| active.key == key) {
+			if let Some(transaction_profile) = &mut active.profile {
+				let default_profile = depot_client::vfs::SqliteOperationProfile::default();
+				transaction_profile.record_control(
+					profile.unwrap_or(&default_profile),
+					duration.as_nanos().try_into().unwrap_or(u64::MAX),
+					is_commit,
+				);
+			}
+		}
 	}
 
 	async fn expire_transaction(&self, key: &str) -> Result<()> {
@@ -592,6 +879,78 @@ impl SqliteDb {
 			}
 		}
 		drop(active.gate_guard.take());
+		#[cfg(feature = "sqlite-local")]
+		let profile = active.profile;
+		drop(state);
+
+		#[cfg(feature = "sqlite-local")]
+		if self.backend() == super::SqliteBackend::LocalNative
+			&& let Some(profile) = profile
+		{
+			let (fingerprint, fingerprint_source) = profile.fingerprint();
+			if profile.name.is_none() {
+				let warning = UNNAMED_TRANSACTION_WARNINGS.fetch_add(1, Ordering::Relaxed);
+				if warning == 0 || warning.is_power_of_two() {
+					tracing::warn!(
+						fingerprint,
+						"SQLite transaction is unnamed. Add a static `name` to group transaction, storage, and commit performance across executions. Individual statement profiling remains available."
+					);
+				}
+			}
+			if let Some(metrics) = &self.vfs_metrics {
+				let total_ns = profile
+					.started_at
+					.elapsed()
+					.as_nanos()
+					.try_into()
+					.unwrap_or(u64::MAX);
+				let application_time_ns = total_ns
+					.saturating_sub(profile.transaction_wait_ns)
+					.saturating_sub(profile.worker_wait_ns)
+					.saturating_sub(profile.storage_ns)
+					.saturating_sub(profile.local_work_ns);
+				let metric = depot_client::vfs::SqliteTransactionMetric {
+					fingerprint,
+					fingerprint_source,
+					shape_fingerprint: profile.shape_fingerprint(),
+					statement_fingerprint_hashes: profile.statement_fingerprint_hashes,
+					omitted_statement_fingerprints: profile.omitted_statement_fingerprints,
+					storage_transport: "proxy",
+					outcome: match terminal {
+						TransactionTerminalState::Committed => "success",
+						TransactionTerminalState::RolledBack => "rollback",
+						TransactionTerminalState::Expired(_) => "expired",
+						TransactionTerminalState::ConnectionLost => "connection_lost",
+					},
+					total_ns,
+					transaction_wait_ns: profile.transaction_wait_ns,
+					worker_wait_ns: profile.worker_wait_ns,
+					storage_ns: profile.storage_ns,
+					local_work_ns: profile.local_work_ns,
+					application_time_ns,
+					commit_ns: profile.commit_ns,
+					get_pages_round_trips: profile.get_pages_round_trips,
+					statement_count: profile.statement_count,
+					dirty_pages: profile.dirty_pages,
+					dirty_bytes: profile.dirty_bytes,
+				};
+				if metrics.observe_transaction_profile(&metric)
+					&& self.profiling.mark_cataloged(&metric.fingerprint)
+				{
+					metrics.record_fingerprint_catalog(
+						"transaction",
+						&metric.fingerprint,
+						profile.name.as_deref().unwrap_or(&metric.fingerprint),
+						1,
+					);
+				}
+				metrics.emit_transaction_diagnostic_event(
+					self.actor_id.as_deref().unwrap_or("unknown"),
+					self.generation,
+					&metric,
+				);
+			}
+		}
 	}
 
 	pub(super) async fn shutdown_transaction_coordinator(&self) -> OwnedRwLockWriteGuard<()> {

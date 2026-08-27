@@ -15,6 +15,15 @@ export function validateTransactionTimeout(timeout: number | undefined): void {
 	}
 }
 
+export function validateTransactionName(name: string | undefined): void {
+	if (name === undefined) {
+		return;
+	}
+	if (name.length === 0) {
+		throw new Error("db.transaction() name must not be empty");
+	}
+}
+
 type SqliteBindingObject = Record<string, unknown>;
 
 function isSqliteBindingValue(value: unknown): boolean {

@@ -12,6 +12,7 @@ import { db } from "./drizzle";
 class FakeSqliteDatabase implements SqliteDatabase {
 	executeCalls: Array<{ sql: string; params?: SqliteBindings }> = [];
 	transactionTimeouts: Array<number | undefined> = [];
+	transactionNames: Array<string | undefined> = [];
 
 	async exec(): Promise<void> {}
 
@@ -44,8 +45,10 @@ class FakeSqliteDatabase implements SqliteDatabase {
 
 	async beginTransaction(
 		timeoutMs?: number,
+		name?: string,
 	): Promise<SqliteTransactionDatabase> {
 		this.transactionTimeouts.push(timeoutMs);
+		this.transactionNames.push(name);
 		this.executeCalls.push({ sql: "BEGIN" });
 		return {
 			exec: async () => {},
@@ -114,6 +117,9 @@ describe("Drizzle database transactions", () => {
 		await provider.onMigrate(client);
 
 		expect(nativeDb.transactionTimeouts).toEqual([300_000]);
+		expect(nativeDb.transactionNames).toEqual([
+			"rivetkit-drizzle-migration",
+		]);
 		expect(nativeDb.executeCalls.map(({ sql }) => sql)).toEqual([
 			"BEGIN",
 			"SAVEPOINT __rivet_on_migrate",
@@ -133,10 +139,11 @@ describe("Drizzle database transactions", () => {
 					"inside",
 				);
 			},
-			{ timeout: 120_000 },
+			{ name: "drizzle-insert", timeout: 120_000 },
 		);
 
 		expect(nativeDb.transactionTimeouts).toEqual([120_000]);
+		expect(nativeDb.transactionNames).toEqual(["drizzle-insert"]);
 		expect(nativeDb.executeCalls.map(({ sql }) => sql)).toEqual([
 			"BEGIN",
 			"INSERT INTO items(value) VALUES (?)",

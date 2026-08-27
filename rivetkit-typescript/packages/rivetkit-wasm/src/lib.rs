@@ -21,8 +21,8 @@ use rivetkit_core::{
 	CoreServerlessRuntime, EngineSpawnMode, EnqueueAndWaitOpts, KeepAwakeRegion, ListOpts,
 	QueueMessage, QueueNextBatchOpts, QueueSendResult, QueueSendStatus, QueueTryNextBatchOpts,
 	QueueWaitOpts, Request, RequestSaveOpts, Response, RuntimeSpawner, SerializeStateReason,
-	ServeConfig, ServerlessRequest, SqliteBatchStatement, StateDelta, WebSocket,
-	WebSocketCallbackRegion, WorkflowKvWrite, WsMessage,
+	ServeConfig, ServerlessRequest, SqliteBatchStatement, SqliteProfilingConfigInput, StateDelta,
+	WebSocket, WebSocketCallbackRegion, WorkflowKvWrite, WsMessage,
 };
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken as CoreCancellationToken;
@@ -177,11 +177,31 @@ pub struct WasmActionDefinition {
 
 #[derive(Clone, Default, serde::Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+pub struct WasmSqliteProfilingConfig {
+	pub enabled: Option<bool>,
+	pub max_tracked_statement_fingerprints: Option<u32>,
+	pub max_tracked_transaction_fingerprints: Option<u32>,
+	pub max_prometheus_series: Option<u32>,
+	pub max_statements_per_transaction_trace: Option<u32>,
+	pub max_get_pages_requests_per_trace: Option<u32>,
+	pub max_sql_bytes_to_normalize: Option<u32>,
+	pub max_catalog_sql_shape_bytes: Option<u32>,
+	pub max_transaction_name_bytes: Option<u32>,
+	pub fingerprint_computation_cache_entries: Option<u32>,
+	pub slow_operation_threshold_ms: Option<u32>,
+	pub baseline_sample_rate: Option<f64>,
+	pub max_diagnostic_events_per_minute: Option<u32>,
+	pub diagnostic_event_queue_capacity: Option<u32>,
+}
+
+#[derive(Clone, Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct WasmActorConfig {
 	pub name: Option<String>,
 	pub icon: Option<String>,
 	pub has_database: Option<bool>,
 	pub remote_sqlite: Option<bool>,
+	pub sqlite_profiling: Option<WasmSqliteProfilingConfig>,
 	pub enable_actor_runtime_socket: Option<bool>,
 	pub has_state: Option<bool>,
 	pub can_hibernate_websocket: Option<bool>,
@@ -217,6 +237,7 @@ impl From<WasmActorConfig> for ActorConfigInput {
 			icon: config.icon,
 			has_database: config.has_database,
 			remote_sqlite: config.remote_sqlite,
+			sqlite_profiling: config.sqlite_profiling.map(Into::into),
 			enable_actor_runtime_socket: config.enable_actor_runtime_socket,
 			has_state: config.has_state,
 			can_hibernate_websocket: config.can_hibernate_websocket,
@@ -246,6 +267,27 @@ impl From<WasmActorConfig> for ActorConfigInput {
 			// Custom inspector tabs serve assets from a filesystem `root`, which is a
 			// native/server feature that has no meaning in a browser wasm host.
 			inspector_tabs: None,
+		}
+	}
+}
+
+impl From<WasmSqliteProfilingConfig> for SqliteProfilingConfigInput {
+	fn from(value: WasmSqliteProfilingConfig) -> Self {
+		Self {
+			enabled: value.enabled,
+			max_tracked_statement_fingerprints: value.max_tracked_statement_fingerprints,
+			max_tracked_transaction_fingerprints: value.max_tracked_transaction_fingerprints,
+			max_prometheus_series: value.max_prometheus_series,
+			max_statements_per_transaction_trace: value.max_statements_per_transaction_trace,
+			max_get_pages_requests_per_trace: value.max_get_pages_requests_per_trace,
+			max_sql_bytes_to_normalize: value.max_sql_bytes_to_normalize,
+			max_catalog_sql_shape_bytes: value.max_catalog_sql_shape_bytes,
+			max_transaction_name_bytes: value.max_transaction_name_bytes,
+			fingerprint_computation_cache_entries: value.fingerprint_computation_cache_entries,
+			slow_operation_threshold_ms: value.slow_operation_threshold_ms,
+			baseline_sample_rate: value.baseline_sample_rate,
+			max_diagnostic_events_per_minute: value.max_diagnostic_events_per_minute,
+			diagnostic_event_queue_capacity: value.diagnostic_event_queue_capacity,
 		}
 	}
 }
@@ -2190,10 +2232,11 @@ impl WasmSqliteDb {
 	pub async fn begin_transaction(
 		&self,
 		timeout_ms: Option<f64>,
+		name: Option<String>,
 	) -> Result<WasmSqliteTransaction, JsValue> {
 		let timeout = timeout_ms.map(transaction_timeout).transpose()?;
 		self.inner
-			.begin_transaction(timeout)
+			.begin_named_transaction(name.as_deref(), timeout)
 			.await
 			.map(|inner| WasmSqliteTransaction { inner })
 			.map_err(anyhow_to_js_error)

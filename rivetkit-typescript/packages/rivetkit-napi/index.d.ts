@@ -76,11 +76,28 @@ export interface JsInspectorTabEntry {
   /** Set to true for HideBuiltin entries. */
   hidden?: boolean
 }
+export interface JsSqliteProfilingConfig {
+  enabled?: boolean
+  maxTrackedStatementFingerprints?: number
+  maxTrackedTransactionFingerprints?: number
+  maxPrometheusSeries?: number
+  maxStatementsPerTransactionTrace?: number
+  maxGetPagesRequestsPerTrace?: number
+  maxSqlBytesToNormalize?: number
+  maxCatalogSqlShapeBytes?: number
+  maxTransactionNameBytes?: number
+  fingerprintComputationCacheEntries?: number
+  slowOperationThresholdMs?: number
+  baselineSampleRate?: number
+  maxDiagnosticEventsPerMinute?: number
+  diagnosticEventQueueCapacity?: number
+}
 export interface JsActorConfig {
   name?: string
   icon?: string
   hasDatabase?: boolean
   remoteSqlite?: boolean
+  sqliteProfiling?: JsSqliteProfilingConfig
   enableActorRuntimeSocket?: boolean
   hasState?: boolean
   canHibernateWebsocket?: boolean
@@ -358,7 +375,7 @@ export declare class JsNativeDatabase {
   executeBatch(statements: Array<JsSqliteBatchStatement>): Promise<Array<NativeExecuteResult>>
   exec(sql: string): Promise<QueryResult>
   close(): Promise<void>
-  beginTransaction(timeoutMs?: number | undefined | null): Promise<JsSqliteTransaction>
+  beginTransaction(timeoutMs?: number | undefined | null, name?: string | undefined | null): Promise<JsSqliteTransaction>
 }
 export declare class JsSqliteTransaction {
   execute(sql: string, params?: Array<JsBindParam> | undefined | null): Promise<NativeExecuteResult>

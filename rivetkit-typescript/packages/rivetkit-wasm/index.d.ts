@@ -175,7 +175,7 @@ export class SqliteDb {
 	query(sql: string, params: any): Promise<any>;
 	execute(sql: string, params: any): Promise<any>;
 	executeBatch(statements: Array<any>): Promise<Array<any>>;
-	beginTransaction(timeout_ms?: number | null): Promise<SqliteTransaction>;
+	beginTransaction(timeout_ms?: number | null, name?: string | null): Promise<SqliteTransaction>;
 }
 
 export class SqliteTransaction {

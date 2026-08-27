@@ -16,10 +16,14 @@ use parking_lot::Mutex;
 use tokio::sync::{Notify, oneshot};
 
 use crate::{
-	query::{BindParam, ExecuteResult, QueryResult, exec_statements, execute_single_statement},
+	query::{
+		BindParam, ExecuteResult, QueryResult, exec_statements, exec_statements_profiled,
+		execute_single_statement, execute_single_statement_profiled,
+	},
 	vfs::{
-		NativeConnection, NativeVfsHandle, SqliteRoundTripCounts, SqliteVfsMetrics,
-		configure_connection_for_database, open_connection, verify_batch_atomic_writes,
+		NativeConnection, NativeVfsHandle, SqliteOperationProfile, SqliteRoundTripCounts,
+		SqliteVfsMetrics, configure_connection_for_database, open_connection,
+		verify_batch_atomic_writes,
 	},
 };
 
@@ -56,11 +60,13 @@ enum SqliteCommand {
 	Execute {
 		sql: String,
 		params: Option<Vec<BindParam>>,
-		reply: oneshot::Sender<Result<ExecuteResult>>,
+		enqueued_at: Option<Instant>,
+		reply: oneshot::Sender<Result<SqliteWorkerResult<ExecuteResult>>>,
 	},
 	Exec {
 		sql: String,
-		reply: oneshot::Sender<Result<QueryResult>>,
+		enqueued_at: Option<Instant>,
+		reply: oneshot::Sender<Result<SqliteWorkerResult<QueryResult>>>,
 	},
 	#[cfg(test)]
 	Pause {
@@ -71,7 +77,32 @@ enum SqliteCommand {
 	Panic,
 }
 
+#[derive(Debug)]
+pub struct SqliteWorkerResult<T> {
+	pub result: Result<T>,
+	pub profile: SqliteOperationProfile,
+}
+
 struct CloseRequest;
+
+struct WorkerInflightGuard<'a>(Option<&'a dyn SqliteVfsMetrics>);
+
+impl<'a> WorkerInflightGuard<'a> {
+	fn new(metrics: Option<&'a dyn SqliteVfsMetrics>) -> Self {
+		if let Some(metrics) = metrics {
+			metrics.set_worker_inflight(true);
+		}
+		Self(metrics)
+	}
+}
+
+impl Drop for WorkerInflightGuard<'_> {
+	fn drop(&mut self) {
+		if let Some(metrics) = self.0 {
+			metrics.set_worker_inflight(false);
+		}
+	}
+}
 
 /// Tracks an in-progress SQLite transaction so its wall-clock duration and the
 /// network round trips it issued can be reported once it commits or rolls back.
@@ -156,8 +187,24 @@ impl SqliteWorkerHandle {
 	}
 
 	pub async fn exec(&self, sql: String) -> Result<QueryResult> {
+		self.exec_inner(sql, None).await?.result
+	}
+
+	pub async fn exec_profiled(&self, sql: String) -> Result<SqliteWorkerResult<QueryResult>> {
+		self.exec_inner(sql, Some(Instant::now())).await
+	}
+
+	async fn exec_inner(
+		&self,
+		sql: String,
+		enqueued_at: Option<Instant>,
+	) -> Result<SqliteWorkerResult<QueryResult>> {
 		let (reply, result) = oneshot::channel();
-		self.enqueue(SqliteCommand::Exec { sql, reply })?;
+		self.enqueue(SqliteCommand::Exec {
+			sql,
+			enqueued_at,
+			reply,
+		})?;
 		result.await.map_err(|_| sqlite_worker_dead_error())?
 	}
 
@@ -166,8 +213,30 @@ impl SqliteWorkerHandle {
 		sql: String,
 		params: Option<Vec<BindParam>>,
 	) -> Result<ExecuteResult> {
+		self.execute_inner(sql, params, None).await?.result
+	}
+
+	pub async fn execute_profiled(
+		&self,
+		sql: String,
+		params: Option<Vec<BindParam>>,
+	) -> Result<SqliteWorkerResult<ExecuteResult>> {
+		self.execute_inner(sql, params, Some(Instant::now())).await
+	}
+
+	async fn execute_inner(
+		&self,
+		sql: String,
+		params: Option<Vec<BindParam>>,
+		enqueued_at: Option<Instant>,
+	) -> Result<SqliteWorkerResult<ExecuteResult>> {
 		let (reply, result) = oneshot::channel();
-		self.enqueue(SqliteCommand::Execute { sql, params, reply })?;
+		self.enqueue(SqliteCommand::Execute {
+			sql,
+			params,
+			enqueued_at,
+			reply,
+		})?;
 		result.await.map_err(|_| sqlite_worker_dead_error())?
 	}
 
@@ -408,6 +477,7 @@ fn worker_main(mut ctx: WorkerContext) {
 					fail_queued_sql(&ctx.sql_rx);
 					break;
 				}
+				let _inflight = WorkerInflightGuard::new(ctx.inner.metrics.as_deref());
 				run_command(
 					&mut db,
 					command,
@@ -447,7 +517,12 @@ fn run_command(
 ) {
 	let start = Instant::now();
 	match command {
-		SqliteCommand::Execute { sql, params, reply } => {
+		SqliteCommand::Execute {
+			sql,
+			params,
+			enqueued_at,
+			reply,
+		} => {
 			if reply.is_closed() {
 				return;
 			}
@@ -457,29 +532,95 @@ fn run_command(
 			// behind (a BEGIN flips autocommit off, a COMMIT flips it back on).
 			let in_tx = command_in_tx(db);
 			let stmt_kind = classify_statement(&sql);
-			let result = execute_single_statement(db.as_ptr(), &sql, params.as_deref());
-			record_command_metrics(
-				metrics,
-				"execute",
-				in_tx,
-				stmt_kind,
-				&result,
-				start.elapsed(),
-			);
+			let worker_result = if let Some(enqueued_at) = enqueued_at {
+				let worker_wait_ns = enqueued_at.elapsed().as_nanos() as u64;
+				let operation_profile = db.begin_operation_profile();
+				let execution_start = Instant::now();
+				let result =
+					execute_single_statement_profiled(db.as_ptr(), &sql, params.as_deref());
+				let execution_ns = execution_start.elapsed().as_nanos() as u64;
+				let mut profile = operation_profile.finish();
+				profile.worker_wait_ns = worker_wait_ns;
+				profile.sqlite_execution_ns = execution_ns.saturating_sub(profile.storage_ns);
+				if let Ok((_, query_profile)) = &result {
+					profile.bind_count = query_profile.bind_count;
+					profile.bind_logical_bytes = query_profile.bind_logical_bytes;
+					profile.result_rows = query_profile.result_rows;
+					profile.result_columns = query_profile.result_columns;
+					profile.result_logical_bytes = query_profile.result_logical_bytes;
+				}
+				record_command_metrics(
+					metrics,
+					"execute",
+					in_tx,
+					stmt_kind,
+					&result,
+					start.elapsed(),
+				);
+				SqliteWorkerResult {
+					result: result.map(|(value, _)| value),
+					profile,
+				}
+			} else {
+				let result = execute_single_statement(db.as_ptr(), &sql, params.as_deref());
+				record_command_metrics(
+					metrics,
+					"execute",
+					in_tx,
+					stmt_kind,
+					&result,
+					start.elapsed(),
+				);
+				SqliteWorkerResult {
+					result,
+					profile: SqliteOperationProfile::default(),
+				}
+			};
 			finalize_transaction_if_complete(db, metrics, file_name, transaction);
-			let _ = reply.send(result);
+			let _ = reply.send(Ok(worker_result));
 		}
-		SqliteCommand::Exec { sql, reply } => {
+		SqliteCommand::Exec {
+			sql,
+			enqueued_at,
+			reply,
+		} => {
 			if reply.is_closed() {
 				return;
 			}
 			begin_transaction_if_needed(db, transaction);
 			let in_tx = command_in_tx(db);
 			let stmt_kind = classify_statement(&sql);
-			let result = exec_statements(db.as_ptr(), &sql);
-			record_command_metrics(metrics, "exec", in_tx, stmt_kind, &result, start.elapsed());
+			let worker_result = if let Some(enqueued_at) = enqueued_at {
+				let worker_wait_ns = enqueued_at.elapsed().as_nanos() as u64;
+				let operation_profile = db.begin_operation_profile();
+				let execution_start = Instant::now();
+				let result = exec_statements_profiled(db.as_ptr(), &sql);
+				let execution_ns = execution_start.elapsed().as_nanos() as u64;
+				let mut profile = operation_profile.finish();
+				profile.worker_wait_ns = worker_wait_ns;
+				profile.sqlite_execution_ns = execution_ns.saturating_sub(profile.storage_ns);
+				if let Ok((_, query_profile)) = &result {
+					profile.bind_count = query_profile.bind_count;
+					profile.bind_logical_bytes = query_profile.bind_logical_bytes;
+					profile.result_rows = query_profile.result_rows;
+					profile.result_columns = query_profile.result_columns;
+					profile.result_logical_bytes = query_profile.result_logical_bytes;
+				}
+				record_command_metrics(metrics, "exec", in_tx, stmt_kind, &result, start.elapsed());
+				SqliteWorkerResult {
+					result: result.map(|(value, _)| value),
+					profile,
+				}
+			} else {
+				let result = exec_statements(db.as_ptr(), &sql);
+				record_command_metrics(metrics, "exec", in_tx, stmt_kind, &result, start.elapsed());
+				SqliteWorkerResult {
+					result,
+					profile: SqliteOperationProfile::default(),
+				}
+			};
 			finalize_transaction_if_complete(db, metrics, file_name, transaction);
-			let _ = reply.send(result);
+			let _ = reply.send(Ok(worker_result));
 		}
 		#[cfg(test)]
 		SqliteCommand::Pause { entered, resume } => {

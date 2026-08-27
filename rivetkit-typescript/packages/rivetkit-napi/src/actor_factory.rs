@@ -12,7 +12,7 @@ use rivetkit_core::inspector::InspectorTabEntry;
 use rivetkit_core::{
 	ActionDefinition, ActorConfig, ActorConfigInput, ActorContext as CoreActorContext,
 	ActorFactory as CoreActorFactory, ConnHandle as CoreConnHandle, Request, Response,
-	WebSocket as CoreWebSocket,
+	SqliteProfilingConfigInput, WebSocket as CoreWebSocket,
 };
 
 use crate::actor_context::{ActorContext, StateDeltaPayload};
@@ -80,11 +80,31 @@ pub struct JsInspectorTabEntry {
 
 #[napi(object)]
 #[derive(Clone, Default)]
+pub struct JsSqliteProfilingConfig {
+	pub enabled: Option<bool>,
+	pub max_tracked_statement_fingerprints: Option<u32>,
+	pub max_tracked_transaction_fingerprints: Option<u32>,
+	pub max_prometheus_series: Option<u32>,
+	pub max_statements_per_transaction_trace: Option<u32>,
+	pub max_get_pages_requests_per_trace: Option<u32>,
+	pub max_sql_bytes_to_normalize: Option<u32>,
+	pub max_catalog_sql_shape_bytes: Option<u32>,
+	pub max_transaction_name_bytes: Option<u32>,
+	pub fingerprint_computation_cache_entries: Option<u32>,
+	pub slow_operation_threshold_ms: Option<u32>,
+	pub baseline_sample_rate: Option<f64>,
+	pub max_diagnostic_events_per_minute: Option<u32>,
+	pub diagnostic_event_queue_capacity: Option<u32>,
+}
+
+#[napi(object)]
+#[derive(Clone, Default)]
 pub struct JsActorConfig {
 	pub name: Option<String>,
 	pub icon: Option<String>,
 	pub has_database: Option<bool>,
 	pub remote_sqlite: Option<bool>,
+	pub sqlite_profiling: Option<JsSqliteProfilingConfig>,
 	pub enable_actor_runtime_socket: Option<bool>,
 	pub has_state: Option<bool>,
 	pub can_hibernate_websocket: Option<bool>,
@@ -1036,6 +1056,7 @@ impl From<JsActorConfig> for ActorConfigInput {
 			icon: value.icon,
 			has_database: value.has_database,
 			remote_sqlite: value.remote_sqlite,
+			sqlite_profiling: value.sqlite_profiling.map(Into::into),
 			enable_actor_runtime_socket: value.enable_actor_runtime_socket,
 			has_state: value.has_state,
 			can_hibernate_websocket: value.can_hibernate_websocket,
@@ -1096,6 +1117,27 @@ impl From<JsActorConfig> for ActorConfigInput {
 					})
 					.collect()
 			}),
+		}
+	}
+}
+
+impl From<JsSqliteProfilingConfig> for SqliteProfilingConfigInput {
+	fn from(value: JsSqliteProfilingConfig) -> Self {
+		Self {
+			enabled: value.enabled,
+			max_tracked_statement_fingerprints: value.max_tracked_statement_fingerprints,
+			max_tracked_transaction_fingerprints: value.max_tracked_transaction_fingerprints,
+			max_prometheus_series: value.max_prometheus_series,
+			max_statements_per_transaction_trace: value.max_statements_per_transaction_trace,
+			max_get_pages_requests_per_trace: value.max_get_pages_requests_per_trace,
+			max_sql_bytes_to_normalize: value.max_sql_bytes_to_normalize,
+			max_catalog_sql_shape_bytes: value.max_catalog_sql_shape_bytes,
+			max_transaction_name_bytes: value.max_transaction_name_bytes,
+			fingerprint_computation_cache_entries: value.fingerprint_computation_cache_entries,
+			slow_operation_threshold_ms: value.slow_operation_threshold_ms,
+			baseline_sample_rate: value.baseline_sample_rate,
+			max_diagnostic_events_per_minute: value.max_diagnostic_events_per_minute,
+			diagnostic_event_queue_capacity: value.diagnostic_event_queue_capacity,
 		}
 	}
 }

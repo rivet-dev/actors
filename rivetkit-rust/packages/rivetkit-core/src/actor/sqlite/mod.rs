@@ -25,6 +25,8 @@ use tokio::task::JoinHandle;
 
 #[cfg(feature = "sqlite-local")]
 mod envoy_sqlite_transport;
+#[cfg(feature = "sqlite-local")]
+mod profiling;
 mod tx;
 
 pub use tx::{
@@ -53,6 +55,7 @@ use depot_client::{
 	worker::{
 		SQLITE_WORKER_QUEUE_CAPACITY, SqliteWorkerCloseTimeoutError, SqliteWorkerClosingError,
 		SqliteWorkerDeadError, SqliteWorkerFatalError, SqliteWorkerOverloadedError,
+		SqliteWorkerResult,
 	},
 };
 #[cfg(feature = "sqlite-local")]
@@ -88,7 +91,57 @@ pub enum SqliteBackend {
 	RemoteEnvoy,
 }
 
+#[cfg(feature = "sqlite-local")]
+struct ProfiledBackendResult<T> {
+	result: Result<T>,
+	profile: Option<depot_client::vfs::SqliteOperationProfile>,
+}
+
 impl SqliteDb {
+	#[cfg(feature = "sqlite-local")]
+	async fn exec_backend_profiled(&self, sql: String) -> ProfiledBackendResult<QueryResult> {
+		match self.backend {
+			SqliteBackend::LocalNative => match self.local_exec_profiled(sql).await {
+				Ok(result) => ProfiledBackendResult {
+					result: result.result,
+					profile: Some(result.profile),
+				},
+				Err(error) => ProfiledBackendResult {
+					result: Err(error),
+					profile: None,
+				},
+			},
+			SqliteBackend::RemoteEnvoy => ProfiledBackendResult {
+				result: self.remote_exec(sql).await,
+				profile: None,
+			},
+		}
+	}
+
+	#[cfg(feature = "sqlite-local")]
+	async fn execute_backend_profiled(
+		&self,
+		sql: String,
+		params: Option<Vec<BindParam>>,
+	) -> ProfiledBackendResult<ExecuteResult> {
+		match self.backend {
+			SqliteBackend::LocalNative => match self.local_execute_profiled(sql, params).await {
+				Ok(result) => ProfiledBackendResult {
+					result: result.result,
+					profile: Some(result.profile),
+				},
+				Err(error) => ProfiledBackendResult {
+					result: Err(error),
+					profile: None,
+				},
+			},
+			SqliteBackend::RemoteEnvoy => ProfiledBackendResult {
+				result: self.remote_execute(sql, params).await,
+				profile: None,
+			},
+		}
+	}
+
 	async fn exec_backend(&self, sql: String) -> Result<QueryResult> {
 		match self.backend {
 			SqliteBackend::LocalNative => self.local_exec(sql).await,
@@ -116,7 +169,10 @@ impl SqliteDb {
 		params: Option<Vec<BindParam>>,
 	) -> Result<QueryResult> {
 		match self.backend {
-			SqliteBackend::LocalNative => self.local_query(sql, params).await,
+			SqliteBackend::LocalNative => self
+				.local_execute(sql, params)
+				.await
+				.map(ExecuteResult::into_query_result),
 			SqliteBackend::RemoteEnvoy => self
 				.remote_execute(sql, params)
 				.await
@@ -126,7 +182,10 @@ impl SqliteDb {
 
 	async fn run_backend(&self, sql: String, params: Option<Vec<BindParam>>) -> Result<ExecResult> {
 		match self.backend {
-			SqliteBackend::LocalNative => self.local_run(sql, params).await,
+			SqliteBackend::LocalNative => self
+				.local_execute(sql, params)
+				.await
+				.map(ExecuteResult::into_exec_result),
 			SqliteBackend::RemoteEnvoy => self
 				.remote_execute(sql, params)
 				.await
@@ -187,6 +246,37 @@ pub struct SqliteDb {
 	transaction_coordinator: Arc<TransactionCoordinator>,
 	#[cfg(feature = "sqlite-local")]
 	vfs_metrics: Option<Arc<dyn SqliteVfsMetrics>>,
+	#[cfg(feature = "sqlite-local")]
+	profiling: Arc<profiling::SqliteProfilingState>,
+}
+
+impl Default for SqliteDb {
+	fn default() -> Self {
+		Self {
+			handle: None,
+			actor_id: None,
+			actor_key: None,
+			generation: None,
+			backend: if cfg!(feature = "sqlite-local") {
+				SqliteBackend::LocalNative
+			} else {
+				SqliteBackend::RemoteEnvoy
+			},
+			enabled: false,
+			#[cfg(feature = "sqlite-local")]
+			db: Default::default(),
+			#[cfg(feature = "sqlite-local")]
+			open_lock: Default::default(),
+			#[cfg(feature = "sqlite-local")]
+			worker_failure_task: Default::default(),
+			worker_fatal_reported: Default::default(),
+			transaction_coordinator: Default::default(),
+			#[cfg(feature = "sqlite-local")]
+			vfs_metrics: None,
+			#[cfg(feature = "sqlite-local")]
+			profiling: Default::default(),
+		}
+	}
 }
 
 impl SqliteDb {
@@ -219,12 +309,38 @@ impl SqliteDb {
 			transaction_coordinator: Default::default(),
 			#[cfg(feature = "sqlite-local")]
 			vfs_metrics: None,
+			#[cfg(feature = "sqlite-local")]
+			profiling: Default::default(),
 		})
 	}
 
 	#[cfg(feature = "sqlite-local")]
 	pub(crate) fn set_vfs_metrics(&mut self, metrics: Arc<dyn SqliteVfsMetrics>) {
 		self.vfs_metrics = Some(metrics);
+	}
+
+	#[cfg(feature = "sqlite-local")]
+	pub(crate) fn set_profiling_config(&mut self, config: crate::SqliteProfilingConfig) {
+		self.profiling = Arc::new(profiling::SqliteProfilingState::new(config));
+	}
+
+	#[cfg(all(test, feature = "sqlite-local"))]
+	pub(crate) fn from_native_database_for_test(
+		actor_id: impl Into<String>,
+		generation: u64,
+		native_db: NativeDatabaseHandle,
+		metrics: Arc<dyn SqliteVfsMetrics>,
+		profiling: crate::SqliteProfilingConfig,
+	) -> Self {
+		Self {
+			actor_id: Some(actor_id.into()),
+			generation: Some(generation),
+			enabled: true,
+			db: Arc::new(Mutex::new(Some(native_db))),
+			vfs_metrics: Some(metrics),
+			profiling: Arc::new(profiling::SqliteProfilingState::new(profiling)),
+			..Self::default()
+		}
 	}
 
 	pub fn is_enabled(&self) -> bool {
@@ -303,38 +419,14 @@ impl SqliteDb {
 		self.map_local_worker_result(self.native_db_handle()?.exec(sql).await)
 	}
 
+	#[cfg(feature = "sqlite-local")]
+	async fn local_exec_profiled(&self, sql: String) -> Result<SqliteWorkerResult<QueryResult>> {
+		self.open().await?;
+		self.map_local_worker_result(self.native_db_handle()?.exec_profiled(sql).await)
+	}
+
 	#[cfg(not(feature = "sqlite-local"))]
 	async fn local_exec(&self, _sql: String) -> Result<QueryResult> {
-		Err(SqliteRuntimeError::Unavailable.build())
-	}
-
-	#[cfg(feature = "sqlite-local")]
-	async fn local_query(
-		&self,
-		sql: String,
-		params: Option<Vec<BindParam>>,
-	) -> Result<QueryResult> {
-		self.open().await?;
-		self.map_local_worker_result(self.native_db_handle()?.query(sql, params).await)
-	}
-
-	#[cfg(not(feature = "sqlite-local"))]
-	async fn local_query(
-		&self,
-		_sql: String,
-		_params: Option<Vec<BindParam>>,
-	) -> Result<QueryResult> {
-		Err(SqliteRuntimeError::Unavailable.build())
-	}
-
-	#[cfg(feature = "sqlite-local")]
-	async fn local_run(&self, sql: String, params: Option<Vec<BindParam>>) -> Result<ExecResult> {
-		self.open().await?;
-		self.map_local_worker_result(self.native_db_handle()?.run(sql, params).await)
-	}
-
-	#[cfg(not(feature = "sqlite-local"))]
-	async fn local_run(&self, _sql: String, _params: Option<Vec<BindParam>>) -> Result<ExecResult> {
 		Err(SqliteRuntimeError::Unavailable.build())
 	}
 
@@ -348,6 +440,16 @@ impl SqliteDb {
 		self.map_local_worker_result(self.native_db_handle()?.execute(sql, params).await)
 	}
 
+	#[cfg(feature = "sqlite-local")]
+	async fn local_execute_profiled(
+		&self,
+		sql: String,
+		params: Option<Vec<BindParam>>,
+	) -> Result<SqliteWorkerResult<ExecuteResult>> {
+		self.open().await?;
+		self.map_local_worker_result(self.native_db_handle()?.execute_profiled(sql, params).await)
+	}
+
 	#[cfg(not(feature = "sqlite-local"))]
 	async fn local_execute(
 		&self,
@@ -357,13 +459,97 @@ impl SqliteDb {
 		Err(SqliteRuntimeError::Unavailable.build())
 	}
 
+	#[cfg(feature = "sqlite-local")]
+	fn observe_statement_profile(
+		&self,
+		sql: &str,
+		started_at: crate::time::Instant,
+		transaction_wait: std::time::Duration,
+		profile: Option<depot_client::vfs::SqliteOperationProfile>,
+		outcome: &'static str,
+		transaction_mode: &'static str,
+	) -> Option<profiling::StatementObservation> {
+		if self.backend != SqliteBackend::LocalNative {
+			return None;
+		}
+		let fingerprint = self.profiling.statement_fingerprint(sql)?;
+		let observation = profiling::StatementObservation {
+			fingerprint: Arc::clone(&fingerprint),
+			total_ns: duration_ns(started_at.elapsed()),
+			transaction_wait_ns: duration_ns(transaction_wait),
+			profile: profile.unwrap_or_default(),
+		};
+		if let Some(metrics) = &self.vfs_metrics {
+			let metric = depot_client::vfs::SqliteOperationMetric {
+				operation_type: "statement",
+				fingerprint: fingerprint.display.clone(),
+				fingerprint_source: "query",
+				transaction_mode,
+				storage_transport: "proxy",
+				outcome,
+				sql_bytes: sql.len().try_into().unwrap_or(u64::MAX),
+				total_ns: observation.total_ns,
+				transaction_wait_ns: observation.transaction_wait_ns,
+				profile: observation.profile.clone(),
+			};
+			if metrics.observe_operation_profile(&metric)
+				&& self.profiling.mark_cataloged(&fingerprint.display)
+			{
+				metrics.record_fingerprint_catalog(
+					"statement",
+					&fingerprint.display,
+					&fingerprint.normalized_sql,
+					1,
+				);
+			}
+			metrics.emit_operation_diagnostic_event(
+				self.actor_id.as_deref().unwrap_or("unknown"),
+				self.generation,
+				&metric,
+			);
+		}
+		Some(observation)
+	}
+
 	pub async fn exec(&self, sql: impl Into<String>) -> Result<QueryResult> {
 		let sql = sql.into();
 		let sql_for_log = sql.clone();
-		let result = match self.begin_regular_operation().await {
+		#[cfg(feature = "sqlite-local")]
+		let started_at = self
+			.profiling
+			.config
+			.enabled
+			.then(crate::time::Instant::now);
+		#[cfg(feature = "sqlite-local")]
+		let transaction_wait_started_at = started_at.map(|_| crate::time::Instant::now());
+		let guard = self.begin_regular_operation().await;
+		#[cfg(feature = "sqlite-local")]
+		let transaction_wait = transaction_wait_started_at.map(|started| started.elapsed());
+		#[cfg(feature = "sqlite-local")]
+		let (result, profile) = match guard {
+			Ok(_guard) if started_at.is_some() => {
+				let profiled = self.exec_backend_profiled(sql).await;
+				(profiled.result, profiled.profile)
+			}
+			Ok(_guard) => (self.exec_backend(sql).await, None),
+			Err(error) => (Err(error), None),
+		};
+		#[cfg(not(feature = "sqlite-local"))]
+		let result = match guard {
 			Ok(_guard) => self.exec_backend(sql).await,
 			Err(error) => Err(error),
 		};
+		#[cfg(feature = "sqlite-local")]
+		if let Some(started_at) = started_at {
+			self.observe_statement_profile(
+				&sql_for_log,
+				started_at,
+				transaction_wait.unwrap_or_default(),
+				profile,
+				if result.is_ok() { "success" } else { "error" },
+				"autocommit",
+			);
+		}
 		match result {
 			Ok(result) => Ok(result),
 			Err(error) => {
@@ -382,10 +568,48 @@ impl SqliteDb {
 		let sql = sql.into();
 		let sql_for_log = sql.clone();
 		let binding_count = bind_param_count(&params);
-		let result = match self.begin_regular_operation().await {
+		#[cfg(feature = "sqlite-local")]
+		let started_at = self
+			.profiling
+			.config
+			.enabled
+			.then(crate::time::Instant::now);
+		#[cfg(feature = "sqlite-local")]
+		let transaction_wait_started_at = started_at.map(|_| crate::time::Instant::now());
+		let guard = self.begin_regular_operation().await;
+		#[cfg(feature = "sqlite-local")]
+		let transaction_wait = transaction_wait_started_at.map(|started| started.elapsed());
+		#[cfg(feature = "sqlite-local")]
+		let (result, profile) = match guard {
+			Ok(_guard) if started_at.is_some() => {
+				let profiled = self.execute_backend_profiled(sql, params).await;
+				(
+					profiled.result.map(|result| QueryResult {
+						columns: result.columns,
+						rows: result.rows,
+					}),
+					profiled.profile,
+				)
+			}
+			Ok(_guard) => (self.query_backend(sql, params).await, None),
+			Err(error) => (Err(error), None),
+		};
+		#[cfg(not(feature = "sqlite-local"))]
+		let result = match guard {
 			Ok(_guard) => self.query_backend(sql, params).await,
 			Err(error) => Err(error),
 		};
+		#[cfg(feature = "sqlite-local")]
+		if let Some(started_at) = started_at {
+			self.observe_statement_profile(
+				&sql_for_log,
+				started_at,
+				transaction_wait.unwrap_or_default(),
+				profile,
+				if result.is_ok() { "success" } else { "error" },
+				"autocommit",
+			);
+		}
 		match result {
 			Ok(result) => Ok(result),
 			Err(error) => {
@@ -404,10 +628,47 @@ impl SqliteDb {
 		let sql = sql.into();
 		let sql_for_log = sql.clone();
 		let binding_count = bind_param_count(&params);
-		let result = match self.begin_regular_operation().await {
+		#[cfg(feature = "sqlite-local")]
+		let started_at = self
+			.profiling
+			.config
+			.enabled
+			.then(crate::time::Instant::now);
+		#[cfg(feature = "sqlite-local")]
+		let transaction_wait_started_at = started_at.map(|_| crate::time::Instant::now());
+		let guard = self.begin_regular_operation().await;
+		#[cfg(feature = "sqlite-local")]
+		let transaction_wait = transaction_wait_started_at.map(|started| started.elapsed());
+		#[cfg(feature = "sqlite-local")]
+		let (result, profile) = match guard {
+			Ok(_guard) if started_at.is_some() => {
+				let profiled = self.execute_backend_profiled(sql, params).await;
+				(
+					profiled.result.map(|result| ExecResult {
+						changes: result.changes,
+					}),
+					profiled.profile,
+				)
+			}
+			Ok(_guard) => (self.run_backend(sql, params).await, None),
+			Err(error) => (Err(error), None),
+		};
+		#[cfg(not(feature = "sqlite-local"))]
+		let result = match guard {
 			Ok(_guard) => self.run_backend(sql, params).await,
 			Err(error) => Err(error),
 		};
+		#[cfg(feature = "sqlite-local")]
+		if let Some(started_at) = started_at {
+			self.observe_statement_profile(
+				&sql_for_log,
+				started_at,
+				transaction_wait.unwrap_or_default(),
+				profile,
+				if result.is_ok() { "success" } else { "error" },
+				"autocommit",
+			);
+		}
 		match result {
 			Ok(result) => Ok(result),
 			Err(error) => {
@@ -426,10 +687,42 @@ impl SqliteDb {
 		let sql = sql.into();
 		let sql_for_log = sql.clone();
 		let binding_count = bind_param_count(&params);
-		let result = match self.begin_regular_operation().await {
+		#[cfg(feature = "sqlite-local")]
+		let started_at = self
+			.profiling
+			.config
+			.enabled
+			.then(crate::time::Instant::now);
+		#[cfg(feature = "sqlite-local")]
+		let transaction_wait_started_at = started_at.map(|_| crate::time::Instant::now());
+		let guard = self.begin_regular_operation().await;
+		#[cfg(feature = "sqlite-local")]
+		let transaction_wait = transaction_wait_started_at.map(|started| started.elapsed());
+		#[cfg(feature = "sqlite-local")]
+		let (result, profile) = match guard {
+			Ok(_guard) if started_at.is_some() => {
+				let profiled = self.execute_backend_profiled(sql, params).await;
+				(profiled.result, profiled.profile)
+			}
+			Ok(_guard) => (self.execute_backend(sql, params).await, None),
+			Err(error) => (Err(error), None),
+		};
+		#[cfg(not(feature = "sqlite-local"))]
+		let result = match guard {
 			Ok(_guard) => self.execute_backend(sql, params).await,
 			Err(error) => Err(error),
 		};
+		#[cfg(feature = "sqlite-local")]
+		if let Some(started_at) = started_at {
+			self.observe_statement_profile(
+				&sql_for_log,
+				started_at,
+				transaction_wait.unwrap_or_default(),
+				profile,
+				if result.is_ok() { "success" } else { "error" },
+				"autocommit",
+			);
+		}
 		match result {
 			Ok(result) => Ok(result),
 			Err(error) => {
@@ -968,6 +1261,11 @@ fn select_sqlite_backend(remote_sqlite: bool) -> Result<SqliteBackend> {
 
 fn bind_param_count(params: &Option<Vec<BindParam>>) -> usize {
 	params.as_ref().map_or(0, Vec::len)
+}
+
+#[cfg(feature = "sqlite-local")]
+fn duration_ns(duration: std::time::Duration) -> u64 {
+	duration.as_nanos().try_into().unwrap_or(u64::MAX)
 }
 
 #[cfg(feature = "sqlite-local")]

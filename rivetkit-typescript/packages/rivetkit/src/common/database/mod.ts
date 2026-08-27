@@ -2,6 +2,7 @@ import { getLogger } from "@/common/log";
 import type {
 	DatabaseProvider,
 	RawAccess,
+	SqliteProfilingOptions,
 	SqliteDatabase,
 	SqliteTransactionDatabase,
 } from "./config";
@@ -10,14 +11,16 @@ import {
 	isSqliteBindingObject,
 	MIGRATION_TRANSACTION_TIMEOUT_MS,
 	toSqliteBindings,
+	validateTransactionName,
 	validateTransactionTimeout,
 } from "./shared";
 
 export type { RawAccess } from "./config";
 
-interface DatabaseFactoryConfig {
+export interface DatabaseFactoryConfig {
 	onMigrate?: (db: RawAccess) => Promise<void> | void;
 	warnOnManualTransactions?: boolean;
+	profiling?: SqliteProfilingOptions;
 }
 
 function hasMultipleStatements(query: string): boolean {
@@ -28,8 +31,10 @@ function hasMultipleStatements(query: string): boolean {
 export function db({
 	onMigrate,
 	warnOnManualTransactions = true,
+	profiling,
 }: DatabaseFactoryConfig = {}): DatabaseProvider<RawAccess> {
 	return {
+		sqliteProfiling: profiling,
 		createClient: async (ctx) => {
 			const nativeDatabaseProvider = ctx.nativeDatabaseProvider;
 			if (!nativeDatabaseProvider) {
@@ -128,11 +133,13 @@ export function db({
 				},
 				transaction: async <T>(
 					callback: (tx: RawAccess) => Promise<T> | T,
-					options?: { timeout?: number },
+					options?: import("./config").SqliteTransactionOptions,
 				): Promise<T> => {
 					validateTransactionTimeout(options?.timeout);
+					validateTransactionName(options?.name);
 					const transaction = await db.beginTransaction(
 						options?.timeout,
+						options?.name,
 					);
 					const tx = createClient(transaction, true);
 					try {
@@ -221,6 +228,9 @@ async function withMigrationSavepoint<T>(
 				throw error;
 			}
 		},
-		{ timeout: MIGRATION_TRANSACTION_TIMEOUT_MS },
+		{
+			name: "rivetkit-migration",
+			timeout: MIGRATION_TRANSACTION_TIMEOUT_MS,
+		},
 	);
 }

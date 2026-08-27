@@ -288,6 +288,12 @@ describe("Actor.make(...).toLayer", () => {
 				expectTypeOf(
 					wakeOptions.rawRivetkitContext.db,
 				).toEqualTypeOf<RawAccess>();
+				expectTypeOf(
+					wakeOptions.rawRivetkitContext.db.transaction(
+						async () => {},
+						{ name: "effect-operation", timeout: 1_000 },
+					),
+				).toEqualTypeOf<Promise<void>>();
 
 				return {
 					Ping: () => Effect.succeed(0),
