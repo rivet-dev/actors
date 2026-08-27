@@ -205,8 +205,7 @@ pub async fn run_actor<A: Actor>(start: Start<A>) -> Result<()> {
 			// rivetkit-typescript where createState receives undefined input.
 			None => A::create_state(&ctx, input.decode_or_default()?).await?,
 		};
-		ctx.set_state(state);
-		ctx.clear_state_dirty();
+		ctx.set_initial_state(state);
 
 		let actor = Arc::new(A::create(&ctx).await?);
 		if is_new {

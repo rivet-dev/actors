@@ -1,3 +1,7 @@
+use std::sync::{
+	Arc,
+	atomic::{AtomicUsize, Ordering},
+};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -76,8 +80,16 @@ fn typed_ctx_emit_accepts_named_events() {
 
 #[test]
 fn state_cell_reads_writes_and_tracks_dirty() {
+	let inner = actor_context("actor-id", "test", Vec::new(), "local");
+	let save_requests = Arc::new(AtomicUsize::new(0));
+	inner.on_request_save(Box::new({
+		let save_requests = Arc::clone(&save_requests);
+		move |_| {
+			save_requests.fetch_add(1, Ordering::SeqCst);
+		}
+	}));
 	let ctx = Ctx::<StatefulActor>::with_state(
-		actor_context("actor-id", "test", Vec::new(), "local"),
+		inner,
 		TestState {
 			count: 1,
 			label: "initial".into(),
@@ -94,6 +106,7 @@ fn state_cell_reads_writes_and_tracks_dirty() {
 	}
 
 	assert!(ctx.state_dirty());
+	assert_eq!(save_requests.load(Ordering::SeqCst), 1);
 	assert_eq!(
 		*ctx.state(),
 		TestState {
@@ -111,6 +124,7 @@ fn state_cell_reads_writes_and_tracks_dirty() {
 	});
 
 	assert!(ctx.state_dirty());
+	assert_eq!(save_requests.load(Ordering::SeqCst), 2);
 	assert_eq!(ctx.state().count, 7);
 }
 
