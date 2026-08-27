@@ -774,7 +774,7 @@ export const SidebarlessHeader = () => {
 	return (
 		<header className="z-20 flex items-center gap-2 h-12 px-3 shrink-0 border-b border-border bg-background">
 			<Link to="/" className="flex items-center shrink-0 pr-1">
-				<LogoMark className="h-5 w-auto text-foreground" />
+				<LogoMark className="h-6 w-6" />
 			</Link>
 			<ContextSwitcher inline />
 			<TopBarActions />

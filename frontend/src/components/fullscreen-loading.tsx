@@ -1,4 +1,4 @@
-import { AssetImage } from "./asset-image";
+import { LogoMark } from "@/app/logo";
 
 export function FullscreenLoading({
 	children,
@@ -7,10 +7,7 @@ export function FullscreenLoading({
 }) {
 	return (
 		<div className="min-h-screen flex items-center justify-center flex-col bg-background text-foreground">
-			<AssetImage
-				className="animate-pulse h-10 invert dark:invert-0"
-				src="/logo/icon-white.svg"
-			/>
+			<LogoMark className="h-10 w-10 animate-pulse" />
 			{children}
 		</div>
 	);

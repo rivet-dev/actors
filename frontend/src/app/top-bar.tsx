@@ -22,7 +22,7 @@ export function TopBar() {
 function TopBarLogo() {
 	return (
 		<Link to="/" className="flex items-center shrink-0 pr-1">
-			<LogoMark className="h-5 w-auto text-foreground" />
+			<LogoMark className="h-6 w-6" />
 		</Link>
 	);
 }
