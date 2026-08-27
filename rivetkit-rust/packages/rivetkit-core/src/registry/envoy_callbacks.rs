@@ -216,7 +216,9 @@ impl ServeConfig {
 			serverless_client_token: settings.serverless_client_token,
 			serverless_validate_endpoint: settings.serverless_validate_endpoint,
 			serverless_max_start_payload_bytes: settings.serverless_max_start_payload_bytes,
-			serverless_cache_envoy: true,
+			// TODO: Flip this back to true. Currently disabled because we need a unique
+			// connection to verify the serverless token.
+			serverless_cache_envoy: false,
 			..Default::default()
 		}
 	}

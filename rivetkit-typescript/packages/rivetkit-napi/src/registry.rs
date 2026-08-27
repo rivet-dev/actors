@@ -200,7 +200,9 @@ impl CoreRegistry {
 			}
 		};
 
-		let serve_config = serve_config_from_js(config, false, true);
+		// TODO: Flip this back to true. Currently disabled because we need a unique
+		// connection to verify the serverless token.
+		let serve_config = serve_config_from_js(config, false, false);
 		*self.route_package_version.lock() = Some(serve_config.serverless_package_version.clone());
 		*self.route_metadata.lock() = Some(metadata_response(
 			registry.normal_metadata_payload(&serve_config),
@@ -635,7 +637,9 @@ impl CoreRegistry {
 		registry: NativeCoreRegistry,
 		config: JsServeConfig,
 	) -> napi::Result<CoreServerlessRuntime> {
-		let serve_config = serve_config_from_js(config, true, true);
+		// TODO: Flip this back to true. Currently disabled because we need a unique
+		// connection to verify the serverless token.
+		let serve_config = serve_config_from_js(config, true, false);
 		*self.route_package_version.lock() = Some(serve_config.serverless_package_version.clone());
 		*self.route_metadata.lock() = Some(metadata_response(
 			registry.serverless_metadata_payload(&serve_config),
