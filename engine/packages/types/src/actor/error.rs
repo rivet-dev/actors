@@ -15,6 +15,9 @@ pub enum RunnerPoolError {
 	/// Serverless: SSE connection or network error
 	ServerlessConnectionError { message: String },
 
+	/// Serverless: the configured URL is not a destination the engine is allowed to reach
+	ServerlessDestinationBlocked { reason: String },
+
 	/// Serverless: Runner sent invalid payload
 	ServerlessInvalidSsePayload {
 		message: String,

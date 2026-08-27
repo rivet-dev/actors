@@ -43,6 +43,7 @@ interface ClassifiedError {
 	kind:
 		| "serverless_http"
 		| "serverless_connection"
+		| "serverless_destination_blocked"
 		| "serverless_invalid_sse"
 		| "serverless_stream_ended_early"
 		| "downgrade"
@@ -114,6 +115,18 @@ function classifyRunnerError(error: RivetActorError): ClassifiedError {
 				title: "Serverless connection failed",
 				body: e.serverless_connection_error.message,
 				fingerprint: `conn:${e.serverless_connection_error.message.slice(0, 64)}`,
+			}),
+		)
+		.with(
+			P.shape({
+				serverless_destination_blocked: P.shape({ reason: P.string }),
+			}),
+			(e) => ({
+				severity: "error",
+				kind: "serverless_destination_blocked",
+				title: "Serverless URL is not an allowed destination",
+				body: e.serverless_destination_blocked.reason,
+				fingerprint: `blocked:${e.serverless_destination_blocked.reason.slice(0, 64)}`,
 			}),
 		)
 		.with(
@@ -502,6 +515,8 @@ function describeKind(kind: ClassifiedError["kind"]): string {
 			return "Runner pool was downgraded to an unsupported version. Revert to a higher version.";
 		case "serverless_stream_ended_early":
 			return "Connection terminated before the runner stopped. Check the request lifespan limits on your serverless provider.";
+		case "serverless_destination_blocked":
+			return "The configured serverless URL points at a destination Rivet is not allowed to reach. Use a publicly routable URL, or allow the address range in the engine's outbound configuration.";
 		case "internal":
 			return "An internal error occurred in the runner pool.";
 		default:

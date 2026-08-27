@@ -21,6 +21,7 @@ pub struct Input {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServerlessMetadataError {
 	InvalidRequest {},
+	DestinationBlocked { reason: String },
 	RequestFailed {},
 	RequestTimedOut {},
 	NonSuccessStatus { status_code: u16, body: String },
@@ -58,6 +59,14 @@ impl From<ServerlessMetadataError> for ServerlessMetadataErrorEnvelope {
 				message: "invalid serverless metadata request".to_string(),
 				details: None,
 				metadata: serde_json::json!({ "kind": "invalid_request" }),
+			},
+			ServerlessMetadataError::DestinationBlocked { reason } => Self {
+				message: "serverless endpoint is not an allowed destination".to_string(),
+				details: Some(reason.clone()),
+				metadata: serde_json::json!({
+					"kind": "destination_blocked",
+					"reason": reason,
+				}),
 			},
 			ServerlessMetadataError::RequestFailed {} => Self {
 				message: "failed to reach serverless endpoint".to_string(),
@@ -158,8 +167,19 @@ pub async fn pegboard_serverless_metadata_fetch(
 
 	let metadata_url = format!("{}/metadata", trimmed_url.trim_end_matches('/'));
 
-	if reqwest::Url::parse(&metadata_url).is_err() {
+	let Ok(parsed_url) = reqwest::Url::parse(&metadata_url) else {
 		return Ok(Err(ServerlessMetadataError::InvalidRequest {}));
+	};
+
+	// The client only sees this URL as a host to connect to: an address literal never reaches its
+	// resolver, and its redirect policy only runs on later hops. So the scheme, credentials, and a
+	// literal destination have to be checked here. This op also backs the health check endpoint,
+	// where an unchecked URL is a probe for whatever the engine can reach.
+	let policy = rivet_pools::reqwest::outbound_policy(ctx.config()).await?;
+	if let Err(reason) = policy.check_url(&parsed_url) {
+		return Ok(Err(ServerlessMetadataError::DestinationBlocked {
+			reason: reason.to_string(),
+		}));
 	}
 
 	let mut header_map = ReqwestHeaderMap::new();
@@ -177,7 +197,7 @@ pub async fn pegboard_serverless_metadata_fetch(
 		header_map.insert(header_name, header_value);
 	}
 
-	let client = match rivet_pools::reqwest::client().await {
+	let client = match rivet_pools::reqwest::guarded_client(ctx.config()).await {
 		Ok(c) => c,
 		Err(_) => return Ok(Err(ServerlessMetadataError::RequestFailed {})),
 	};
@@ -193,7 +213,18 @@ pub async fn pegboard_serverless_metadata_fetch(
 	{
 		Ok(r) => r,
 		Err(err) => {
-			return Ok(Err(if err.is_timeout() {
+			let is_timeout = err.is_timeout();
+			let err = anyhow::Error::from(err);
+
+			// A hostname that only resolves to disallowed addresses is rejected by the resolver,
+			// which the pre-flight check above cannot see.
+			if let Some(reason) = rivet_outbound_guard::block_reason(&err) {
+				return Ok(Err(ServerlessMetadataError::DestinationBlocked {
+					reason: reason.to_string(),
+				}));
+			}
+
+			return Ok(Err(if is_timeout {
 				ServerlessMetadataError::RequestTimedOut {}
 			} else {
 				ServerlessMetadataError::RequestFailed {}

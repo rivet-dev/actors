@@ -45,6 +45,11 @@ export function generateDatacenterRivetEngine(
 				host: "0.0.0.0",
 			},
 			topology,
+			// Serverless runner URLs in a compose deployment point at other containers on this
+			// network, which the engine refuses to dial by default.
+			outbound: {
+				allow_private_networks: true,
+			},
 			postgres: {
 				url: `postgresql://postgres:postgres@${context.getServiceHost("postgres", datacenter.name)}:5432/rivet_engine`,
 			},

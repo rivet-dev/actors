@@ -106,6 +106,17 @@
         }
       ]
     },
+    "outbound": {
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Outbound"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "pegboard": {
       "default": null,
       "anyOf": [
@@ -799,6 +810,63 @@
             "string",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Outbound": {
+      "description": "Policy for outbound HTTP requests to user-configured destinations, such as serverless runner URLs.\n\nThese requests originate from inside the trusted engine network, so without restrictions a caller who can configure a runner can reach internal-only services. The defaults deny every non-globally-routable destination except loopback.",
+      "type": "object",
+      "properties": {
+        "allow_cidrs": {
+          "description": "Additional CIDRs that are always permitted, evaluated after `deny_cidrs`.\n\nUse this to reach a specific internal service without opening up the whole private range.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_insecure_scheme": {
+          "description": "Allow plaintext `http://` destinations. When disabled only `https://` is permitted.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "allow_loopback": {
+          "description": "Allow destinations that resolve to loopback addresses (127.0.0.0/8, ::1).\n\nEnabled by default so local development against `http://localhost:...` works without configuration.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "allow_private_networks": {
+          "description": "Allow destinations that resolve to private, link-local, shared (CGNAT), or otherwise non-globally-routable addresses.\n\nSelf-hosted deployments that point runners at addresses on their own network, such as a Docker Compose service name, need this enabled.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "deny_cidrs": {
+          "description": "Additional CIDRs that are always denied. Takes precedence over every allow rule.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_redirects": {
+          "description": "Maximum number of redirects to follow. Every hop is re-checked against this policy.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0.0
         }
       },
       "additionalProperties": false

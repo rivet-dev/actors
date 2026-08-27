@@ -21,6 +21,9 @@
 			}
 		}
 	},
+	"outbound": {
+		"allow_private_networks": true
+	},
 	"postgres": {
 		"url": "postgresql://postgres:postgres@127.0.0.1:5432/rivet_engine"
 	},
