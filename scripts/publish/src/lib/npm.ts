@@ -220,6 +220,15 @@ export async function repairBranchPreviewLatestTags(
 	opts: Required<Pick<PublishAllOptions, "tag" | "version">> &
 		Pick<PublishAllOptions, "includeReleaseOnlyPackages">,
 ): Promise<void> {
+	// npm trusted publishing only authenticates `npm publish`; commands such as
+	// `npm dist-tag add` still require a traditional token. Preserve the repair
+	// for manual/token-authenticated runs, but do not make OIDC publishes fail
+	// after their packages have already been published successfully.
+	if (!process.env.NODE_AUTH_TOKEN) {
+		log.warn("skipping preview latest-tag repair during tokenless OIDC publish");
+		return;
+	}
+
 	const previewPrefix = `0.0.0-${opts.tag}.`;
 	const packages = discoverPackages(repoRoot, {
 		includeReleaseOnly: opts.includeReleaseOnlyPackages,

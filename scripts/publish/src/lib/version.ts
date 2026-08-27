@@ -32,6 +32,11 @@ const log = scoped("version");
 interface PackageJson {
 	name?: string;
 	version?: string;
+	repository?: {
+		type: "git";
+		url: string;
+		directory: string;
+	};
 	dependencies?: Record<string, string>;
 	devDependencies?: Record<string, string>;
 	peerDependencies?: Record<string, string>;
@@ -80,6 +85,26 @@ export interface BumpOptions {
 	 * the publish-time mode used by CI — never committed.
 	 */
 	versionOnly?: boolean;
+	/** GitHub repository slug recorded in publish-time package metadata. */
+	repository?: string;
+}
+
+export function githubRepositoryUrl(repository: string): string {
+	if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+		throw new Error(
+			`invalid GitHub repository ${JSON.stringify(repository)}; expected owner/repo`,
+		);
+	}
+	return `https://github.com/${repository}.git`;
+}
+
+function requirePublishRepository(repository: string | undefined): string {
+	if (!repository) {
+		throw new Error(
+			"publish-time package metadata requires a GitHub repository",
+		);
+	}
+	return repository;
 }
 
 /**
@@ -119,6 +144,12 @@ export async function bumpPackageJsons(
 		pkgJson.version = version;
 
 		if (!versionOnly) {
+			pkgJson.repository = {
+				type: "git",
+				url: githubRepositoryUrl(requirePublishRepository(opts.repository)),
+				directory: pkg.relDir,
+			};
+
 			// Inject optionalDependencies on meta packages so end users get the
 			// correct platform-specific binary via npm's os/cpu/libc resolution.
 			const platformPkgs = metaPlatformMap.get(pkg.name);
