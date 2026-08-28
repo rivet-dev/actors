@@ -6,6 +6,12 @@ skill: true
 
 Profiling helps you find slow queries, transaction contention, and unnecessary storage activity.
 
+## Logging slow queries
+
+RivetKit logs slow or failed SQLite statements and transactions. Logs include the fingerprint, outcome, timing breakdown, and storage activity; statement logs also include rows and bytes, while transaction logs include the statement count.
+
+Search actor logs for `sampled SQLite operation profile` for statements or `sampled SQLite transaction profile` for transactions.
+
 ## Identify operations
 
 ### Transaction names
@@ -18,17 +24,31 @@ Without a name, RivetKit falls back to a fingerprint of the transaction's statem
 
 ### Statement fingerprints
 
-RivetKit normalizes each SQL statement into a sanitized shape, then hashes that shape into a stable fingerprint. The fingerprint groups metrics without putting SQL text in a Prometheus label.
-
-- Bound and inline literal values do not change the fingerprint.
-- Whitespace, capitalization, and comments do not change the fingerprint.
-- Keep query structure static and use `?` or named bindings for dynamic values.
+RivetKit hashes each SQL statement exactly as provided. The fingerprint groups metrics without putting SQL text in a Prometheus label.
 
 For example, repeated `SELECT * FROM orders WHERE id = ?` calls share one fingerprint regardless of the bound ID.
 
-## Find slow operations
+### Find the SQL for a fingerprint
 
-**Slowest statements and transactions**
+RivetKit logs the SQL statement or transaction name for each tracked fingerprint.
+
+For example, suppose a Prometheus result contains `fingerprint="select-a1b2c3d4e5f60718"`:
+
+1. Copy the fingerprint: `select-a1b2c3d4e5f60718`.
+2. Search the actor logs for `sqlite fingerprint catalog` and `select-a1b2c3d4e5f60718`.
+3. Read `identity` from the matching log line:
+
+   ```text
+   sqlite fingerprint catalog fingerprint="select-a1b2c3d4e5f60718" identity="SELECT value FROM items WHERE id = ?"
+   ```
+
+## Query metrics
+
+Collect [Prometheus metrics from each worker](/actors/self-host/workers/prometheus-metrics/) to use the queries below.
+
+### Slowest statements and transactions
+
+Find the statements and transactions with the highest 95th-percentile latency.
 
 ```promql
 histogram_quantile(
@@ -39,7 +59,29 @@ histogram_quantile(
 )
 ```
 
-**Failed operations**
+### Slowest latency phases
+
+Break down slow operations to see whether they spend time waiting, executing SQL, or accessing storage.
+
+- `transaction_wait`: waiting for another transaction on the actor to finish.
+- `worker_wait`: waiting for earlier SQLite work on the actor to finish.
+- `storage`: loading or saving SQLite data.
+- `local_work`: executing SQL and preparing results, excluding storage time.
+- `application_time`: time the transaction stays open between SQL calls.
+- `commit`: saving changes at the end of a transaction.
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, actor_name, type, fingerprint, phase) (
+    rate(rivet_rivetkit_sqlite_phase_duration_seconds_bucket[5m])
+  )
+)
+```
+
+### Non-success outcomes
+
+Find statements and transactions that fail, roll back, expire, or lose their connection.
 
 ```promql
 sum by (actor_name, type, fingerprint, outcome) (
@@ -47,7 +89,9 @@ sum by (actor_name, type, fingerprint, outcome) (
 )
 ```
 
-**Transaction contention**
+### Transaction contention
+
+See whether transactions are waiting for other transactions on the same actor.
 
 ```promql
 max by (actor_name) (
@@ -55,9 +99,38 @@ max by (actor_name) (
 )
 ```
 
-## Find storage-heavy operations
+### Native worker saturation
 
-**Operations with the most storage requests**
+See whether SQLite operations are backing up on an actor. A sustained queue means work is arriving faster than SQLite can finish it, while `worker_inflight` shows how often SQLite is busy.
+
+```promql
+max by (actor_name) (
+  max_over_time(rivet_rivetkit_sqlite_worker_queue_depth[5m])
+)
+```
+
+```promql
+avg by (actor_name) (
+  avg_over_time(rivet_rivetkit_sqlite_worker_inflight[5m])
+)
+```
+
+### Transactions with the most statements
+
+Find transactions that execute many SQL statements before finishing. Large counts can identify loops or oversized units of work; use a static transaction name to keep its fingerprint stable.
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, actor_name, fingerprint) (
+    rate(rivet_rivetkit_sqlite_transaction_statement_count_bucket[5m])
+  )
+)
+```
+
+### Average storage round trips per operation
+
+See how many times each operation contacts storage on average. High counts can indicate a missing index, a large scan, or ineffective prefetching.
 
 ```promql
 sum by (actor_name, type, fingerprint) (
@@ -69,7 +142,46 @@ sum by (actor_name, type, fingerprint) (
 )
 ```
 
-**SQLite page usage by kind**
+### Pages per physical storage request
+
+See how many pages each storage request asks for and returns. Compare `response_present` with `demand_requested` to find response amplification; `overflow_expansion_extra` shows overflow-chain reads, and `prefetch_requested` shows speculative reads.
+
+```promql
+sum by (actor_name, request_ordinal, page_kind) (
+  rate(rivet_rivetkit_sqlite_get_pages_pages_sum[5m])
+)
+/
+sum by (actor_name, request_ordinal, page_kind) (
+  rate(rivet_rivetkit_sqlite_get_pages_pages_count[5m])
+)
+```
+
+### Large storage responses
+
+Find storage requests that return unusually large amounts of SQLite data.
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, actor_name, request_ordinal) (
+    rate(rivet_rivetkit_sqlite_get_pages_response_bytes_bucket[5m])
+  )
+)
+```
+
+### Missing response pages
+
+Find storage requests that could not return every requested page.
+
+```promql
+sum by (actor_name, request_ordinal) (
+  rate(rivet_rivetkit_sqlite_get_pages_missing_pages_total[5m])
+)
+```
+
+### SQLite page usage by kind
+
+Break down the pages used for each kind of SQLite activity. High page counts can indicate a missing index or a large scan.
 
 ```promql
 sum by (actor_name, type, page_kind) (
@@ -77,7 +189,9 @@ sum by (actor_name, type, page_kind) (
 )
 ```
 
-**SQLite data volume by kind**
+### SQLite data volume by kind
+
+Compare bytes used by query parameters, results, storage reads, and writes.
 
 ```promql
 sum by (actor_name, type, byte_kind) (
@@ -85,24 +199,9 @@ sum by (actor_name, type, byte_kind) (
 )
 ```
 
-High round-trip or page counts can indicate a missing index, a large scan, or ineffective prefetching.
-
-## Investigate diagnostics
-
-RivetKit emits bounded structured diagnostics for operations that are slow, fail, show unusual storage amplification, or are selected by baseline sampling.
-
-- Fingerprint catalog events map a fingerprint to its sanitized SQL shape or static transaction name.
-- Operation events include latency phases, rows, bytes, page activity, and storage requests.
-- Transaction events include statement count, application-held time, commit time, and terminal outcome.
-- Event sampling, rate limits, and a bounded queue prevent diagnostics from blocking SQLite work.
-
-Search actor logs for `sqlite fingerprint catalog` or `sampled SQLite operation profile` and match events using the `fingerprint` field.
-
-Catalog events contain the sanitized SQL shape, never bound values or raw SQL. Continue binding dynamic values instead of constructing SQL strings.
-
 ## Configure profiling
 
-Profiling is enabled by default and most applications do not need to configure it. Set `profiling.slowOperationThresholdMs` or `profiling.baselineSampleRate` on the database provider when needed.
+Profiling is enabled by default and most applications do not need to configure it. The entire profiling configuration surface is experimental and subject to change without notice. Set `profiling.slowOperationThresholdMs` or `profiling.baselineSampleRate` on the database provider when needed.
 
 Increase fingerprint limits only when `other` is hiding frequently repeated operations. Prometheus series remain allocated for the life of the process after admission.
 
@@ -114,7 +213,7 @@ Fast statements initially appear under `other`, while overflow metrics show when
 
 ### Too many fingerprints
 
-Fingerprints use normalized SQL shapes, so formatting, comments, and literal values do not create separate entries. Keep query structure static and pass dynamic values as bindings.
+Statement fingerprints use the exact query text. Keep formatting and query structure static, and pass dynamic values as bindings instead of constructing SQL strings.
 
 ### Transactions are hard to identify
 

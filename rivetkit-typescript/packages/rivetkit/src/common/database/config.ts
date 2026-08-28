@@ -48,10 +48,7 @@ export interface SqliteProfilingOptions {
 	maxPrometheusSeries?: number;
 	maxStatementsPerTransactionTrace?: number;
 	maxGetPagesRequestsPerTrace?: number;
-	maxSqlBytesToNormalize?: number;
-	maxCatalogSqlShapeBytes?: number;
 	maxTransactionNameBytes?: number;
-	fingerprintComputationCacheEntries?: number;
 	slowOperationThresholdMs?: number;
 	baselineSampleRate?: number;
 	maxDiagnosticEventsPerMinute?: number;

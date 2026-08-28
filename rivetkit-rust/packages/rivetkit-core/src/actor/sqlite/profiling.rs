@@ -1,49 +1,19 @@
-use std::sync::Arc;
-
 use depot_client::vfs::SqliteOperationProfile;
 use sha2::{Digest, Sha256};
 
 use crate::SqliteProfilingConfig;
 
-const FINGERPRINT_FORMAT_VERSION: u8 = 1;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum StatementClass {
-	Select,
-	Insert,
-	Update,
-	Delete,
-	Ddl,
-	Pragma,
-	Other,
-	Control,
-}
-
-impl StatementClass {
-	fn label(self) -> &'static str {
-		match self {
-			Self::Select => "select",
-			Self::Insert => "insert",
-			Self::Update => "update",
-			Self::Delete => "delete",
-			Self::Ddl => "ddl",
-			Self::Pragma => "pragma",
-			Self::Other | Self::Control => "other",
-		}
-	}
-}
+pub(super) const FINGERPRINT_FORMAT_VERSION: u8 = 2;
 
 #[derive(Clone, Debug)]
 pub(super) struct StatementFingerprint {
 	pub(super) display: String,
 	pub(super) hash: String,
-	pub(super) normalized_sql: String,
 }
 
 #[derive(Debug)]
 pub(super) struct SqliteProfilingState {
 	pub(super) config: SqliteProfilingConfig,
-	cache: scc::HashMap<[u8; 32], Arc<StatementFingerprint>>,
 	cataloged: scc::HashSet<String>,
 }
 
@@ -57,45 +27,21 @@ impl SqliteProfilingState {
 	pub(super) fn new(config: SqliteProfilingConfig) -> Self {
 		Self {
 			config,
-			cache: scc::HashMap::new(),
 			cataloged: scc::HashSet::new(),
 		}
 	}
 
-	pub(super) fn statement_fingerprint(&self, sql: &str) -> Option<Arc<StatementFingerprint>> {
+	pub(super) fn statement_fingerprint(&self, sql: &str) -> Option<StatementFingerprint> {
 		if !self.config.enabled {
 			return None;
 		}
-		if sql.len() > self.config.max_sql_bytes_to_normalize {
-			return Some(Arc::new(StatementFingerprint {
-				display: "other".to_owned(),
-				hash: "other".to_owned(),
-				normalized_sql: format!("<sql-too-long:{}-bytes>", sql.len()),
-			}));
-		}
+		let class = statement_class(sql)?;
 
-		let raw_digest: [u8; 32] = Sha256::digest(sql.as_bytes()).into();
-		if let Some(cached) = self
-			.cache
-			.read_sync(&raw_digest, |_, value| Arc::clone(value))
-		{
-			return Some(cached);
-		}
-
-		let (class, normalized_sql) = normalize_sql(sql);
-		if class == StatementClass::Control || normalized_sql.is_empty() {
-			return None;
-		}
-		let hash = fingerprint_hash(b"rivetkit-sqlite-statement", normalized_sql.as_bytes());
-		let fingerprint = Arc::new(StatementFingerprint {
-			display: format!("{}-{hash}", class.label()),
+		let hash = fingerprint_hash(b"rivetkit-sqlite-statement", sql.as_bytes());
+		Some(StatementFingerprint {
+			display: format!("{class}-{hash}"),
 			hash,
-			normalized_sql: truncate_utf8(normalized_sql, self.config.max_catalog_sql_shape_bytes),
-		});
-		if self.cache.len() < self.config.fingerprint_computation_cache_entries {
-			let _ = self.cache.insert_sync(raw_digest, Arc::clone(&fingerprint));
-		}
-		Some(fingerprint)
+		})
 	}
 
 	pub(super) fn mark_cataloged(&self, fingerprint: &str) -> bool {
@@ -105,7 +51,7 @@ impl SqliteProfilingState {
 
 #[derive(Clone, Debug)]
 pub(super) struct StatementObservation {
-	pub(super) fingerprint: Arc<StatementFingerprint>,
+	pub(super) fingerprint: StatementFingerprint,
 	pub(super) total_ns: u64,
 	pub(super) transaction_wait_ns: u64,
 	pub(super) profile: SqliteOperationProfile,
@@ -272,203 +218,33 @@ fn hex_prefix(bytes: &[u8]) -> String {
 	output
 }
 
-fn truncate_utf8(mut value: String, max_bytes: usize) -> String {
-	if value.len() <= max_bytes {
-		return value;
+fn statement_class(sql: &str) -> Option<&'static str> {
+	let keyword = sql.split_ascii_whitespace().next()?;
+	if keyword.eq_ignore_ascii_case("select") || keyword.eq_ignore_ascii_case("values") {
+		Some("select")
+	} else if keyword.eq_ignore_ascii_case("insert") || keyword.eq_ignore_ascii_case("replace") {
+		Some("insert")
+	} else if keyword.eq_ignore_ascii_case("update") {
+		Some("update")
+	} else if keyword.eq_ignore_ascii_case("delete") {
+		Some("delete")
+	} else if keyword.eq_ignore_ascii_case("pragma") {
+		Some("pragma")
+	} else if ["begin", "commit", "end", "rollback", "savepoint", "release"]
+		.iter()
+		.any(|candidate| keyword.eq_ignore_ascii_case(candidate))
+	{
+		None
+	} else if [
+		"create", "alter", "drop", "vacuum", "reindex", "analyze", "attach", "detach",
+	]
+	.iter()
+	.any(|candidate| keyword.eq_ignore_ascii_case(candidate))
+	{
+		Some("ddl")
+	} else {
+		Some("other")
 	}
-	let mut end = max_bytes;
-	while !value.is_char_boundary(end) {
-		end -= 1;
-	}
-	value.truncate(end);
-	value
-}
-
-fn normalize_sql(sql: &str) -> (StatementClass, String) {
-	let tokens = tokenize(sql);
-	let class = classify_tokens(&tokens);
-	(class, tokens.join(" "))
-}
-
-fn classify_tokens(tokens: &[String]) -> StatementClass {
-	let Some(mut index) = tokens.iter().position(|token| token != ";") else {
-		return StatementClass::Other;
-	};
-	if tokens[index] == "explain" {
-		index += 1;
-		if tokens.get(index).is_some_and(|token| token == "query") {
-			index = index.saturating_add(2);
-		}
-	}
-	if tokens.get(index).is_some_and(|token| token == "with") {
-		let mut depth = 0_i32;
-		for (offset, token) in tokens[index + 1..].iter().enumerate() {
-			match token.as_str() {
-				"(" => depth += 1,
-				")" => depth = depth.saturating_sub(1),
-				"select" | "insert" | "update" | "delete" if depth == 0 => {
-					index += offset + 1;
-					break;
-				}
-				_ => {}
-			}
-		}
-	}
-
-	match tokens.get(index).map(String::as_str) {
-		Some("select" | "values") => StatementClass::Select,
-		Some("insert" | "replace") => StatementClass::Insert,
-		Some("update") => StatementClass::Update,
-		Some("delete") => StatementClass::Delete,
-		Some(
-			"create" | "alter" | "drop" | "vacuum" | "reindex" | "analyze" | "attach" | "detach",
-		) => StatementClass::Ddl,
-		Some("pragma") => StatementClass::Pragma,
-		Some("begin" | "commit" | "end" | "rollback" | "savepoint" | "release") => {
-			StatementClass::Control
-		}
-		_ => StatementClass::Other,
-	}
-}
-
-/// SQLite-oriented lexical normalization. Literal and bind tokens become `?`,
-/// comments disappear, unquoted keywords/identifiers are case-folded, and
-/// token spacing is canonical. This is deliberately a tokenizer rather than a
-/// regex so quoted text and comments cannot leak into the catalog.
-fn tokenize(sql: &str) -> Vec<String> {
-	let bytes = sql.as_bytes();
-	let mut tokens = Vec::new();
-	let mut index = 0;
-	while index < bytes.len() {
-		let byte = bytes[index];
-		if byte.is_ascii_whitespace() {
-			index += 1;
-			continue;
-		}
-		if byte == b'-' && bytes.get(index + 1) == Some(&b'-') {
-			index += 2;
-			while index < bytes.len() && bytes[index] != b'\n' {
-				index += 1;
-			}
-			continue;
-		}
-		if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
-			index += 2;
-			while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
-				index += 1;
-			}
-			index = (index + 2).min(bytes.len());
-			continue;
-		}
-		if byte == b'\'' {
-			index = skip_quoted(bytes, index, b'\'', b'\'');
-			if tokens.last().is_some_and(|token| token == "x") {
-				tokens.pop();
-			}
-			tokens.push("?".to_owned());
-			continue;
-		}
-		if matches!(byte, b'"' | b'`' | b'[') {
-			let end = if byte == b'[' { b']' } else { byte };
-			let start = index;
-			index = skip_quoted(bytes, index, end, byte);
-			tokens.push(String::from_utf8_lossy(&bytes[start..index]).into_owned());
-			continue;
-		}
-		if byte.is_ascii_digit()
-			|| (byte == b'.' && bytes.get(index + 1).is_some_and(u8::is_ascii_digit))
-		{
-			index = skip_numeric_literal(bytes, index);
-			tokens.push("?".to_owned());
-			continue;
-		}
-		if matches!(byte, b'?' | b':' | b'@' | b'$') {
-			index += 1;
-			while index < bytes.len()
-				&& (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
-			{
-				index += 1;
-			}
-			tokens.push("?".to_owned());
-			continue;
-		}
-		if byte.is_ascii_alphabetic() || byte == b'_' {
-			let start = index;
-			index += 1;
-			while index < bytes.len()
-				&& (bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'_' | b'$'))
-			{
-				index += 1;
-			}
-			tokens.push(String::from_utf8_lossy(&bytes[start..index]).to_ascii_lowercase());
-			continue;
-		}
-
-		let start = index;
-		index += 1;
-		if index < bytes.len()
-			&& matches!(
-				(byte, bytes[index]),
-				(b'<', b'=')
-					| (b'>', b'=') | (b'!', b'=')
-					| (b'<', b'>') | (b'=', b'=')
-					| (b'|', b'|') | (b'-', b'>')
-			) {
-			index += 1;
-		}
-		tokens.push(String::from_utf8_lossy(&bytes[start..index]).into_owned());
-	}
-	tokens
-}
-
-fn skip_numeric_literal(bytes: &[u8], mut index: usize) -> usize {
-	if bytes.get(index) == Some(&b'0') && matches!(bytes.get(index + 1), Some(b'x' | b'X')) {
-		index += 2;
-		while index < bytes.len() && (bytes[index].is_ascii_hexdigit() || bytes[index] == b'_') {
-			index += 1;
-		}
-		return index;
-	}
-
-	while index < bytes.len() && (bytes[index].is_ascii_digit() || bytes[index] == b'_') {
-		index += 1;
-	}
-	if bytes.get(index) == Some(&b'.') {
-		index += 1;
-		while index < bytes.len() && (bytes[index].is_ascii_digit() || bytes[index] == b'_') {
-			index += 1;
-		}
-	}
-	if matches!(bytes.get(index), Some(b'e' | b'E')) {
-		let exponent = index;
-		index += 1;
-		if matches!(bytes.get(index), Some(b'+' | b'-')) {
-			index += 1;
-		}
-		let digits = index;
-		while index < bytes.len() && (bytes[index].is_ascii_digit() || bytes[index] == b'_') {
-			index += 1;
-		}
-		if index == digits {
-			index = exponent;
-		}
-	}
-	index
-}
-
-fn skip_quoted(bytes: &[u8], mut index: usize, end: u8, escape: u8) -> usize {
-	index += 1;
-	while index < bytes.len() {
-		if bytes[index] == end {
-			if bytes.get(index + 1) == Some(&escape) {
-				index += 2;
-				continue;
-			}
-			return index + 1;
-		}
-		index += 1;
-	}
-	index
 }
 
 #[cfg(test)]
@@ -476,48 +252,42 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn literals_comments_and_formatting_share_a_fingerprint() {
+	fn fingerprints_exact_query_text() {
 		let state = SqliteProfilingState::default();
 		let first = state
-			.statement_fingerprint("SELECT * FROM orders WHERE id = 1 AND note = 'secret'")
+			.statement_fingerprint("SELECT * FROM orders WHERE id = ?")
 			.unwrap();
 		let second = state
-			.statement_fingerprint(
-				" -- comment\n select * from orders where id=99 and note='other'",
-			)
+			.statement_fingerprint("SELECT * FROM orders WHERE id = ?")
 			.unwrap();
+		let differently_formatted = state
+			.statement_fingerprint("select * from orders where id=?")
+			.unwrap();
+
 		assert_eq!(first.display, second.display);
-		assert!(!first.normalized_sql.contains("secret"));
-		assert!(!second.normalized_sql.contains("other"));
+		assert_ne!(first.display, differently_formatted.display);
+		assert!(first.display.starts_with("select-"));
 	}
 
 	#[test]
-	fn cte_uses_the_underlying_statement_class() {
+	fn classification_uses_only_the_first_standard_keyword() {
 		let state = SqliteProfilingState::default();
-		let fingerprint = state
-			.statement_fingerprint(
-				"WITH ids AS (SELECT id FROM jobs) UPDATE jobs SET done=1 WHERE id IN (SELECT id FROM ids)",
-			)
-			.unwrap();
-		assert!(fingerprint.display.starts_with("update-"));
-	}
-
-	#[test]
-	fn transaction_control_is_not_profiled() {
-		let state = SqliteProfilingState::default();
-		assert!(state.statement_fingerprint("BEGIN").is_none());
-		assert!(state.statement_fingerprint("ROLLBACK").is_none());
-	}
-
-	#[test]
-	fn numeric_literals_do_not_consume_arithmetic_operators() {
-		let tokens = tokenize("SELECT 1-2, 3+4, 5e-2, 0x10");
-		assert_eq!(
-			tokens,
-			[
-				"select", "?", "-", "?", ",", "?", "+", "?", ",", "?", ",", "?"
-			]
+		assert!(
+			state
+				.statement_fingerprint("UPDATE jobs SET done = 1")
+				.unwrap()
+				.display
+				.starts_with("update-")
 		);
+		assert!(
+			state
+				.statement_fingerprint("WITH jobs AS (SELECT 1) SELECT * FROM jobs")
+				.unwrap()
+				.display
+				.starts_with("other-")
+		);
+		assert!(state.statement_fingerprint("  \n\t").is_none());
+		assert!(state.statement_fingerprint("BEGIN").is_none());
 	}
 
 	#[test]
@@ -548,36 +318,5 @@ mod tests {
 		assert_ne!(first.shape_fingerprint(), second.shape_fingerprint());
 		assert_eq!(second.omitted_statement_fingerprints, 1);
 		assert!(std::mem::size_of::<TransactionProfile>() < 1024);
-	}
-
-	#[test]
-	fn oversized_sql_uses_bounded_transaction_shape_details() {
-		let state = SqliteProfilingState::new(SqliteProfilingConfig {
-			max_sql_bytes_to_normalize: 4,
-			..Default::default()
-		});
-		let fingerprint = state.statement_fingerprint("SELECT 1").unwrap();
-		assert_eq!(fingerprint.display, "other");
-
-		let observation = StatementObservation {
-			fingerprint,
-			total_ns: 1,
-			transaction_wait_ns: 0,
-			profile: Default::default(),
-		};
-		let mut transaction = TransactionProfile::new(
-			Some("oversized-sql".to_owned()),
-			crate::time::Instant::now(),
-			1,
-		);
-		transaction.record_statement(&observation);
-
-		assert_eq!(
-			transaction.statement_fingerprint_hashes[0]
-				.as_ref()
-				.unwrap()
-				.get(..5),
-			Some(b"other".as_slice())
-		);
 	}
 }

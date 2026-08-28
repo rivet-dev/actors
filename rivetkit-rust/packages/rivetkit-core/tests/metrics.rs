@@ -583,13 +583,16 @@ mod moved_tests {
 			.expect("row should be inserted");
 		}
 		let first = db
-			.query("SELECT value FROM items WHERE id = 1", None)
+			.query(
+				"SELECT value FROM items WHERE id = ?",
+				Some(vec![crate::BindParam::Integer(1)]),
+			)
 			.await
 			.expect("first query should execute");
 		let second = db
 			.query(
-				" select value from items where id=2 -- different literal",
-				None,
+				"SELECT value FROM items WHERE id = ?",
+				Some(vec![crate::BindParam::Integer(2)]),
 			)
 			.await
 			.expect("second query should execute");
@@ -645,7 +648,10 @@ mod moved_tests {
 			},
 		);
 		let cold_result = reopened
-			.query("SELECT value FROM items WHERE id = 220", None)
+			.query(
+				"SELECT value FROM items WHERE id = ?",
+				Some(vec![crate::BindParam::Integer(220)]),
+			)
 			.await
 			.expect("cold query should cross the VFS transport");
 		assert_eq!(cold_result.rows.len(), 1);
@@ -661,8 +667,9 @@ mod moved_tests {
 					&& line.contains(&format!("actor_name=\"{actor_name}\""))
 					&& line.contains("type=\"statement\"")
 					&& line.contains("fingerprint=\"select-")
+					&& line.ends_with(" 2")
 			}),
-			"repeated literal variants should render under one select fingerprint:\n{rendered}"
+			"repeated executions of one query should render twice under one admitted select fingerprint:\n{rendered}"
 		);
 		assert!(
 			rendered.lines().any(|line| {

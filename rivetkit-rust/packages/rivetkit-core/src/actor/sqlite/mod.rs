@@ -474,7 +474,7 @@ impl SqliteDb {
 		}
 		let fingerprint = self.profiling.statement_fingerprint(sql)?;
 		let observation = profiling::StatementObservation {
-			fingerprint: Arc::clone(&fingerprint),
+			fingerprint,
 			total_ns: duration_ns(started_at.elapsed()),
 			transaction_wait_ns: duration_ns(transaction_wait),
 			profile: profile.unwrap_or_default(),
@@ -482,7 +482,7 @@ impl SqliteDb {
 		if let Some(metrics) = &self.vfs_metrics {
 			let metric = depot_client::vfs::SqliteOperationMetric {
 				operation_type: "statement",
-				fingerprint: fingerprint.display.clone(),
+				fingerprint: observation.fingerprint.display.clone(),
 				fingerprint_source: "query",
 				transaction_mode,
 				storage_transport: "proxy",
@@ -493,13 +493,13 @@ impl SqliteDb {
 				profile: observation.profile.clone(),
 			};
 			if metrics.observe_operation_profile(&metric)
-				&& self.profiling.mark_cataloged(&fingerprint.display)
+				&& self.profiling.mark_cataloged(&metric.fingerprint)
 			{
 				metrics.record_fingerprint_catalog(
 					"statement",
-					&fingerprint.display,
-					&fingerprint.normalized_sql,
-					1,
+					&metric.fingerprint,
+					sql,
+					profiling::FINGERPRINT_FORMAT_VERSION,
 				);
 			}
 			metrics.emit_operation_diagnostic_event(

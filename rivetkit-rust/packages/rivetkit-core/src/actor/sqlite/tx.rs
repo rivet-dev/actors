@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 use crate::runtime::RuntimeSpawner;
 
 #[cfg(feature = "sqlite-local")]
-use super::profiling::TransactionProfile;
+use super::profiling::{FINGERPRINT_FORMAT_VERSION, TransactionProfile};
 use super::{BindParam, ExecuteResult, QueryResult, SqliteDb, report_sqlite_worker_fatal};
 
 pub const DEFAULT_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(60);
@@ -948,7 +948,7 @@ impl SqliteDb {
 						"transaction",
 						&metric.fingerprint,
 						profile.name.as_deref().unwrap_or(&metric.fingerprint),
-						1,
+						FINGERPRINT_FORMAT_VERSION,
 					);
 				}
 				metrics.emit_transaction_diagnostic_event(

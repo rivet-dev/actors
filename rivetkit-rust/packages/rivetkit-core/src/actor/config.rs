@@ -67,10 +67,7 @@ pub struct SqliteProfilingConfig {
 	pub max_prometheus_series: usize,
 	pub max_statements_per_transaction_trace: usize,
 	pub max_get_pages_requests_per_trace: usize,
-	pub max_sql_bytes_to_normalize: usize,
-	pub max_catalog_sql_shape_bytes: usize,
 	pub max_transaction_name_bytes: usize,
-	pub fingerprint_computation_cache_entries: usize,
 	pub slow_operation_threshold_ms: u64,
 	pub baseline_sample_rate: f64,
 	pub max_diagnostic_events_per_minute: usize,
@@ -86,10 +83,7 @@ impl Default for SqliteProfilingConfig {
 			max_prometheus_series: 25_000,
 			max_statements_per_transaction_trace: 32,
 			max_get_pages_requests_per_trace: 16,
-			max_sql_bytes_to_normalize: 65_536,
-			max_catalog_sql_shape_bytes: 4_096,
 			max_transaction_name_bytes: 128,
-			fingerprint_computation_cache_entries: 1_024,
 			slow_operation_threshold_ms: 10,
 			baseline_sample_rate: 0.001,
 			max_diagnostic_events_per_minute: 120,
@@ -111,10 +105,7 @@ pub struct SqliteProfilingConfigInput {
 	pub max_prometheus_series: Option<u32>,
 	pub max_statements_per_transaction_trace: Option<u32>,
 	pub max_get_pages_requests_per_trace: Option<u32>,
-	pub max_sql_bytes_to_normalize: Option<u32>,
-	pub max_catalog_sql_shape_bytes: Option<u32>,
 	pub max_transaction_name_bytes: Option<u32>,
-	pub fingerprint_computation_cache_entries: Option<u32>,
 	pub slow_operation_threshold_ms: Option<u32>,
 	pub baseline_sample_rate: Option<f64>,
 	pub max_diagnostic_events_per_minute: Option<u32>,
@@ -139,10 +130,7 @@ impl SqliteProfilingConfig {
 		set_usize!(max_prometheus_series);
 		set_usize!(max_statements_per_transaction_trace);
 		set_usize!(max_get_pages_requests_per_trace);
-		set_usize!(max_sql_bytes_to_normalize);
-		set_usize!(max_catalog_sql_shape_bytes);
 		set_usize!(max_transaction_name_bytes);
-		set_usize!(fingerprint_computation_cache_entries);
 		if let Some(value) = input.slow_operation_threshold_ms {
 			config.slow_operation_threshold_ms = u64::from(value);
 		}
