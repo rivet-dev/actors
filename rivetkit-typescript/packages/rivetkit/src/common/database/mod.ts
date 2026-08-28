@@ -20,6 +20,12 @@ export type { RawAccess } from "./config";
 export interface DatabaseFactoryConfig {
 	onMigrate?: (db: RawAccess) => Promise<void> | void;
 	warnOnManualTransactions?: boolean;
+	/**
+	 * SQLite profiling configuration.
+	 *
+	 * @experimental This entire configuration surface is experimental and
+	 * subject to change without notice.
+	 */
 	profiling?: SqliteProfilingOptions;
 }
 

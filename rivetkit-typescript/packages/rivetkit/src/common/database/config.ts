@@ -35,6 +35,12 @@ export interface SqliteTransactionOptions {
 	timeout?: number;
 }
 
+/**
+ * SQLite profiling configuration.
+ *
+ * @experimental This entire configuration surface is experimental and subject
+ * to change without notice.
+ */
 export interface SqliteProfilingOptions {
 	enabled?: boolean;
 	maxTrackedStatementFingerprints?: number;
@@ -148,7 +154,12 @@ export interface DatabaseProviderContext {
 }
 
 export type DatabaseProvider<DB extends RawAccess> = {
-	/** Local SQLite profiling controls consumed by the actor runtime. */
+	/**
+	 * Local SQLite profiling controls consumed by the actor runtime.
+	 *
+	 * @experimental This entire configuration surface is experimental and
+	 * subject to change without notice.
+	 */
 	sqliteProfiling?: SqliteProfilingOptions;
 	/**
 	 * Creates a new database client for the actor.

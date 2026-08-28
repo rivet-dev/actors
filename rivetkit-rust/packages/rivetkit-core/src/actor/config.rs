@@ -55,6 +55,10 @@ pub struct ActionDefinition {
 	pub name: String,
 }
 
+/// Experimental SQLite profiling configuration.
+///
+/// This entire configuration surface, including every field, is subject to
+/// change without notice.
 #[derive(Clone, Debug)]
 pub struct SqliteProfilingConfig {
 	pub enabled: bool,
@@ -94,6 +98,11 @@ impl Default for SqliteProfilingConfig {
 	}
 }
 
+/// Sparse experimental SQLite profiling configuration used at runtime
+/// boundaries.
+///
+/// This entire configuration surface, including every field, is subject to
+/// change without notice.
 #[derive(Clone, Debug, Default)]
 pub struct SqliteProfilingConfigInput {
 	pub enabled: Option<bool>,

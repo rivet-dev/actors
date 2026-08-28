@@ -175,6 +175,8 @@ pub struct WasmActionDefinition {
 	pub name: String,
 }
 
+/// Experimental SQLite profiling configuration. This entire configuration
+/// surface is subject to change without notice.
 #[derive(Clone, Default, serde::Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct WasmSqliteProfilingConfig {

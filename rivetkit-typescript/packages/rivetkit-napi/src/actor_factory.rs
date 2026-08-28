@@ -78,6 +78,8 @@ pub struct JsInspectorTabEntry {
 	pub hidden: Option<bool>,
 }
 
+/// Experimental SQLite profiling configuration. This entire configuration
+/// surface is subject to change without notice.
 #[napi(object)]
 #[derive(Clone, Default)]
 pub struct JsSqliteProfilingConfig {
