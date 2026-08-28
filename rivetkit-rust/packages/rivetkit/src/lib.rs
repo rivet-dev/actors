@@ -6,6 +6,8 @@ pub mod persist;
 pub mod prelude;
 pub mod queue;
 pub mod registry;
+#[cfg(feature = "sqlite-local")]
+pub mod sqlite;
 pub mod start;
 pub mod test;
 pub mod typed_client;
@@ -23,6 +25,8 @@ pub use crate::{
 	start::{Events, Hibernated, Input, Snapshot, Start, run_actor},
 	typed_client::{IntoActorKey, TypedActorConnection, TypedActorHandle, TypedClientExt},
 };
+#[cfg(feature = "sqlite-local")]
+pub use crate::sqlite::{SqliteDbExt, SqliteTransactionOptions};
 pub use rivetkit_client as client;
 pub use rivetkit_core::actor::state::OnStateChangeGuard;
 pub use rivetkit_core::metrics_endpoint::RenderedMetrics;

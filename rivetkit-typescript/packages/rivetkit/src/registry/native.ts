@@ -33,7 +33,10 @@ import {
 } from "@/client/client";
 import { convertRegistryConfigToClientConfig } from "@/client/config";
 import { HEADER_CONN_PARAMS } from "@/common/actor-router-consts";
-import type { AnyDatabaseProvider } from "@/common/database/config";
+import type {
+	AnyDatabaseProvider,
+	SqliteProfilingOptions,
+} from "@/common/database/config";
 import { wrapJsNativeDatabase } from "@/common/database/native-database";
 import { assertJsonCompatValue, type JsonCompatValue } from "@/common/encoding";
 import { decodeWorkflowHistoryTransport } from "@/common/inspector-transport";
@@ -3293,10 +3296,15 @@ function buildActorConfig(
 	const options = (config.options ?? {}) as Record<string, unknown>;
 	const canHibernate = options.canHibernateWebSocket;
 
+	const sqliteProfiling = (
+		config.db as { sqliteProfiling?: SqliteProfilingOptions } | undefined
+	)?.sqliteProfiling;
+
 	return {
 		name: options.name as string | undefined,
 		icon: options.icon as string | undefined,
 		hasDatabase: config.db !== undefined,
+		sqliteProfiling,
 		remoteSqlite:
 			config.db !== undefined &&
 			sqliteBackendForConfig(registryConfig) === "remote",

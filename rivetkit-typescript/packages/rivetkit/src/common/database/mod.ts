@@ -1,10 +1,19 @@
-import type { DatabaseProvider, RawAccess, SqliteDatabase } from "./config";
+import type {
+	DatabaseProvider,
+	RawAccess,
+	SqliteDatabase,
+	SqliteProfilingOptions,
+} from "./config";
 import { isSqliteBindingObject, toSqliteBindings } from "./shared";
 
 export type { RawAccess } from "./config";
 
-interface DatabaseFactoryConfig {
+export interface DatabaseFactoryConfig {
 	onMigrate?: (db: RawAccess) => Promise<void> | void;
+	/**
+	 * @experimental This entire configuration surface is subject to change.
+	 */
+	profiling?: SqliteProfilingOptions;
 }
 
 function hasMultipleStatements(query: string): boolean {
@@ -14,8 +23,10 @@ function hasMultipleStatements(query: string): boolean {
 
 export function db({
 	onMigrate,
+	profiling,
 }: DatabaseFactoryConfig = {}): DatabaseProvider<RawAccess> {
 	return {
+		sqliteProfiling: profiling,
 		createClient: async (ctx) => {
 			const nativeDatabaseProvider = ctx.nativeDatabaseProvider;
 			if (!nativeDatabaseProvider) {

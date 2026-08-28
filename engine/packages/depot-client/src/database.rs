@@ -13,7 +13,7 @@ use crate::{
 		SqliteVfsMetricsSnapshot, VfsConfig, VfsPreloadHintSnapshot,
 		fetch_initial_pages_for_registration,
 	},
-	worker::{SqliteWorkerFatalError, SqliteWorkerHandle},
+	worker::{SqliteWorkerFatalError, SqliteWorkerHandle, SqliteWorkerResult},
 };
 
 #[derive(Clone)]
@@ -220,6 +220,11 @@ impl NativeDatabaseHandle {
 		self.map_worker_result(self.worker.exec(sql).await)
 	}
 
+	pub async fn exec_profiled(&self, sql: String) -> Result<SqliteWorkerResult<QueryResult>> {
+		self.check_fatal_error()?;
+		self.map_worker_result(self.worker.exec_profiled(sql).await)
+	}
+
 	pub async fn query(&self, sql: String, params: Option<Vec<BindParam>>) -> Result<QueryResult> {
 		self.execute(sql, params).await.map(|result| QueryResult {
 			columns: result.columns,
@@ -240,6 +245,15 @@ impl NativeDatabaseHandle {
 	) -> Result<ExecuteResult> {
 		self.check_fatal_error()?;
 		self.map_worker_result(self.worker.execute(sql, params).await)
+	}
+
+	pub async fn execute_profiled(
+		&self,
+		sql: String,
+		params: Option<Vec<BindParam>>,
+	) -> Result<SqliteWorkerResult<ExecuteResult>> {
+		self.check_fatal_error()?;
+		self.map_worker_result(self.worker.execute_profiled(sql, params).await)
 	}
 
 	pub async fn close(&self) -> Result<()> {

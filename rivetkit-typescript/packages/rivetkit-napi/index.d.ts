@@ -67,11 +67,29 @@ export interface JsInspectorTabEntry {
   /** Set to true for HideBuiltin entries. */
   hidden?: boolean
 }
+/**
+ * Experimental SQLite profiling configuration. This entire configuration
+ * surface is subject to change without notice.
+ */
+export interface JsSqliteProfilingConfig {
+  enabled?: boolean
+  maxTrackedStatementFingerprints?: number
+  maxTrackedTransactionFingerprints?: number
+  maxPrometheusSeries?: number
+  maxStatementsPerTransactionTrace?: number
+  maxGetPagesRequestsPerTrace?: number
+  maxTransactionNameBytes?: number
+  slowOperationThresholdMs?: number
+  baselineSampleRate?: number
+  maxDiagnosticEventsPerMinute?: number
+  diagnosticEventQueueCapacity?: number
+}
 export interface JsActorConfig {
   name?: string
   icon?: string
   hasDatabase?: boolean
   remoteSqlite?: boolean
+  sqliteProfiling?: JsSqliteProfilingConfig
   hasState?: boolean
   canHibernateWebsocket?: boolean
   stateSaveIntervalMs?: number

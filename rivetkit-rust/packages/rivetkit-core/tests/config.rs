@@ -3,7 +3,7 @@ use super::*;
 mod moved_tests {
 	use std::time::Duration;
 
-	use super::{ActorConfig, ActorConfigInput};
+	use super::{ActorConfig, ActorConfigInput, SqliteProfilingConfig, SqliteProfilingConfigInput};
 
 	#[test]
 	fn actor_config_from_input_applies_overrides() {
@@ -85,6 +85,49 @@ mod moved_tests {
 			super::CanHibernateWebSocket::Bool(false),
 		));
 		assert!(config.overrides.is_none());
+		assert!(config.sqlite_profiling.enabled);
+		assert_eq!(
+			config.sqlite_profiling.max_tracked_statement_fingerprints,
+			128
+		);
+		assert_eq!(
+			config.sqlite_profiling.max_tracked_transaction_fingerprints,
+			8
+		);
+		assert_eq!(config.sqlite_profiling.max_prometheus_series, 25_000);
+		assert_eq!(config.sqlite_profiling.max_get_pages_requests_per_trace, 16);
+		assert_eq!(config.sqlite_profiling.slow_operation_threshold_ms, 10);
+		assert_eq!(config.sqlite_profiling.baseline_sample_rate, 0.001);
+	}
+
+	#[test]
+	fn actor_config_applies_and_validates_sqlite_profiling_overrides() {
+		let config = ActorConfig::from_input(ActorConfigInput {
+			sqlite_profiling: Some(SqliteProfilingConfigInput {
+				enabled: Some(false),
+				max_tracked_statement_fingerprints: Some(7),
+				baseline_sample_rate: Some(0.25),
+				..Default::default()
+			}),
+			..Default::default()
+		});
+
+		assert!(!config.sqlite_profiling.enabled);
+		assert_eq!(
+			config.sqlite_profiling.max_tracked_statement_fingerprints,
+			7
+		);
+		assert_eq!(config.sqlite_profiling.baseline_sample_rate, 0.25);
+		config.validate().expect("profiling config should be valid");
+
+		let invalid = ActorConfig {
+			sqlite_profiling: SqliteProfilingConfig {
+				baseline_sample_rate: 1.5,
+				..Default::default()
+			},
+			..Default::default()
+		};
+		assert!(invalid.validate().is_err());
 	}
 
 	#[test]
