@@ -474,118 +474,94 @@ impl SqliteOpenPhase {
 }
 
 pub trait SqliteVfsMetrics: Send + Sync {
-	fn profiling_enabled(&self) -> bool {
-		false
-	}
+	fn profiling_enabled(&self) -> bool;
 
-	fn max_profiled_get_pages_requests(&self) -> usize {
-		0
-	}
+	fn max_profiled_get_pages_requests(&self) -> usize;
 
 	/// Records an operation and returns whether its original fingerprint was
 	/// admitted instead of being routed to the shared `other` series.
-	fn observe_operation_profile(&self, _profile: &SqliteOperationMetric) -> bool {
-		false
-	}
+	fn observe_operation_profile(&self, profile: &SqliteOperationMetric) -> bool;
 
 	/// Records a transaction and returns whether its original fingerprint was
 	/// admitted instead of being routed to the shared `other` series.
-	fn observe_transaction_profile(&self, _profile: &SqliteTransactionMetric) -> bool {
-		false
-	}
+	fn observe_transaction_profile(&self, profile: &SqliteTransactionMetric) -> bool;
 
 	fn emit_operation_diagnostic_event(
 		&self,
-		_actor_id: &str,
-		_generation: Option<u64>,
-		_profile: &SqliteOperationMetric,
-	) {
-	}
+		actor_id: &str,
+		generation: Option<u64>,
+		profile: &SqliteOperationMetric,
+	);
 
 	fn emit_transaction_diagnostic_event(
 		&self,
-		_actor_id: &str,
-		_generation: Option<u64>,
-		_profile: &SqliteTransactionMetric,
-	) {
-	}
+		actor_id: &str,
+		generation: Option<u64>,
+		profile: &SqliteTransactionMetric,
+	);
 
 	fn record_fingerprint_catalog(
 		&self,
-		_operation_type: &'static str,
-		_fingerprint: &str,
-		_identity: &str,
-		_format_version: u8,
-	) {
-	}
+		operation_type: &'static str,
+		fingerprint: &str,
+		identity: &str,
+		format_version: u8,
+	);
 
-	fn record_resolve_pages(&self, _requested_pages: u64) {}
+	fn record_resolve_pages(&self, requested_pages: u64);
 
-	fn record_resolve_cache_hits(&self, _pages: u64) {}
+	fn record_resolve_cache_hits(&self, pages: u64);
 
-	fn record_resolve_cache_misses(&self, _pages: u64) {}
+	fn record_resolve_cache_misses(&self, pages: u64);
 
-	fn record_get_pages_request(&self, _pages: u64, _prefetch_pages: u64, _page_size: u64) {}
+	fn record_get_pages_request(&self, pages: u64, prefetch_pages: u64, page_size: u64);
 
-	fn observe_get_pages_duration(&self, _duration_ns: u64) {}
+	fn observe_get_pages_duration(&self, duration_ns: u64);
 
-	fn observe_open_phase(
-		&self,
-		_phase: SqliteOpenPhase,
-		_outcome: &'static str,
-		_duration_ns: u64,
-	) {
-	}
+	fn observe_open_phase(&self, phase: SqliteOpenPhase, outcome: &'static str, duration_ns: u64);
 
-	fn record_startup_preload_pages(&self, _kind: &'static str, _pages: u64) {}
+	fn record_startup_preload_pages(&self, kind: &'static str, pages: u64);
 
-	fn record_commit(&self) {}
+	fn record_commit(&self);
 
 	fn observe_commit_phases(
 		&self,
-		_request_build_ns: u64,
-		_serialize_ns: u64,
-		_transport_ns: u64,
-		_state_update_ns: u64,
-		_total_ns: u64,
-	) {
-	}
+		request_build_ns: u64,
+		serialize_ns: u64,
+		transport_ns: u64,
+		state_update_ns: u64,
+		total_ns: u64,
+	);
 
-	fn set_worker_queue_depth(&self, _depth: u64) {}
+	fn set_worker_queue_depth(&self, depth: u64);
 
-	fn set_worker_active(&self, _active: bool) {}
+	fn set_worker_active(&self, active: bool);
 
-	fn set_worker_inflight(&self, _active: bool) {}
+	fn set_worker_inflight(&self, active: bool);
 
-	fn set_coordinator_queue_depth(&self, _depth: u64) {}
+	fn set_coordinator_queue_depth(&self, depth: u64);
 
-	fn record_worker_queue_overload(&self) {}
+	fn record_worker_queue_overload(&self);
 
 	fn observe_worker_command_duration(
 		&self,
-		_operation: &'static str,
-		_in_tx: bool,
-		_stmt_kind: &'static str,
-		_duration_ns: u64,
-	) {
-	}
+		operation: &'static str,
+		in_tx: bool,
+		stmt_kind: &'static str,
+		duration_ns: u64,
+	);
 
-	fn observe_transaction_round_trips(
-		&self,
-		_get_pages_round_trips: u64,
-		_commit_round_trips: u64,
-	) {
-	}
+	fn observe_transaction_round_trips(&self, get_pages_round_trips: u64, commit_round_trips: u64);
 
-	fn record_worker_command_error(&self, _operation: &'static str, _code: &'static str) {}
+	fn record_worker_command_error(&self, operation: &'static str, code: &'static str);
 
-	fn observe_worker_close_duration(&self, _duration_ns: u64) {}
+	fn observe_worker_close_duration(&self, duration_ns: u64);
 
-	fn record_worker_close_timeout(&self) {}
+	fn record_worker_close_timeout(&self);
 
-	fn record_worker_crash(&self) {}
+	fn record_worker_crash(&self);
 
-	fn record_worker_unclean_close(&self) {}
+	fn record_worker_unclean_close(&self);
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -628,8 +604,9 @@ pub struct VfsContext {
 	pub commit_transport_ns: AtomicU64,
 	pub commit_state_update_ns: AtomicU64,
 	pub commit_duration_ns_total: AtomicU64,
-	// Forced-sync: VFS callbacks and the native worker are synchronous. The
-	// worker owns this context and never holds the guard across an async point.
+	// SQLite invokes VFS callbacks synchronously, so this profiling context cannot
+	// use an async mutex. The native worker releases each guard before returning
+	// to async code.
 	operation_profile_active: AtomicBool,
 	operation_profile: Mutex<Option<SqliteOperationProfile>>,
 	operation_prefetch_unused_start: AtomicU64,

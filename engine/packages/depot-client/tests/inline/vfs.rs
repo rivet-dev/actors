@@ -577,9 +577,88 @@ struct WorkerTestMetrics {
 }
 
 impl SqliteVfsMetrics for WorkerTestMetrics {
+	fn profiling_enabled(&self) -> bool {
+		false
+	}
+
+	fn max_profiled_get_pages_requests(&self) -> usize {
+		0
+	}
+
+	fn observe_operation_profile(&self, _profile: &SqliteOperationMetric) -> bool {
+		false
+	}
+
+	fn observe_transaction_profile(&self, _profile: &SqliteTransactionMetric) -> bool {
+		false
+	}
+
+	fn emit_operation_diagnostic_event(
+		&self,
+		_actor_id: &str,
+		_generation: Option<u64>,
+		_profile: &SqliteOperationMetric,
+	) {
+	}
+
+	fn emit_transaction_diagnostic_event(
+		&self,
+		_actor_id: &str,
+		_generation: Option<u64>,
+		_profile: &SqliteTransactionMetric,
+	) {
+	}
+
+	fn record_fingerprint_catalog(
+		&self,
+		_operation_type: &'static str,
+		_fingerprint: &str,
+		_identity: &str,
+		_format_version: u8,
+	) {
+	}
+
+	fn record_resolve_pages(&self, _requested_pages: u64) {}
+
+	fn record_resolve_cache_hits(&self, _pages: u64) {}
+
+	fn record_resolve_cache_misses(&self, _pages: u64) {}
+
+	fn record_get_pages_request(&self, _pages: u64, _prefetch_pages: u64, _page_size: u64) {}
+
+	fn observe_get_pages_duration(&self, _duration_ns: u64) {}
+
+	fn observe_open_phase(
+		&self,
+		_phase: SqliteOpenPhase,
+		_outcome: &'static str,
+		_duration_ns: u64,
+	) {
+	}
+
+	fn record_startup_preload_pages(&self, _kind: &'static str, _pages: u64) {}
+
+	fn record_commit(&self) {}
+
+	fn observe_commit_phases(
+		&self,
+		_request_build_ns: u64,
+		_serialize_ns: u64,
+		_transport_ns: u64,
+		_state_update_ns: u64,
+		_total_ns: u64,
+	) {
+	}
+
 	fn set_worker_queue_depth(&self, depth: u64) {
 		self.queue_depth.store(depth, Ordering::Release);
 	}
+
+	fn set_worker_active(&self, _active: bool) {}
+
+	fn set_worker_inflight(&self, _active: bool) {}
+
+	fn set_coordinator_queue_depth(&self, _depth: u64) {}
 
 	fn record_worker_queue_overload(&self) {
 		self.overloads.fetch_add(1, Ordering::AcqRel);
@@ -595,6 +674,13 @@ impl SqliteVfsMetrics for WorkerTestMetrics {
 		self.command_durations.fetch_add(1, Ordering::AcqRel);
 	}
 
+	fn observe_transaction_round_trips(
+		&self,
+		_get_pages_round_trips: u64,
+		_commit_round_trips: u64,
+	) {
+	}
+
 	fn record_worker_command_error(&self, _operation: &'static str, _code: &'static str) {
 		self.command_errors.fetch_add(1, Ordering::AcqRel);
 	}
@@ -602,6 +688,8 @@ impl SqliteVfsMetrics for WorkerTestMetrics {
 	fn observe_worker_close_duration(&self, _duration_ns: u64) {
 		self.close_durations.fetch_add(1, Ordering::AcqRel);
 	}
+
+	fn record_worker_close_timeout(&self) {}
 
 	fn record_worker_crash(&self) {
 		self.crashes.fetch_add(1, Ordering::AcqRel);
