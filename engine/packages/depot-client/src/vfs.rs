@@ -313,7 +313,6 @@ pub struct SqliteGetPagesProfile {
 pub struct SqliteOperationProfile {
 	pub worker_wait_ns: u64,
 	pub sqlite_execution_ns: u64,
-	pub result_marshalling_ns: u64,
 	pub storage_ns: u64,
 	pub bind_count: u64,
 	pub bind_logical_bytes: u64,
@@ -621,6 +620,7 @@ struct VfsState {
 	page_cache: Cache<u32, Vec<u8>>,
 	committed_page_cache: Cache<u32, Vec<u8>>,
 	protected_page_cache: Arc<SccHashMap<u32, Vec<u8>>>,
+	profiling_enabled: bool,
 	prefetched_pages: Arc<scc::HashSet<u32>>,
 	prefetch_unused_total: Arc<AtomicU64>,
 	write_buffer: WriteBuffer,
@@ -1129,7 +1129,7 @@ fn push_coalesced_range(ranges: &mut VecDeque<VfsPreloadHintRange>, range: VfsPr
 }
 
 impl VfsState {
-	fn new(config: &VfsConfig) -> Self {
+	fn new(config: &VfsConfig, profiling_enabled: bool) -> Self {
 		let page_cache = build_page_cache(config);
 		let committed_page_cache = build_page_cache(config);
 		let mut state = Self {
@@ -1139,6 +1139,7 @@ impl VfsState {
 			page_cache,
 			committed_page_cache,
 			protected_page_cache: Arc::new(SccHashMap::new()),
+			profiling_enabled,
 			prefetched_pages: Arc::new(scc::HashSet::new()),
 			prefetch_unused_total: Arc::new(AtomicU64::new(0)),
 			write_buffer: WriteBuffer::default(),
@@ -1170,6 +1171,7 @@ impl VfsState {
 			&self.protected_page_cache,
 			&self.prefetched_pages,
 			&self.prefetch_unused_total,
+			self.profiling_enabled,
 			kind,
 			pgno,
 			bytes,
@@ -1189,7 +1191,8 @@ impl VfsState {
 			})
 			.or_else(|| self.page_cache.get(&pgno));
 		bytes.map(|bytes| {
-			let was_prefetched = self.prefetched_pages.remove_sync(&pgno).is_some();
+			let was_prefetched =
+				self.profiling_enabled && self.prefetched_pages.remove_sync(&pgno).is_some();
 			(bytes, was_prefetched)
 		})
 	}
@@ -1308,9 +1311,11 @@ impl VfsState {
 	}
 
 	fn invalidate_page_cache(&mut self) {
-		self.prefetch_unused_total
-			.fetch_add(self.prefetched_pages.len() as u64, Ordering::Relaxed);
-		self.prefetched_pages.clear_sync();
+		if self.profiling_enabled {
+			self.prefetch_unused_total
+				.fetch_add(self.prefetched_pages.len() as u64, Ordering::Relaxed);
+			self.prefetched_pages.clear_sync();
+		}
 		self.page_cache.invalidate_all();
 		self.committed_page_cache.invalidate_all();
 		self.protected_page_cache.clear_sync();
@@ -1332,11 +1337,16 @@ fn cache_page(
 	_protected_page_cache: &SccHashMap<u32, Vec<u8>>,
 	prefetched_pages: &scc::HashSet<u32>,
 	prefetch_unused_total: &AtomicU64,
+	profiling_enabled: bool,
 	kind: PageCacheInsertKind,
 	pgno: u32,
 	bytes: Vec<u8>,
 ) {
 	if !should_cache_page(config, kind, pgno) {
+		return;
+	}
+	if !profiling_enabled {
+		page_cache.insert(pgno, bytes);
 		return;
 	}
 	if kind == PageCacheInsertKind::Prefetch {
@@ -1381,7 +1391,10 @@ impl VfsContext {
 		initial_pages: impl Into<InitialPages>,
 		metrics: Option<Arc<dyn SqliteVfsMetrics>>,
 	) -> std::result::Result<Self, String> {
-		let mut state = VfsState::new(&config);
+		let profiling_enabled = metrics
+			.as_ref()
+			.is_some_and(|metrics| metrics.profiling_enabled());
+		let mut state = VfsState::new(&config, profiling_enabled);
 		let initial_pages = initial_pages.into();
 		state.head_txid = initial_pages.head_txid;
 		for (pgno, page) in initial_pages.pages {
@@ -1877,11 +1890,15 @@ impl VfsContext {
 			metrics.observe_get_pages_duration(get_pages_duration_ns);
 		}
 		let prefetch_count = to_fetch.len().saturating_sub(missing.len()) as u64;
-		let ordinal = self
-			.operation_profile
-			.lock()
-			.as_ref()
-			.map_or(1, |profile| profile.get_pages_round_trips.saturating_add(1));
+		let profile_active = self.operation_profile_active.load(Ordering::Relaxed);
+		let ordinal = if profile_active {
+			self.operation_profile
+				.lock()
+				.as_ref()
+				.map_or(1, |profile| profile.get_pages_round_trips.saturating_add(1))
+		} else {
+			1
+		};
 		let response = match response {
 			Ok(response) => response,
 			Err(err) => {
@@ -1903,45 +1920,47 @@ impl VfsContext {
 
 		match response {
 			protocol::SqliteGetPagesResponse::SqliteGetPagesOk(ok) => {
-				let requested = to_fetch.iter().copied().collect::<HashSet<_>>();
-				let mut request_profile = SqliteGetPagesProfile {
-					ordinal,
-					duration_ns: get_pages_duration_ns,
-					demand_requested: missing.len() as u64,
-					prefetch_requested: prefetch_count,
-					success: true,
-					..Default::default()
-				};
-				let mut btree_pages = 0_u64;
-				let mut non_btree_pages = 0_u64;
-				for fetched in &ok.pages {
-					if !requested.contains(&fetched.pgno) {
-						request_profile.overflow_expansion_extra =
-							request_profile.overflow_expansion_extra.saturating_add(1);
-					}
-					if let Some(bytes) = &fetched.bytes {
-						request_profile.response_present =
-							request_profile.response_present.saturating_add(1);
-						request_profile.response_bytes = request_profile
-							.response_bytes
-							.saturating_add(bytes.len() as u64);
-						match classify(fetched.pgno, bytes) {
-							PageClass::Btree => btree_pages = btree_pages.saturating_add(1),
-							PageClass::Overflow => {
-								non_btree_pages = non_btree_pages.saturating_add(1)
-							}
+				if profile_active {
+					let requested = to_fetch.iter().copied().collect::<HashSet<_>>();
+					let mut request_profile = SqliteGetPagesProfile {
+						ordinal,
+						duration_ns: get_pages_duration_ns,
+						demand_requested: missing.len() as u64,
+						prefetch_requested: prefetch_count,
+						success: true,
+						..Default::default()
+					};
+					let mut btree_pages = 0_u64;
+					let mut non_btree_pages = 0_u64;
+					for fetched in &ok.pages {
+						if !requested.contains(&fetched.pgno) {
+							request_profile.overflow_expansion_extra =
+								request_profile.overflow_expansion_extra.saturating_add(1);
 						}
-					} else {
-						request_profile.response_missing =
-							request_profile.response_missing.saturating_add(1);
+						if let Some(bytes) = &fetched.bytes {
+							request_profile.response_present =
+								request_profile.response_present.saturating_add(1);
+							request_profile.response_bytes = request_profile
+								.response_bytes
+								.saturating_add(bytes.len() as u64);
+							match classify(fetched.pgno, bytes) {
+								PageClass::Btree => btree_pages = btree_pages.saturating_add(1),
+								PageClass::Overflow => {
+									non_btree_pages = non_btree_pages.saturating_add(1)
+								}
+							}
+						} else {
+							request_profile.response_missing =
+								request_profile.response_missing.saturating_add(1);
+						}
 					}
+					self.update_operation_profile(|profile| {
+						profile.btree_pages = profile.btree_pages.saturating_add(btree_pages);
+						profile.non_btree_pages =
+							profile.non_btree_pages.saturating_add(non_btree_pages);
+						profile.push_get_pages(request_profile, self.profile_request_limit());
+					});
 				}
-				self.update_operation_profile(|profile| {
-					profile.btree_pages = profile.btree_pages.saturating_add(btree_pages);
-					profile.non_btree_pages =
-						profile.non_btree_pages.saturating_add(non_btree_pages);
-					profile.push_get_pages(request_profile, self.profile_request_limit());
-				});
 				let response_head_txid = ok.head_txid;
 				if let Some(head_txid) = response_head_txid {
 					self.state.write().head_txid = Some(head_txid);
@@ -1995,6 +2014,7 @@ impl VfsContext {
 							&protected_page_cache,
 							&prefetched_pages,
 							&prefetch_unused_total,
+							profile_active,
 							kind,
 							fetched.pgno,
 							bytes.clone(),

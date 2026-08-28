@@ -121,17 +121,24 @@ struct CoordinatorWaitGuard<'a> {
 }
 
 impl<'a> CoordinatorWaitGuard<'a> {
-	fn new(db: &'a SqliteDb) -> Self {
+	#[cfg(feature = "sqlite-local")]
+	fn new(db: &'a SqliteDb) -> Option<Self> {
+		if !db.profiling.config.enabled {
+			return None;
+		}
+		let metrics = db.vfs_metrics.as_ref()?;
 		let _depth = db
 			.transaction_coordinator
 			.waiters
 			.fetch_add(1, Ordering::AcqRel)
 			.saturating_add(1);
-		#[cfg(feature = "sqlite-local")]
-		if let Some(metrics) = &db.vfs_metrics {
-			metrics.set_coordinator_queue_depth(_depth);
-		}
-		Self { db }
+		metrics.set_coordinator_queue_depth(_depth);
+		Some(Self { db })
+	}
+
+	#[cfg(not(feature = "sqlite-local"))]
+	fn new(_db: &'a SqliteDb) -> Option<Self> {
+		None
 	}
 }
 

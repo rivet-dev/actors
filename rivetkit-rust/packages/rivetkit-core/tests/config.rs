@@ -81,13 +81,13 @@ mod moved_tests {
 		assert!(config.sqlite_profiling.enabled);
 		assert_eq!(
 			config.sqlite_profiling.max_tracked_statement_fingerprints,
-			35
+			128
 		);
 		assert_eq!(
 			config.sqlite_profiling.max_tracked_transaction_fingerprints,
 			8
 		);
-		assert_eq!(config.sqlite_profiling.max_prometheus_series, 10_000);
+		assert_eq!(config.sqlite_profiling.max_prometheus_series, 25_000);
 		assert_eq!(config.sqlite_profiling.max_get_pages_requests_per_trace, 16);
 		assert_eq!(config.sqlite_profiling.slow_operation_threshold_ms, 10);
 		assert_eq!(config.sqlite_profiling.baseline_sample_rate, 0.001);

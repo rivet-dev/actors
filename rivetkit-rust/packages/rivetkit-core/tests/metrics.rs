@@ -240,6 +240,42 @@ mod moved_tests {
 
 	#[cfg(feature = "sqlite-local")]
 	#[test]
+	fn sqlite_profile_reuses_pre_resolved_metric_handles() {
+		let actor_name = "counter-sqlite-pre-resolved-handles";
+		let first = ActorMetrics::new(actor_name);
+		let second = ActorMetrics::new(actor_name);
+
+		let first_low_card = first
+			.sqlite_low_card_handles("proxy")
+			.expect("low-cardinality handles should be admitted");
+		let second_low_card = second
+			.sqlite_low_card_handles("proxy")
+			.expect("low-cardinality handles should be reused");
+		assert!(std::ptr::eq(first_low_card, second_low_card));
+
+		let first_fingerprint = first
+			.admit_sqlite_fingerprint_tuple(
+				"statement",
+				"select-pre-resolved-handles",
+				"query",
+				"autocommit",
+				"proxy",
+			)
+			.expect("fingerprint handles should be admitted");
+		let second_fingerprint = second
+			.admit_sqlite_fingerprint_tuple(
+				"statement",
+				"select-pre-resolved-handles",
+				"query",
+				"autocommit",
+				"proxy",
+			)
+			.expect("fingerprint handles should be reused");
+		assert!(Arc::ptr_eq(&first_fingerprint, &second_fingerprint));
+	}
+
+	#[cfg(feature = "sqlite-local")]
+	#[test]
 	fn sqlite_profiling_metrics_render_statement_and_transaction_end_to_end() {
 		use depot_client::vfs::{
 			SqliteGetPagesProfile, SqliteOperationMetric, SqliteOperationProfile,

@@ -77,9 +77,9 @@ impl Default for SqliteProfilingConfig {
 	fn default() -> Self {
 		Self {
 			enabled: true,
-			max_tracked_statement_fingerprints: 35,
+			max_tracked_statement_fingerprints: 128,
 			max_tracked_transaction_fingerprints: 8,
-			max_prometheus_series: 10_000,
+			max_prometheus_series: 25_000,
 			max_statements_per_transaction_trace: 32,
 			max_get_pages_requests_per_trace: 16,
 			max_sql_bytes_to_normalize: 65_536,

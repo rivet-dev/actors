@@ -320,7 +320,7 @@ fn vfs_staging_cache_retains_only_speculative_pages() {
 		staging_cache_ttl_ms: DEFAULT_VFS_STAGING_CACHE_TTL_MS,
 		..VfsConfig::default()
 	};
-	let mut state = VfsState::new(&config);
+	let mut state = VfsState::new(&config, true);
 
 	state.cache_page(
 		&config,
@@ -358,13 +358,36 @@ fn vfs_staging_cache_retains_only_speculative_pages() {
 }
 
 #[test]
+fn disabled_profiling_skips_prefetch_tracking() {
+	let config = VfsConfig {
+		page_cache_mode: SqliteVfsPageCacheMode::All,
+		staging_cache_ttl_ms: DEFAULT_VFS_STAGING_CACHE_TTL_MS,
+		..VfsConfig::default()
+	};
+	let mut state = VfsState::new(&config, false);
+
+	state.cache_page(
+		&config,
+		PageCacheInsertKind::Prefetch,
+		2,
+		vec![2; DEFAULT_PAGE_SIZE],
+	);
+
+	assert!(state.prefetched_pages.is_empty());
+	assert_eq!(
+		state.cached_page(&config, 2),
+		Some((vec![2; DEFAULT_PAGE_SIZE], false))
+	);
+}
+
+#[test]
 fn vfs_staging_cache_ttl_zero_disables_speculative_retention() {
 	let config = VfsConfig {
 		page_cache_mode: SqliteVfsPageCacheMode::All,
 		staging_cache_ttl_ms: 0,
 		..VfsConfig::default()
 	};
-	let mut state = VfsState::new(&config);
+	let mut state = VfsState::new(&config, true);
 
 	state.cache_page(
 		&config,
