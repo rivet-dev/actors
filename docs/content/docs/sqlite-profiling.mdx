@@ -1,0 +1,128 @@
+---
+title: "SQLite Profiling"
+description: "Profile SQLite statements and transactions in Rivet Actors using bounded metrics and sampled diagnostics."
+skill: true
+---
+
+Profiling helps you find slow queries, transaction contention, and unnecessary storage activity.
+
+## Identify operations
+
+### Transaction names
+
+Transaction names provide a stable identity for profiling transactions. Use a short, static name to correlate metrics.
+
+Pass `{ name: "complete-order" }` as the options argument to `db.transaction()`.
+
+Without a name, RivetKit falls back to a fingerprint of the transaction's statement sequence. Branches and different loop counts can therefore produce separate fingerprints.
+
+### Statement fingerprints
+
+RivetKit hashes each exact SQL string into a stable fingerprint. The fingerprint groups metrics without putting SQL text in a Prometheus label.
+
+- Bound values are passed separately and do not change the fingerprint.
+- Inline values, whitespace, capitalization, and comments do change the fingerprint.
+- Keep query text static and use `?` or named bindings for dynamic values.
+
+For example, repeated `SELECT * FROM orders WHERE id = ?` calls share one fingerprint regardless of the bound ID.
+
+## Find slow operations
+
+**Which statements and transactions are slowest?**
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le, actor_name, type, fingerprint) (
+    rate(rivet_rivetkit_sqlite_duration_seconds_bucket[5m])
+  )
+)
+```
+
+**Which operations are failing?**
+
+```promql
+sum by (actor_name, type, fingerprint, outcome) (
+  rate(rivet_rivetkit_sqlite_outcome_total{outcome!="success"}[5m])
+)
+```
+
+**Are operations waiting behind a transaction?**
+
+```promql
+max by (actor_name) (
+  max_over_time(rivet_rivetkit_sqlite_coordinator_queue_depth[5m])
+)
+```
+
+## Find storage-heavy operations
+
+**Which operations make the most storage requests?**
+
+```promql
+sum by (actor_name, type, fingerprint) (
+  rate(rivet_rivetkit_sqlite_get_pages_round_trips_sum[5m])
+)
+/
+sum by (actor_name, type, fingerprint) (
+  rate(rivet_rivetkit_sqlite_get_pages_round_trips_count[5m])
+)
+```
+
+**What kinds of pages are SQLite using?**
+
+```promql
+sum by (actor_name, type, page_kind) (
+  rate(rivet_rivetkit_sqlite_local_pages_total[5m])
+)
+```
+
+**Where is SQLite moving the most data?**
+
+```promql
+sum by (actor_name, type, byte_kind) (
+  rate(rivet_rivetkit_sqlite_local_bytes_total[5m])
+)
+```
+
+High round-trip or page counts can indicate a missing index, a large scan, or ineffective prefetching.
+
+## Investigate diagnostics
+
+RivetKit emits bounded structured diagnostics for operations that are slow, fail, show unusual storage amplification, or are selected by baseline sampling.
+
+- Fingerprint catalog events map a fingerprint to its exact SQL string or static transaction name.
+- Operation events include latency phases, rows, bytes, page activity, and storage requests.
+- Transaction events include statement count, application-held time, commit time, and terminal outcome.
+- Event sampling, rate limits, and a bounded queue prevent diagnostics from blocking SQLite work.
+
+Search actor logs for `sqlite fingerprint catalog` or `sampled SQLite operation profile` and match events using the `fingerprint` field.
+
+Catalog events contain the exact SQL string, but never separately bound values. Bind dynamic values instead of placing private or high-cardinality data directly in SQL.
+
+## Configure profiling
+
+Profiling is enabled by default. Configure it on the database provider only when you need different thresholds or limits.
+
+Set `profiling.slowOperationThresholdMs` and `profiling.baselineSampleRate` in the database provider configuration to change the defaults.
+
+Common controls:
+
+- `enabled`: enables or disables profiling.
+- `slowOperationThresholdMs`: selects slow operations for diagnostics.
+- `baselineSampleRate`: samples otherwise normal operations from `0` to `1`.
+- `maxTrackedStatementFingerprints`: bounds dedicated statement fingerprints.
+- `maxTrackedTransactionFingerprints`: bounds dedicated transaction fingerprints.
+- `maxPrometheusSeries`: caps the total profiling series created by the process.
+- `maxDiagnosticEventsPerMinute`: limits structured diagnostic events.
+
+Increase fingerprint limits only when `other` is hiding frequently repeated operations. Prometheus series remain allocated for the life of the process after admission.
+
+## Troubleshooting
+
+- **Most results are `other`**: check fingerprint overflow metrics, then increase limits if the operations are useful and repeated.
+- **Too many fingerprints**: keep SQL formatting static and pass dynamic values as bindings.
+- **Transactions are hard to identify**: add a static `name` to each important transaction.
+- **Storage activity is high**: compare page counts, response bytes, and round trips by actor name.
+- **Diagnostics are missing**: check `rivet_rivetkit_sqlite_event_dropped_total` for rate limiting or backpressure.
+- **No profiling metrics appear**: profiling currently applies to native actor-local SQLite, not remote or wasm SQLite.

@@ -173,6 +173,10 @@
 							"href": "/actors/docs/sqlite-drizzle"
 						},
 						{
+							"title": "SQLite Profiling",
+							"href": "/actors/docs/sqlite-profiling"
+						},
+						{
 							"title": "Logging",
 							"href": "/actors/docs/general/logging"
 						},

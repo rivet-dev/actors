@@ -88,13 +88,16 @@ const rows = await c.db.execute(
 Use transactions when multiple writes must succeed or fail together.
 
 ```ts @nocheck
-await c.db.transaction(async (tx) => {
-  await tx.execute("INSERT INTO todos (title) VALUES (?)", title);
-  await tx.execute(
-    "INSERT INTO comments (todo_id, body) VALUES (last_insert_rowid(), ?)",
-    body,
-  );
-});
+await c.db.transaction(
+  async (tx) => {
+    await tx.execute("INSERT INTO todos (title) VALUES (?)", title);
+    await tx.execute(
+      "INSERT INTO comments (todo_id, body) VALUES (last_insert_rowid(), ?)",
+      body,
+    );
+  },
+  { name: "create-todo" },
+);
 ```
 
 RivetKit commits when the callback resolves and rolls back when it throws. Other transactions and ordinary actor SQL queue in FIFO order until the callback finishes. Transactions have a 60-second safety timeout by default; increase it for legitimately long work with `{ timeout: 120_000 }`.
@@ -102,6 +105,8 @@ RivetKit commits when the callback resolves and rolls back when it throws. Other
 Always use the callback's `tx` value inside the transaction. Starting another transaction or using the outer `c.db` from the callback waits behind the active transaction and eventually reaches the safety timeout; the resulting error points to this possible deadlock.
 
 Manual `BEGIN`/`COMMIT` calls remain supported for compatibility, but cannot protect against interleaving callers. RivetKit logs a warning recommending `db.transaction()`. Set `warnOnManualTransactions: false` in `db(...)` to disable the warning; the warning itself mentions this flag.
+
+Use a static transaction name for profiling, never a request ID or other dynamic value.
 
 ## Queues
 
@@ -120,6 +125,10 @@ It's recommended to use queues for mutations and actions for read-only queries. 
 - `POST /inspector/database/execute` lets you run ad-hoc SQL for debugging and data fixes with positional `args` or named `properties`.
 - Keep a small read-only action for quick query verification while debugging.
 - In non-dev mode, inspector endpoints require authorization.
+
+## Profiling
+
+See [SQLite Profiling](/actors/docs/sqlite-profiling) to understand query fingerprints, transaction names, metrics, and diagnostics.
 
 ## Recommendations
 
