@@ -17,7 +17,7 @@ type ActorTarget =
 			region?: string;
 			crashPolicy?: "restart" | "sleep" | "destroy";
 			skipReadyWait?: boolean;
-		};
+	  };
 
 type InspectorGrant = {
 	token: string;
@@ -36,13 +36,16 @@ const app = new App(
 let currentActor: ActorTarget | undefined;
 let currentGrant: InspectorGrant | undefined;
 
-function structuredGrant(result: Awaited<ReturnType<typeof app.callServerTool>>): InspectorGrant {
+function structuredGrant(
+	result: Awaited<ReturnType<typeof app.callServerTool>>,
+): InspectorGrant {
 	if (result.isError || !result.structuredContent) {
 		throw new Error("Could not create the temporary Inspector session");
 	}
 	const value = result.structuredContent as Record<string, unknown>;
 	for (const key of ["token", "proxyUrl", "expiresAt", "actorId"] as const) {
-		if (typeof value[key] !== "string") throw new Error("Invalid Inspector session response");
+		if (typeof value[key] !== "string")
+			throw new Error("Invalid Inspector session response");
 	}
 	return value as InspectorGrant;
 }
@@ -65,39 +68,70 @@ async function renewSession(token: string): Promise<InspectorGrant> {
 	);
 }
 
+async function revokeSession(token: string): Promise<void> {
+	await app.callServerTool({
+		name: "rivet.ui.actor.session.revoke",
+		arguments: { token },
+	});
+}
+
+// `create` mints a new session record rather than rotating the current one, so
+// the grant it replaces stays valid until its own TTL and keeps counting
+// against the per-principal session limit. `renew` rotates in place and needs
+// no revocation. Hosts may fire tool results back to back, so swaps are
+// serialized to keep a concurrent pair from both reading the same outgoing
+// grant and leaking one of them.
+let sessionSwap: Promise<unknown> = Promise.resolve();
+
+function replaceSession(actor: ActorTarget): Promise<InspectorGrant> {
+	const swap = sessionSwap.then(async () => {
+		const superseded = currentGrant;
+		const next = await createSession(actor);
+		currentGrant = next;
+		if (superseded) await revokeSession(superseded.token).catch(() => {});
+		return next;
+	});
+	sessionSwap = swap.catch(() => {});
+	return swap;
+}
+
 function McpInspector() {
 	const [grant, setGrant] = useState<InspectorGrant>();
 	const [error, setError] = useState<string>();
 
 	useEffect(() => {
-		const receiveInput = (params: { arguments?: Record<string, unknown> }) => {
+		const receiveInput = (params: {
+			arguments?: Record<string, unknown>;
+		}) => {
 			const actor = params.arguments?.actor;
-			if (actor && typeof actor === "object") currentActor = actor as ActorTarget;
+			if (actor && typeof actor === "object")
+				currentActor = actor as ActorTarget;
 		};
 		const receiveResult = () => {
 			if (!currentActor) return;
-			void createSession(currentActor)
-				.then((next) => {
-					currentGrant = next;
-					setGrant(next);
-				})
-				.catch(() => setError("Could not authenticate the embedded Inspector."));
+			void replaceSession(currentActor)
+				.then(setGrant)
+				.catch(() =>
+					setError("Could not authenticate the embedded Inspector."),
+				);
 		};
 		app.addEventListener("toolinput", receiveInput);
 		app.addEventListener("toolresult", receiveResult);
 		app.onhostcontextchanged = (context) => {
-			document.documentElement.classList.toggle("dark", context.theme !== "light");
+			document.documentElement.classList.toggle(
+				"dark",
+				context.theme !== "light",
+			);
 		};
 		app.onteardown = async () => {
-			if (currentGrant) {
-				await app.callServerTool({
-					name: "rivet.ui.actor.session.revoke",
-					arguments: { token: currentGrant.token },
-				});
-			}
+			if (currentGrant) await revokeSession(currentGrant.token);
 			return {};
 		};
-		void app.connect().catch(() => setError("This host could not initialize the MCP App."));
+		void app
+			.connect()
+			.catch(() =>
+				setError("This host could not initialize the MCP App."),
+			);
 		return () => {
 			app.removeEventListener("toolinput", receiveInput);
 			app.removeEventListener("toolresult", receiveResult);
@@ -106,20 +140,32 @@ function McpInspector() {
 
 	useEffect(() => {
 		if (!grant) return;
-		const renewAt = Math.max(1_000, new Date(grant.expiresAt).getTime() - Date.now() - 30_000);
+		const renewAt = Math.max(
+			1_000,
+			new Date(grant.expiresAt).getTime() - Date.now() - 30_000,
+		);
 		const timer = window.setTimeout(() => {
 			void renewSession(grant.token)
 				.then((next) => {
 					currentGrant = next;
 					setGrant(next);
 				})
-				.catch(() => setError("The Inspector session expired. Reopen the Inspector to continue."));
+				.catch(() =>
+					setError(
+						"The Inspector session expired. Reopen the Inspector to continue.",
+					),
+				);
 		}, renewAt);
 		return () => window.clearTimeout(timer);
 	}, [grant]);
 
 	if (error) return <p className="p-4 text-sm text-destructive">{error}</p>;
-	if (!grant) return <p className="p-4 text-sm text-muted-foreground">Connecting to the Rivet Actor Inspector…</p>;
+	if (!grant)
+		return (
+			<p className="p-4 text-sm text-muted-foreground">
+				Connecting to the Rivet Actor Inspector…
+			</p>
+		);
 	return (
 		<div className="flex h-full min-h-0 flex-col">
 			{grant.dashboardUrl ? (
@@ -155,6 +201,4 @@ function McpInspector() {
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Inspector UI: #root element missing");
-ReactDOM.createRoot(root).render(
-	<McpInspector />,
-);
+ReactDOM.createRoot(root).render(<McpInspector />);

@@ -1,7 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
-import { useForm } from "react-hook-form";
+import { useMemo } from "react";
+import { Controller, useForm } from "react-hook-form";
 import { z } from "zod";
 import { Logo } from "@/app/logo";
 import { Button } from "@/components/ui/button";
@@ -80,17 +80,27 @@ export const Route = createFileRoute("/oauth/consent")({
 	component: OAuthConsent,
 });
 
+interface ConsentFormValues {
+	scopes: Record<string, boolean>;
+}
+
 function OAuthConsent() {
 	const search = Route.useSearch();
-	const [error, setError] = useState<string>();
-	const { handleSubmit, formState } = useForm<Record<string, never>>();
 	const requestedScopes = useMemo(
 		() => search.scope.split(/\s+/).filter(Boolean),
 		[search.scope],
 	);
-	const [granted, setGranted] = useState<Set<string>>(
-		() => new Set(requestedScopes),
-	);
+	const { control, handleSubmit, watch } = useForm<ConsentFormValues>({
+		defaultValues: {
+			scopes: Object.fromEntries(
+				requestedScopes.map((scope) => [scope, true]),
+			),
+		},
+	});
+	const granted = watch("scopes");
+	const grantedCount = requestedScopes.filter(
+		(scope) => granted[scope],
+	).length;
 
 	// Dynamically registered clients pick their own opaque client_id, so the
 	// name they registered under is the only human-readable identifier.
@@ -110,24 +120,20 @@ function OAuthConsent() {
 		retry: false,
 	});
 
-	const toggle = (scope: string, checked: boolean) => {
-		setGranted((previous) => {
-			const next = new Set(previous);
-			if (checked) next.add(scope);
-			else next.delete(scope);
-			return next;
-		});
-	};
-
-	const submit = (accept: boolean) =>
-		handleSubmit(async () => {
-			setError(undefined);
+	const consent = useMutation({
+		mutationFn: async ({
+			accept,
+			values,
+		}: {
+			accept: boolean;
+			values: ConsentFormValues;
+		}) => {
 			const result = await authClient.oauth2.consent({
 				accept,
 				// Only ever a subset of the originally requested scopes; the
 				// provider rejects anything that was not asked for.
 				scope: requestedScopes
-					.filter((scope) => granted.has(scope))
+					.filter((scope) => values.scopes[scope])
 					.join(" "),
 				// The provider verifies a signature over the full authorize
 				// query. validateSearch drops the params it does not declare,
@@ -137,14 +143,18 @@ function OAuthConsent() {
 					window.location.search.replace(/^\?/, ""),
 			});
 			if (result.error || !result.data?.url) {
-				setError(
+				throw new Error(
 					result.error?.message ??
 						"Could not complete OAuth consent.",
 				);
-				return;
 			}
-			window.location.assign(result.data.url);
-		});
+			return result.data.url;
+		},
+		onSuccess: (url) => window.location.assign(url),
+	});
+
+	const submit = (accept: boolean) =>
+		handleSubmit((values) => consent.mutate({ accept, values }));
 
 	return (
 		<main className="flex min-h-screen items-center justify-center bg-background p-6">
@@ -193,14 +203,21 @@ function OAuthConsent() {
 						const id = `scope-${scope}`;
 						return (
 							<li key={scope} className="flex gap-3 px-4 py-3">
-								<Checkbox
-									id={id}
-									checked={granted.has(scope)}
-									disabled={required}
-									onCheckedChange={(checked) =>
-										toggle(scope, checked === true)
-									}
-									className="mt-0.5"
+								<Controller
+									control={control}
+									name={`scopes.${scope}`}
+									render={({ field }) => (
+										<Checkbox
+											id={id}
+											checked={field.value === true}
+											disabled={required}
+											onBlur={field.onBlur}
+											onCheckedChange={(checked) =>
+												field.onChange(checked === true)
+											}
+											className="mt-0.5"
+										/>
+									)}
 								/>
 								<div className="min-w-0">
 									<label
@@ -231,9 +248,9 @@ function OAuthConsent() {
 					})}
 				</ul>
 
-				{granted.has("rivet:cloud:write") ||
-				granted.has("rivet:actors:write") ||
-				granted.has("rivet:inspector:write") ? (
+				{granted["rivet:cloud:write"] ||
+				granted["rivet:actors:write"] ||
+				granted["rivet:inspector:write"] ? (
 					<p className="mt-3 text-xs text-muted-foreground">
 						Write access also requires the MCP service's write
 						policy to be enabled, so approving it here does not by
@@ -241,20 +258,22 @@ function OAuthConsent() {
 					</p>
 				) : null}
 
-				{error ? (
-					<p className="mt-4 text-sm text-destructive">{error}</p>
+				{consent.error ? (
+					<p className="mt-4 text-sm text-destructive">
+						{consent.error.message}
+					</p>
 				) : null}
 
 				<div className="mt-6 flex items-center justify-end gap-2">
 					<Button
 						variant="outline"
-						disabled={formState.isSubmitting}
+						disabled={consent.isPending}
 						onClick={submit(false)}
 					>
 						Deny
 					</Button>
 					<Button
-						disabled={formState.isSubmitting || granted.size === 0}
+						disabled={consent.isPending || grantedCount === 0}
 						onClick={submit(true)}
 					>
 						Authorize

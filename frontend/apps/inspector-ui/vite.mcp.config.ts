@@ -8,11 +8,16 @@ import tsconfigPaths from "vite-tsconfig-paths";
 
 const rivetkitVersion = JSON.parse(
 	readFileSync(
-		path.resolve(__dirname, "../../../rivetkit-typescript/packages/rivetkit/package.json"),
+		path.resolve(
+			__dirname,
+			"../../../rivetkit-typescript/packages/rivetkit/package.json",
+		),
 		"utf8",
 	),
 ).version as string;
 const require = createRequire(path.resolve(__dirname, "package.json"));
+const WORKER_IMPORT = 'import ActorWorker from "./actor-repl.worker?worker";';
+let sawConsoleWorker = false;
 
 export default defineConfig({
 	root: path.resolve(__dirname),
@@ -50,8 +55,16 @@ export default defineConfig({
 			enforce: "pre",
 			transform(code, id) {
 				if (!id.endsWith("/actor-worker-container.ts")) return;
+				// viteSingleFile cannot inline a `?worker` chunk, so a silently
+				// unmatched import ships a bundle whose console throws at load.
+				if (!code.includes(WORKER_IMPORT)) {
+					throw new Error(
+						`${id} no longer contains ${WORKER_IMPORT}; update the MCP console worker stub`,
+					);
+				}
+				sawConsoleWorker = true;
 				return code.replace(
-					'import ActorWorker from "./actor-repl.worker?worker";',
+					WORKER_IMPORT,
 					`class ActorWorker extends EventTarget {
 	constructor() {
 		super();
@@ -61,6 +74,13 @@ export default defineConfig({
 	terminate() {}
 }`,
 				);
+			},
+			buildEnd() {
+				if (!sawConsoleWorker) {
+					throw new Error(
+						"actor-worker-container.ts was never transformed; the MCP console worker stub did not apply",
+					);
+				}
 			},
 		},
 		tsconfigPaths({ projects: [path.resolve(__dirname, "tsconfig.json")] }),
@@ -81,7 +101,9 @@ export default defineConfig({
 		__APP_BUILD_ID__: JSON.stringify("mcp-actor-inspector"),
 		__RIVETKIT_VERSION__: JSON.stringify(rivetkitVersion),
 	},
-	optimizeDeps: { include: ["@fortawesome/*", "@rivet-gg/icons", "@rivet-gg/cloud"] },
+	optimizeDeps: {
+		include: ["@fortawesome/*", "@rivet-gg/icons", "@rivet-gg/cloud"],
+	},
 	worker: { format: "es" },
 	build: {
 		outDir: "../../dist/mcp-inspector-ui",
