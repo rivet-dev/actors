@@ -18,11 +18,11 @@ Without a name, RivetKit falls back to a fingerprint of the transaction's statem
 
 ### Statement fingerprints
 
-RivetKit hashes each exact SQL string into a stable fingerprint. The fingerprint groups metrics without putting SQL text in a Prometheus label.
+RivetKit normalizes each SQL statement into a sanitized shape, then hashes that shape into a stable fingerprint. The fingerprint groups metrics without putting SQL text in a Prometheus label.
 
-- Bound values are passed separately and do not change the fingerprint.
-- Inline values, whitespace, capitalization, and comments do change the fingerprint.
-- Keep query text static and use `?` or named bindings for dynamic values.
+- Bound and inline literal values do not change the fingerprint.
+- Whitespace, capitalization, and comments do not change the fingerprint.
+- Keep query structure static and use `?` or named bindings for dynamic values.
 
 For example, repeated `SELECT * FROM orders WHERE id = ?` calls share one fingerprint regardless of the bound ID.
 
@@ -91,14 +91,14 @@ High round-trip or page counts can indicate a missing index, a large scan, or in
 
 RivetKit emits bounded structured diagnostics for operations that are slow, fail, show unusual storage amplification, or are selected by baseline sampling.
 
-- Fingerprint catalog events map a fingerprint to its exact SQL string or static transaction name.
+- Fingerprint catalog events map a fingerprint to its sanitized SQL shape or static transaction name.
 - Operation events include latency phases, rows, bytes, page activity, and storage requests.
 - Transaction events include statement count, application-held time, commit time, and terminal outcome.
 - Event sampling, rate limits, and a bounded queue prevent diagnostics from blocking SQLite work.
 
 Search actor logs for `sqlite fingerprint catalog` or `sampled SQLite operation profile` and match events using the `fingerprint` field.
 
-Catalog events contain the exact SQL string, but never separately bound values. Bind dynamic values instead of placing private or high-cardinality data directly in SQL.
+Catalog events contain the sanitized SQL shape, never bound values or raw SQL. Continue binding dynamic values instead of constructing SQL strings.
 
 ## Configure profiling
 
