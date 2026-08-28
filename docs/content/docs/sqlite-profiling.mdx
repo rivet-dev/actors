@@ -28,7 +28,7 @@ For example, repeated `SELECT * FROM orders WHERE id = ?` calls share one finger
 
 ## Find slow operations
 
-**Which statements and transactions are slowest?**
+**Slowest statements and transactions**
 
 ```promql
 histogram_quantile(
@@ -39,7 +39,7 @@ histogram_quantile(
 )
 ```
 
-**Which operations are failing?**
+**Failed operations**
 
 ```promql
 sum by (actor_name, type, fingerprint, outcome) (
@@ -47,7 +47,7 @@ sum by (actor_name, type, fingerprint, outcome) (
 )
 ```
 
-**Are operations waiting behind a transaction?**
+**Transaction contention**
 
 ```promql
 max by (actor_name) (
@@ -57,7 +57,7 @@ max by (actor_name) (
 
 ## Find storage-heavy operations
 
-**Which operations make the most storage requests?**
+**Operations with the most storage requests**
 
 ```promql
 sum by (actor_name, type, fingerprint) (
@@ -69,7 +69,7 @@ sum by (actor_name, type, fingerprint) (
 )
 ```
 
-**What kinds of pages are SQLite using?**
+**SQLite page usage by kind**
 
 ```promql
 sum by (actor_name, type, page_kind) (
@@ -77,7 +77,7 @@ sum by (actor_name, type, page_kind) (
 )
 ```
 
-**Where is SQLite moving the most data?**
+**SQLite data volume by kind**
 
 ```promql
 sum by (actor_name, type, byte_kind) (
@@ -102,27 +102,32 @@ Catalog events contain the sanitized SQL shape, never bound values or raw SQL. C
 
 ## Configure profiling
 
-Profiling is enabled by default. Configure it on the database provider only when you need different thresholds or limits.
-
-Set `profiling.slowOperationThresholdMs` and `profiling.baselineSampleRate` in the database provider configuration to change the defaults.
-
-Common controls:
-
-- `enabled`: enables or disables profiling.
-- `slowOperationThresholdMs`: selects slow operations for diagnostics.
-- `baselineSampleRate`: samples otherwise normal operations from `0` to `1`.
-- `maxTrackedStatementFingerprints`: bounds dedicated statement fingerprints.
-- `maxTrackedTransactionFingerprints`: bounds dedicated transaction fingerprints.
-- `maxPrometheusSeries`: caps the total profiling series created by the process.
-- `maxDiagnosticEventsPerMinute`: limits structured diagnostic events.
+Profiling is enabled by default and most applications do not need to configure it. Set `profiling.slowOperationThresholdMs` or `profiling.baselineSampleRate` on the database provider when needed.
 
 Increase fingerprint limits only when `other` is hiding frequently repeated operations. Prometheus series remain allocated for the life of the process after admission.
 
 ## Troubleshooting
 
-- **Most results are `other`**: check fingerprint overflow metrics, then increase limits if the operations are useful and repeated.
-- **Too many fingerprints**: keep SQL formatting static and pass dynamic values as bindings.
-- **Transactions are hard to identify**: add a static `name` to each important transaction.
-- **Storage activity is high**: compare page counts, response bytes, and round trips by actor name.
-- **Diagnostics are missing**: check `rivet_rivetkit_sqlite_event_dropped_total` for rate limiting or backpressure.
-- **No profiling metrics appear**: profiling currently applies to native actor-local SQLite, not remote or wasm SQLite.
+### Most results are `other`
+
+Fast statements initially appear under `other`, while overflow metrics show when a fingerprint limit was reached. Increase limits only for useful operations that repeat regularly.
+
+### Too many fingerprints
+
+Fingerprints use normalized SQL shapes, so formatting, comments, and literal values do not create separate entries. Keep query structure static and pass dynamic values as bindings.
+
+### Transactions are hard to identify
+
+Unnamed transactions are grouped by their statement sequence, which can vary across branches. Add a static `name` to each important transaction.
+
+### Storage activity is high
+
+Use the storage queries above to compare page counts, response bytes, and round trips by actor name. Large scans or missing indexes are common causes.
+
+### Diagnostics are missing
+
+Diagnostic events are sampled and bounded. Check `rivet_rivetkit_sqlite_event_dropped_total` for rate limiting or backpressure; aggregate Prometheus metrics continue reporting when events are dropped.
+
+### No profiling metrics appear
+
+Confirm profiling was not disabled in the database provider. Profiling currently applies to native actor-local SQLite, not remote or wasm SQLite.
