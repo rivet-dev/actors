@@ -186,6 +186,10 @@ program
 		"--version-only",
 		"Only rewrite package.json version fields without publish-time dependency injection",
 	)
+	.option(
+		"--repository <owner/repo>",
+		"GitHub repository recorded in publish-time package metadata (defaults to GITHUB_REPOSITORY)",
+	)
 	.option("--dry-run", "Do not write, only report")
 	.action(async (opts) => {
 		const repoRoot = findRepoRoot();
@@ -195,6 +199,7 @@ program
 			dryRun: !!opts.dryRun,
 			includeReleaseOnlyPackages: ctx.trigger === "release",
 			versionOnly: !!opts.versionOnly,
+			repository: opts.repository ?? process.env.GITHUB_REPOSITORY,
 		});
 		await bumpCargoVersions(repoRoot, version, {
 			dryRun: !!opts.dryRun,
