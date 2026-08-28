@@ -11,5 +11,12 @@ pub(crate) fn render_global_metrics() -> String {
 }
 
 pub(crate) fn metric_line_for_actor(line: &str, name: &str, actor_name: &str) -> bool {
-	line.starts_with(name) && line.contains(&format!("actor_name=\"{actor_name}\""))
+	metric_name_matches(line, name) && line.contains(&format!("actor_name=\"{actor_name}\""))
+}
+
+pub(crate) fn metric_name_matches(line: &str, name: &str) -> bool {
+	line.starts_with(name)
+		|| line
+			.strip_prefix("rivet_")
+			.is_some_and(|unprefixed| unprefixed.starts_with(name))
 }

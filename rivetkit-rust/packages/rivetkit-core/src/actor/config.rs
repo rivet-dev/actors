@@ -53,6 +53,94 @@ pub struct ActionDefinition {
 	pub name: String,
 }
 
+/// Experimental SQLite profiling configuration.
+///
+/// This entire configuration surface, including every field, is subject to
+/// change without notice.
+#[derive(Clone, Debug)]
+pub struct SqliteProfilingConfig {
+	pub enabled: bool,
+	pub max_tracked_statement_fingerprints: usize,
+	pub max_tracked_transaction_fingerprints: usize,
+	pub max_prometheus_series: usize,
+	pub max_statements_per_transaction_trace: usize,
+	pub max_get_pages_requests_per_trace: usize,
+	pub max_transaction_name_bytes: usize,
+	pub slow_operation_threshold_ms: u64,
+	pub baseline_sample_rate: f64,
+	pub max_diagnostic_events_per_minute: usize,
+	pub diagnostic_event_queue_capacity: usize,
+}
+
+impl Default for SqliteProfilingConfig {
+	fn default() -> Self {
+		Self {
+			enabled: true,
+			max_tracked_statement_fingerprints: 128,
+			max_tracked_transaction_fingerprints: 8,
+			max_prometheus_series: 25_000,
+			max_statements_per_transaction_trace: 32,
+			max_get_pages_requests_per_trace: 16,
+			max_transaction_name_bytes: 128,
+			slow_operation_threshold_ms: 10,
+			baseline_sample_rate: 0.001,
+			max_diagnostic_events_per_minute: 120,
+			diagnostic_event_queue_capacity: 256,
+		}
+	}
+}
+
+/// Sparse experimental SQLite profiling configuration used at runtime
+/// boundaries.
+///
+/// This entire configuration surface, including every field, is subject to
+/// change without notice.
+#[derive(Clone, Debug, Default)]
+pub struct SqliteProfilingConfigInput {
+	pub enabled: Option<bool>,
+	pub max_tracked_statement_fingerprints: Option<u32>,
+	pub max_tracked_transaction_fingerprints: Option<u32>,
+	pub max_prometheus_series: Option<u32>,
+	pub max_statements_per_transaction_trace: Option<u32>,
+	pub max_get_pages_requests_per_trace: Option<u32>,
+	pub max_transaction_name_bytes: Option<u32>,
+	pub slow_operation_threshold_ms: Option<u32>,
+	pub baseline_sample_rate: Option<f64>,
+	pub max_diagnostic_events_per_minute: Option<u32>,
+	pub diagnostic_event_queue_capacity: Option<u32>,
+}
+
+impl SqliteProfilingConfig {
+	fn from_input(input: SqliteProfilingConfigInput) -> Self {
+		let mut config = Self::default();
+		macro_rules! set_usize {
+			($field:ident) => {
+				if let Some(value) = input.$field {
+					config.$field = value as usize;
+				}
+			};
+		}
+		if let Some(value) = input.enabled {
+			config.enabled = value;
+		}
+		set_usize!(max_tracked_statement_fingerprints);
+		set_usize!(max_tracked_transaction_fingerprints);
+		set_usize!(max_prometheus_series);
+		set_usize!(max_statements_per_transaction_trace);
+		set_usize!(max_get_pages_requests_per_trace);
+		set_usize!(max_transaction_name_bytes);
+		if let Some(value) = input.slow_operation_threshold_ms {
+			config.slow_operation_threshold_ms = u64::from(value);
+		}
+		if let Some(value) = input.baseline_sample_rate {
+			config.baseline_sample_rate = value;
+		}
+		set_usize!(max_diagnostic_events_per_minute);
+		set_usize!(diagnostic_event_queue_capacity);
+		config
+	}
+}
+
 #[derive(Clone, Debug)]
 pub struct ActorConfig {
 	pub name: Option<String>,
@@ -61,6 +149,7 @@ pub struct ActorConfig {
 	/// on the TS side). Gates the inspector database tab.
 	pub has_database: bool,
 	pub remote_sqlite: bool,
+	pub sqlite_profiling: SqliteProfilingConfig,
 	/// Whether the user declared actor state (`state: ...` or `createState`).
 	/// Gates the inspector state tab and state-subscription messages.
 	pub has_state: bool,
@@ -98,6 +187,7 @@ pub struct ActorConfigInput {
 	pub icon: Option<String>,
 	pub has_database: Option<bool>,
 	pub remote_sqlite: Option<bool>,
+	pub sqlite_profiling: Option<SqliteProfilingConfigInput>,
 	pub has_state: Option<bool>,
 	pub can_hibernate_websocket: Option<bool>,
 	pub state_save_interval_ms: Option<u32>,
@@ -129,6 +219,10 @@ impl ActorConfig {
 			icon: config.icon,
 			has_database: config.has_database.unwrap_or(false),
 			remote_sqlite: config.remote_sqlite.unwrap_or(false),
+			sqlite_profiling: config
+				.sqlite_profiling
+				.map(SqliteProfilingConfig::from_input)
+				.unwrap_or_default(),
 			has_state: config.has_state.unwrap_or(false),
 			..Self::default()
 		};
@@ -215,6 +309,23 @@ impl ActorConfig {
 	/// config so the actor never starts with garbage state.
 	pub fn validate(&self) -> anyhow::Result<()> {
 		crate::inspector::validate_inspector_tabs(&self.inspector_tabs)?;
+		anyhow::ensure!(
+			self.sqlite_profiling.baseline_sample_rate.is_finite()
+				&& (0.0..=1.0).contains(&self.sqlite_profiling.baseline_sample_rate),
+			"SQLite profiling baselineSampleRate must be between 0 and 1"
+		);
+		anyhow::ensure!(
+			self.sqlite_profiling.max_get_pages_requests_per_trace <= 16,
+			"SQLite profiling maxGetPagesRequestsPerTrace must be at most 16"
+		);
+		anyhow::ensure!(
+			self.sqlite_profiling.max_statements_per_transaction_trace <= 32,
+			"SQLite profiling maxStatementsPerTransactionTrace must be at most 32"
+		);
+		anyhow::ensure!(
+			self.sqlite_profiling.max_transaction_name_bytes > 0,
+			"SQLite profiling maxTransactionNameBytes must be greater than zero"
+		);
 		Ok(())
 	}
 }
@@ -226,6 +337,7 @@ impl Default for ActorConfig {
 			icon: None,
 			has_database: false,
 			remote_sqlite: false,
+			sqlite_profiling: SqliteProfilingConfig::default(),
 			has_state: false,
 			can_hibernate_websocket: CanHibernateWebSocket::default(),
 			state_save_interval: DEFAULT_STATE_SAVE_INTERVAL,

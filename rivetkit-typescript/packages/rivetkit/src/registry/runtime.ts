@@ -1,5 +1,8 @@
 import { stringifyError } from "@/common/utils";
-import type { SqliteNativeMetrics } from "@/common/database/config";
+import type {
+	SqliteNativeMetrics,
+	SqliteProfilingOptions,
+} from "@/common/database/config";
 import type { RegistryConfig } from "./config";
 import { logger } from "./log";
 
@@ -201,6 +204,8 @@ export interface RuntimeActorConfig {
 	icon?: string;
 	hasDatabase?: boolean;
 	remoteSqlite?: boolean;
+	/** @experimental This entire configuration surface is subject to change. */
+	sqliteProfiling?: SqliteProfilingOptions;
 	hasState?: boolean;
 	canHibernateWebsocket?: boolean;
 	stateSaveIntervalMs?: number;

@@ -13,6 +13,25 @@ export type InferDatabaseClient<DBProvider extends AnyDatabaseProvider> =
 
 export type SqliteBindings = unknown[] | Record<string, unknown>;
 
+/**
+ * SQLite profiling controls.
+ *
+ * @experimental This entire configuration surface is subject to change.
+ */
+export interface SqliteProfilingOptions {
+	enabled?: boolean;
+	maxTrackedStatementFingerprints?: number;
+	maxTrackedTransactionFingerprints?: number;
+	maxPrometheusSeries?: number;
+	maxStatementsPerTransactionTrace?: number;
+	maxGetPagesRequestsPerTrace?: number;
+	maxTransactionNameBytes?: number;
+	slowOperationThresholdMs?: number;
+	baselineSampleRate?: number;
+	maxDiagnosticEventsPerMinute?: number;
+	diagnosticEventQueueCapacity?: number;
+}
+
 export interface SqliteQueryResult {
 	columns: string[];
 	rows: unknown[][];
@@ -102,6 +121,10 @@ export interface DatabaseProviderContext {
 }
 
 export type DatabaseProvider<DB extends RawAccess> = {
+	/**
+	 * @experimental This entire configuration surface is subject to change.
+	 */
+	sqliteProfiling?: SqliteProfilingOptions;
 	/**
 	 * Creates a new database client for the actor.
 	 * The result is passed to the actor context as `c.db`.

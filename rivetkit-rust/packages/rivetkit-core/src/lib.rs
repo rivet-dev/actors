@@ -117,6 +117,7 @@ pub use actor::{kv, sqlite};
 pub use actor::action::ActionDispatchError;
 pub use actor::config::{
 	ActionDefinition, ActorConfig, ActorConfigInput, ActorConfigOverrides, CanHibernateWebSocket,
+	SqliteProfilingConfig, SqliteProfilingConfigInput,
 };
 pub use actor::connection::ConnHandle;
 pub use actor::context::{ActorContext, ActorWorkRegion, KeepAwakeRegion, WebSocketCallbackRegion};
@@ -134,6 +135,8 @@ pub use actor::queue::{
 pub use actor::sqlite::{
 	BindParam, ColumnValue, ExecResult, ExecuteResult, QueryResult, SqliteBackend, SqliteDb,
 };
+#[cfg(feature = "sqlite-local")]
+pub use actor::sqlite::SqliteTransaction;
 pub use actor::state::RequestSaveOpts;
 pub use actor::task::{
 	ActionDispatchResult, ActorTask, DispatchCommand, HttpDispatchResult, LifecycleCommand,
@@ -144,6 +147,7 @@ pub use actor::work_registry::{ActorWorkKind, ActorWorkPolicy};
 pub use error::ActorLifecycle;
 pub use inspector::{Inspector, InspectorSnapshot};
 pub use registry::{CoreRegistry, EngineSpawnMode, ServeConfig};
+pub use rivet_envoy_client::config::ResponseChunk;
 pub use runtime::{RuntimeBoxFuture, RuntimeSpawner, boxed_runtime_future};
 pub use serverless::{CoreServerlessRuntime, ServerlessRequest, ServerlessResponse};
 pub use types::{
