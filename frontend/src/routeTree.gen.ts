@@ -18,6 +18,7 @@ import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as AcceptInvitationRouteImport } from './routes/accept-invitation'
 import { Route as ContextRouteImport } from './routes/_context'
 import { Route as ContextIndexRouteImport } from './routes/_context/index'
+import { Route as OauthConsentRouteImport } from './routes/oauth.consent'
 import { Route as ContextNewIndexRouteImport } from './routes/_context/new/index'
 import { Route as ContextNewOrgIndexRouteImport } from './routes/_context/new-org/index'
 import { Route as ContextOrgsOrganizationRouteImport } from './routes/_context/orgs.$organization'
@@ -83,6 +84,11 @@ const ContextIndexRoute = ContextIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => ContextRoute,
+} as any)
+const OauthConsentRoute = OauthConsentRouteImport.update({
+  id: '/oauth/consent',
+  path: '/oauth/consent',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const ContextNewIndexRoute = ContextNewIndexRouteImport.update({
   id: '/new/',
@@ -224,6 +230,7 @@ export interface FileRoutesByFullPath {
   '/onboarding': typeof OnboardingRoute
   '/reset-password': typeof ResetPasswordRoute
   '/verify-email-pending': typeof VerifyEmailPendingRoute
+  '/oauth/consent': typeof OauthConsentRoute
   '/ns/$namespace': typeof ContextNsNamespaceRouteWithChildren
   '/orgs/$organization': typeof ContextOrgsOrganizationRouteWithChildren
   '/new-org/': typeof ContextNewOrgIndexRoute
@@ -254,6 +261,7 @@ export interface FileRoutesByTo {
   '/onboarding': typeof OnboardingRoute
   '/reset-password': typeof ResetPasswordRoute
   '/verify-email-pending': typeof VerifyEmailPendingRoute
+  '/oauth/consent': typeof OauthConsentRoute
   '/': typeof ContextIndexRoute
   '/new-org': typeof ContextNewOrgIndexRoute
   '/new': typeof ContextNewIndexRoute
@@ -283,6 +291,7 @@ export interface FileRoutesById {
   '/onboarding': typeof OnboardingRoute
   '/reset-password': typeof ResetPasswordRoute
   '/verify-email-pending': typeof VerifyEmailPendingRoute
+  '/oauth/consent': typeof OauthConsentRoute
   '/_context/': typeof ContextIndexRoute
   '/_context/ns/$namespace': typeof ContextNsNamespaceRouteWithChildren
   '/_context/orgs/$organization': typeof ContextOrgsOrganizationRouteWithChildren
@@ -317,6 +326,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/reset-password'
     | '/verify-email-pending'
+    | '/oauth/consent'
     | '/ns/$namespace'
     | '/orgs/$organization'
     | '/new-org/'
@@ -347,6 +357,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/reset-password'
     | '/verify-email-pending'
+    | '/oauth/consent'
     | '/'
     | '/new-org'
     | '/new'
@@ -375,6 +386,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/reset-password'
     | '/verify-email-pending'
+    | '/oauth/consent'
     | '/_context/'
     | '/_context/ns/$namespace'
     | '/_context/orgs/$organization'
@@ -408,6 +420,7 @@ export interface RootRouteChildren {
   OnboardingRoute: typeof OnboardingRoute
   ResetPasswordRoute: typeof ResetPasswordRoute
   VerifyEmailPendingRoute: typeof VerifyEmailPendingRoute
+  OauthConsentRoute: typeof OauthConsentRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -474,6 +487,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof ContextIndexRouteImport
       parentRoute: typeof ContextRoute
+    }
+    '/oauth/consent': {
+      id: '/oauth/consent'
+      path: '/oauth/consent'
+      fullPath: '/oauth/consent'
+      preLoaderRoute: typeof OauthConsentRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_context/new/': {
       id: '/_context/new/'
@@ -746,6 +766,7 @@ const rootRouteChildren: RootRouteChildren = {
   OnboardingRoute: OnboardingRoute,
   ResetPasswordRoute: ResetPasswordRoute,
   VerifyEmailPendingRoute: VerifyEmailPendingRoute,
+  OauthConsentRoute: OauthConsentRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

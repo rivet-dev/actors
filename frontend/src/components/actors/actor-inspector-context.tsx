@@ -658,8 +658,11 @@ export const createDefaultActorInspectorContext = ({
 	},
 });
 
+// The base may carry a path prefix (the MCP Inspector proxy is mounted under
+// /mcp/inspector-proxy), so the segment must stay relative. A leading slash
+// would resolve against the origin and drop that prefix.
 const computeActorUrl = ({ url, actorId }: { url: string; actorId: ActorId }) =>
-	new URL(`/gateway/${actorId}`, url).href;
+	new URL(`gateway/${actorId}`, url.endsWith("/") ? url : `${url}/`).href;
 
 function transformWorkflowHistoryFromJson(raw: number[] | null): {
 	history: WorkflowHistory | null;

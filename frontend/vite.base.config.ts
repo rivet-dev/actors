@@ -11,6 +11,7 @@ export function baseViteConfig(): UserConfig {
 			__APP_BUILD_ID__: JSON.stringify(
 				`${new Date().toISOString()}@${crypto.randomUUID()}`,
 			),
+			__MCP_APP__: JSON.stringify(false),
 		},
 		resolve: {
 			alias: {

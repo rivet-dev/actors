@@ -62,32 +62,65 @@ function InspectorContent({
 	actorId,
 	activeTab,
 	bridge,
+	standalone = false,
 }: {
 	actorId: ActorId;
 	activeTab: string | undefined;
-	bridge: BridgeClient;
+	bridge?: BridgeClient;
+	standalone?: boolean;
 }) {
 	const availableTabs = useAvailableInspectorTabs(actorId);
+	const [standaloneTab, setStandaloneTab] = useState<string | undefined>();
 
 	useEffect(() => {
-		if (availableTabs) bridge.sendTabsAvailable(availableTabs);
+		if (availableTabs) bridge?.sendTabsAvailable(availableTabs);
 	}, [bridge, availableTabs]);
 
-	return <InspectorTabContent actorId={actorId} activeTab={activeTab} />;
+	const selectedTab = activeTab ?? standaloneTab ?? availableTabs?.[0]?.id;
+	return (
+		<div className={standalone ? "flex h-full min-h-0 flex-col" : undefined}>
+			{standalone && availableTabs ? (
+				<nav
+					aria-label="Inspector tabs"
+					className="flex shrink-0 gap-1 overflow-x-auto border-b px-2 py-1"
+				>
+					{availableTabs.map((tab) => (
+						<button
+							key={tab.id}
+							type="button"
+							className={
+								selectedTab === tab.id
+									? "rounded bg-muted px-3 py-1.5 text-sm font-medium"
+									: "rounded px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/60"
+							}
+							onClick={() => setStandaloneTab(tab.id)}
+						>
+							{tab.label}
+						</button>
+					))}
+				</nav>
+			) : null}
+			<div className={standalone ? "min-h-0 flex-1 overflow-auto" : undefined}>
+				<InspectorTabContent actorId={actorId} activeTab={selectedTab} />
+			</div>
+		</div>
+	);
 }
 
-function InspectorApp({
+export function InspectorApp({
 	actorId,
 	credentials,
 	bridge,
 	activeTab,
 	initialVersion,
+	standalone,
 }: {
 	actorId: ActorId;
 	credentials: { url: string; inspectorToken: string; token: string };
-	bridge: BridgeClient;
+	bridge?: BridgeClient;
 	activeTab: string | undefined;
 	initialVersion?: string;
+	standalone?: boolean;
 }) {
 	const queryClient = useMemo(
 		() =>
@@ -123,6 +156,7 @@ function InspectorApp({
 							actorId={actorId}
 							activeTab={activeTab}
 							bridge={bridge}
+							standalone={standalone}
 						/>
 					</ActorInspectorProvider>
 				</DataProviderContext.Provider>
@@ -192,13 +226,15 @@ function BootGate({ bridge }: { bridge: BridgeClient }) {
 	);
 }
 
-const bridge = new BridgeClient();
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("Inspector UI: #root element missing");
-ReactDOM.createRoot(rootEl).render(
-	<StrictMode>
-		<IframeErrorBoundary>
-			<BootGate bridge={bridge} />
-		</IframeErrorBoundary>
-	</StrictMode>,
-);
+if (!__MCP_APP__) {
+	const bridge = new BridgeClient();
+	const rootEl = document.getElementById("root");
+	if (!rootEl) throw new Error("Inspector UI: #root element missing");
+	ReactDOM.createRoot(rootEl).render(
+		<StrictMode>
+			<IframeErrorBoundary>
+				<BootGate bridge={bridge} />
+			</IframeErrorBoundary>
+		</StrictMode>,
+	);
+}

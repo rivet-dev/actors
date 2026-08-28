@@ -24,6 +24,7 @@ import {
 	PublishableToken,
 	SecretToken,
 } from "@/routes/_context/orgs.$organization/projects.$project/ns.$namespace/tokens";
+import { McpConnection } from "./mcp-connection";
 import { SettingsCard } from "./settings-card";
 
 export function NamespaceSettingsContent() {
@@ -52,6 +53,7 @@ export function NamespaceAdvancedContent() {
 				<PublishableToken />
 				{features.auth ? <ConnectionTokens /> : null}
 				{features.auth ? <CloudApiTokens /> : null}
+				<McpConnection />
 				<DatacenterStatus />
 				{features.dangerZone ? <DangerZone /> : null}
 			</div>

@@ -37,6 +37,9 @@ export const features = {
 	compute: isEnabled("compute") && platform,
 	// `agentOs` gates the agentOS (coding-agent VM) onboarding template. Beta.
 	agentOs: isEnabled("agent-os"),
+	// `mcp` gates the MCP connection settings. The snippet differs per flavor:
+	// platform points at the hosted endpoint, OSS at the local stdio server.
+	mcp: isEnabled("mcp"),
 	support: isEnabled("support"),
 	branding: isEnabled("branding"),
 	datacenter: isEnabled("datacenter"),
