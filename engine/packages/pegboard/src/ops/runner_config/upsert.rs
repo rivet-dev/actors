@@ -34,9 +34,23 @@ pub async fn pegboard_runner_config_upsert(ctx: &OperationCtx, input: &Input) ->
 			slots_per_runner,
 			..
 		} => {
-			if let Err(err) = url::Url::parse(url) {
+			let parsed_url = match url::Url::parse(url) {
+				Ok(parsed_url) => parsed_url,
+				Err(err) => {
+					return Err(errors::RunnerConfig::Invalid {
+						reason: format!("invalid serverless url: {err}"),
+					}
+					.build());
+				}
+			};
+
+			// Reject destinations the engine is not allowed to reach before the config is stored.
+			// Requests are checked again when they connect, which catches configs written before
+			// this gate existed and hosts whose DNS answer changes afterwards.
+			let policy = rivet_pools::reqwest::outbound_policy(ctx.config()).await?;
+			if let Err(reason) = policy.check_url(&parsed_url) {
 				return Err(errors::RunnerConfig::Invalid {
-					reason: format!("invalid serverless url: {err}"),
+					reason: format!("invalid serverless url: {reason}"),
 				}
 				.build());
 			}

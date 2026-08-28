@@ -30,6 +30,7 @@ rivet-data.workspace = true
 rivet-envoy-protocol.workspace = true
 rivet-error.workspace = true
 rivet-metrics.workspace = true
+rivet-outbound-guard.workspace = true
 rivet-pools.workspace = true
 rivet-runner-protocol.workspace = true
 rivet-runtime.workspace = true

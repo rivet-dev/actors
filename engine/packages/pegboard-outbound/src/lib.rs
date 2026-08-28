@@ -327,6 +327,7 @@ fn error_label(error: &RunnerPoolError) -> &'static str {
 	match error {
 		RunnerPoolError::ServerlessHttpError { .. } => "http_error",
 		RunnerPoolError::ServerlessConnectionError { .. } => "connection_error",
+		RunnerPoolError::ServerlessDestinationBlocked { .. } => "destination_blocked",
 		RunnerPoolError::ServerlessStreamEndedEarly => "stream_ended_early",
 		RunnerPoolError::ServerlessInvalidSsePayload { .. } => "invalid_payload",
 		RunnerPoolError::Downgrade => "downgrade",
@@ -345,6 +346,7 @@ fn status_label(error: &RunnerPoolError) -> &'static str {
 			_ => "other",
 		},
 		RunnerPoolError::ServerlessConnectionError { .. }
+		| RunnerPoolError::ServerlessDestinationBlocked { .. }
 		| RunnerPoolError::ServerlessStreamEndedEarly
 		| RunnerPoolError::ServerlessInvalidSsePayload { .. }
 		| RunnerPoolError::Downgrade
@@ -362,6 +364,7 @@ fn error_result_label(error: &RunnerPoolError) -> &'static str {
 			_ => "error_http_other",
 		},
 		RunnerPoolError::ServerlessConnectionError { .. } => "error_connection",
+		RunnerPoolError::ServerlessDestinationBlocked { .. } => "error_destination_blocked",
 		RunnerPoolError::ServerlessStreamEndedEarly => "error_stream_ended",
 		RunnerPoolError::ServerlessInvalidSsePayload { .. } => "error_invalid_payload",
 		RunnerPoolError::Downgrade => "error_downgrade",
@@ -441,7 +444,37 @@ async fn serverless_outbound_req(
 
 	let endpoint_url = format!("{}/start", url.trim_end_matches('/'));
 
-	let client = rivet_pools::reqwest::client_no_timeout().await?;
+	// The client only sees this URL as a host to connect to: an address literal never reaches its
+	// resolver, and its redirect policy only runs on later hops. So the scheme, credentials, and a
+	// literal destination have to be checked here, which also re-gates configs stored before this
+	// policy existed.
+	let policy = rivet_pools::reqwest::outbound_policy(ctx.config()).await?;
+	let block_reason = match url::Url::parse(&endpoint_url) {
+		Ok(parsed_url) => policy.check_url(&parsed_url).err(),
+		Err(_) => Some(rivet_outbound_guard::BlockReason::InvalidUrl),
+	};
+	if let Some(reason) = block_reason {
+		tracing::warn!(
+			?namespace_id,
+			%pool_name,
+			%reason,
+			"serverless url is not an allowed destination, dropping outbound req"
+		);
+
+		report_error(
+			ctx,
+			namespace_id,
+			pool_name,
+			RunnerPoolError::ServerlessDestinationBlocked {
+				reason: reason.to_string(),
+			},
+		)
+		.await;
+
+		return Ok(());
+	}
+
+	let client = rivet_pools::reqwest::guarded_client_no_timeout(ctx.config()).await?;
 	let req = client
 		.post(endpoint_url.clone())
 		.body(payload)
@@ -550,13 +583,20 @@ async fn serverless_outbound_req(
 				Err(err) => {
 					let wrapped_err = anyhow::Error::from(err);
 
-					let error = RunnerPoolError::ServerlessConnectionError {
-						// Print entire error chain
-						message: wrapped_err
-							.chain()
-							.map(|err| err.to_string())
-							.collect::<Vec<_>>()
-							.join("\n"),
+					// A hostname that only resolves to disallowed addresses is rejected by the
+					// resolver, which the pre-flight check above cannot see.
+					let error = match rivet_outbound_guard::block_reason(&wrapped_err) {
+						Some(reason) => RunnerPoolError::ServerlessDestinationBlocked {
+							reason: reason.to_string(),
+						},
+						None => RunnerPoolError::ServerlessConnectionError {
+							// Print entire error chain
+							message: wrapped_err
+								.chain()
+								.map(|err| err.to_string())
+								.collect::<Vec<_>>()
+								.join("\n"),
+						},
 					};
 					report_error(ctx, namespace_id, &pool_name, error.clone()).await;
 					observe_req_duration(

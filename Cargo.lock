@@ -3951,6 +3951,7 @@ dependencies = [
  "rivet-envoy-protocol",
  "rivet-error",
  "rivet-metrics",
+ "rivet-outbound-guard",
  "rivet-pools",
  "rivet-runner-protocol",
  "rivet-runtime",
@@ -4112,12 +4113,15 @@ dependencies = [
  "rivet-config",
  "rivet-envoy-protocol",
  "rivet-metrics",
+ "rivet-outbound-guard",
+ "rivet-pools",
  "rivet-runtime",
  "rivet-types",
  "tokio",
  "tracing",
  "universaldb",
  "universalpubsub",
+ "url",
  "vbare",
 ]
 
@@ -5695,6 +5699,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rivet-outbound-guard"
+version = "2.3.7"
+dependencies = [
+ "anyhow",
+ "ipnet",
+ "reqwest 0.12.22",
+ "rivet-config",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "rivet-perf"
 version = "2.3.7"
 dependencies = [
@@ -5720,6 +5738,7 @@ dependencies = [
  "rivet-async-nats",
  "rivet-config",
  "rivet-metrics",
+ "rivet-outbound-guard",
  "rivet-util",
  "rustls",
  "serde",

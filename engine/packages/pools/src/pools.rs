@@ -46,7 +46,8 @@ impl Pools {
 
 		// Initialize here to avoid cold starts elsewhere
 		crate::reqwest::client().await?;
-		crate::reqwest::client_no_timeout().await?;
+		crate::reqwest::guarded_client(pool.config()).await?;
+		crate::reqwest::guarded_client_no_timeout(pool.config()).await?;
 
 		Ok(pool)
 	}

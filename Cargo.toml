@@ -32,6 +32,7 @@ members = [
   "engine/packages/metrics",
   "engine/packages/metrics-server",
   "engine/packages/namespace",
+  "engine/packages/outbound-guard",
   "engine/packages/pegboard",
   "engine/packages/pegboard-envoy",
   "engine/packages/pegboard-gateway",
@@ -500,6 +501,9 @@ members = [
 
     [workspace.dependencies.namespace]
     path = "engine/packages/namespace"
+
+    [workspace.dependencies.rivet-outbound-guard]
+    path = "engine/packages/outbound-guard"
 
     [workspace.dependencies.pegboard]
     path = "engine/packages/pegboard"
