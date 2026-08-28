@@ -1,10 +1,14 @@
+import onChange from "@rivetkit/on-change";
 import { describe, expect, test, vi } from "vitest";
 import {
 	assertJsonCompatValue,
 	encodeJsonCompatValue,
 	reviveJsonCompatValue,
 } from "@/common/encoding";
-import { createWriteThroughProxy } from "@/registry/write-through-proxy";
+import {
+	createWriteThroughProxy,
+	unwrapWriteThroughProxy,
+} from "@/registry/write-through-proxy";
 import { decodeCborCompat, encodeCborCompat } from "@/serde";
 
 describe("createWriteThroughProxy", () => {
@@ -280,5 +284,141 @@ describe("encodeJsonCompatValue validation", () => {
 	test("throws TypeError for a nested function", () => {
 		const obj = { foo: () => {} } as never;
 		expect(() => encodeJsonCompatValue(obj)).toThrow(TypeError);
+	});
+});
+
+/**
+ * Counts how many `@rivetkit/on-change` proxy layers wrap a value. A raw value
+ * has depth 0.
+ */
+function proxyDepth(value: unknown): number {
+	let depth = 0;
+	let current = value;
+	while (current !== null && typeof current === "object") {
+		const target = onChange.target(current as Record<string, any>);
+		if (target === current) {
+			break;
+		}
+		depth++;
+		current = target;
+	}
+	return depth;
+}
+
+describe("unwrapWriteThroughProxy", () => {
+	test("strips proxies nested in objects, arrays, maps, and sets", () => {
+		const raw = {
+			nested: { inner: { deep: true } },
+			arr: [{ item: 1 }],
+			map: new Map<string, { value: number }>([["a", { value: 1 }]]),
+			set: new Set([{ value: 2 }]),
+		};
+		const proxied = createWriteThroughProxy(raw, () => {});
+
+		// Reading through the proxy hands back proxies for every child.
+		const spread = {
+			nested: proxied.nested,
+			arr: proxied.arr,
+			map: proxied.map,
+			set: proxied.set,
+		};
+		expect(proxyDepth(spread.nested)).toBe(1);
+
+		const unwrapped = unwrapWriteThroughProxy(spread);
+		expect(proxyDepth(unwrapped.nested)).toBe(0);
+		expect(proxyDepth(unwrapped.nested.inner)).toBe(0);
+		expect(proxyDepth(unwrapped.arr)).toBe(0);
+		expect(proxyDepth(unwrapped.arr[0])).toBe(0);
+		expect(proxyDepth(unwrapped.map)).toBe(0);
+		expect(proxyDepth(unwrapped.map.get("a"))).toBe(0);
+		expect(proxyDepth([...unwrapped.set][0])).toBe(0);
+
+		// Unwrapping preserves structure and identity of the raw tree.
+		expect(unwrapped.nested).toBe(raw.nested);
+		expect(unwrapped.map.get("a")).toEqual({ value: 1 });
+		expect([...unwrapped.set]).toEqual([{ value: 2 }]);
+	});
+
+	test("returns primitives unchanged and tolerates cycles", () => {
+		expect(unwrapWriteThroughProxy(null)).toBe(null);
+		expect(unwrapWriteThroughProxy(undefined)).toBe(undefined);
+		expect(unwrapWriteThroughProxy(7)).toBe(7);
+		expect(unwrapWriteThroughProxy("x")).toBe("x");
+
+		const cyclic: Record<string, unknown> = { name: "root" };
+		cyclic.self = cyclic;
+		expect(unwrapWriteThroughProxy(cyclic)).toBe(cyclic);
+	});
+
+	test("unwraps a value that is itself a proxy", () => {
+		const raw = { a: 1 };
+		const proxied = createWriteThroughProxy(raw, () => {});
+		expect(unwrapWriteThroughProxy(proxied)).toBe(raw);
+	});
+});
+
+describe("spread state updates", () => {
+	// Mirrors how `NativeConnAdapter` and the actor context expose state: the
+	// getter hands back a deep write-through proxy and the setter persists the
+	// assigned value.
+	function createStateHolder(initial: unknown, unwrapOnWrite: boolean) {
+		let stored = initial;
+		return {
+			get raw() {
+				return stored;
+			},
+			get state(): any {
+				return createWriteThroughProxy(stored, (next) => {
+					stored = next;
+				});
+			},
+			set state(value: unknown) {
+				stored = unwrapOnWrite ? unwrapWriteThroughProxy(value) : value;
+				// Stand-in for the encode and validate traversal both adapters
+				// run on every write.
+				assertJsonCompatValue(stored);
+				encodeCborCompat(stored);
+			},
+		};
+	}
+
+	const initialState = () => ({
+		capability: "write",
+		executorCapabilities: {
+			tags: ["executor-relay-v1", "filesystem-v2-paths-v1"],
+		},
+	});
+
+	test("stacks proxy layers on nested values when the raw value is stored", () => {
+		const holder = createStateHolder(initialState(), false);
+
+		for (let i = 0; i < 5; i++) {
+			holder.state = { ...holder.state, capability: "write" };
+		}
+
+		// Each update stores the previous read's proxies, so the next read
+		// wraps them again. This nesting is what makes state traversal cost
+		// grow exponentially.
+		expect(
+			proxyDepth((holder.raw as any).executorCapabilities),
+		).toBeGreaterThan(1);
+	});
+
+	test("keeps stored state proxy-free across repeated spread updates", () => {
+		const holder = createStateHolder(initialState(), true);
+
+		const started = performance.now();
+		for (let i = 0; i < 12; i++) {
+			holder.state = { ...holder.state, capability: "write" };
+		}
+		const elapsed = performance.now() - started;
+
+		expect(proxyDepth((holder.raw as any).executorCapabilities)).toBe(0);
+		expect((holder.raw as any).executorCapabilities.tags).toEqual([
+			"executor-relay-v1",
+			"filesystem-v2-paths-v1",
+		]);
+		// Without unwrapping, twelve updates of this tiny state take minutes.
+		expect(elapsed).toBeLessThan(1000);
 	});
 });

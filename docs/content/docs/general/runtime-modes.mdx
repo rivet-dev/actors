@@ -1,11 +1,11 @@
 ---
 title: "Runtime Modes"
-description: "RivetKit supports two runtime modes for running your actors:"
+description: "Choose a long-running worker or serverless runtime mode for Rivet Actors based on your hosting platform and scaling model."
 skill: true
 ---
 
-export const imgServerless = { src: "https://assets.rivet.dev/website/actors/docs/general/runtime-modes/serverless.png", width: 2533, height: 744, format: "png" };
-export const imgRunners = { src: "https://assets.rivet.dev/website/actors/docs/general/runtime-modes/runners.png", width: 2568, height: 1553, format: "png" };
+export const imgServerless = { src: "https://assets.rivet.dev/website/docs/general/runtime-modes/serverless.png", width: 2533, height: 744, format: "png" };
+export const imgRunners = { src: "https://assets.rivet.dev/website/docs/general/runtime-modes/runners.png", width: 2568, height: 1553, format: "png" };
 
 - **Runner**: Default mode. Runs your actors as a long-lived process that connects out to Rivet. Used for local development and most deployments.
 - **Serverless**: Responds to HTTP requests from Rivet and scales automatically. Used for serverless platforms (Vercel, Cloudflare Workers, etc.) and set automatically by Rivet Cloud.

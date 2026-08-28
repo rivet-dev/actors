@@ -166,5 +166,27 @@ export const growDb = actor({
 			};
 		},
 		stats: async (c): Promise<StorageStats> => storageStats(c.db),
+		// Full-database verification for the compaction rig. This reads every
+		// page through the depot VFS, so it exercises PIDX resolution across
+		// folded shards and any remaining unfolded deltas. Deliberately not
+		// called during seeding, where it would cost O(current size) per call.
+		integrityCheck: async (
+			c,
+		): Promise<{ ok: boolean; result: string; rows: number } & StorageStats> => {
+			const rows = (await c.db.execute("PRAGMA integrity_check")) as Array<
+				Record<string, unknown>
+			>;
+			const messages = rows.map((row) => String(Object.values(row)[0]));
+			const result = messages.join("; ");
+			const counted = (await c.db.execute(
+				"SELECT count(*) AS n FROM grow_rows",
+			)) as Array<{ n: number }>;
+			return {
+				...(await storageStats(c.db)),
+				ok: messages.length === 1 && messages[0] === "ok",
+				result,
+				rows: counted[0]?.n ?? -1,
+			};
+		},
 	},
 });

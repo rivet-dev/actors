@@ -1,6 +1,6 @@
 ---
 title: "Production Checklist"
-description: "Checklist for deploying Rivet Actors to production."
+description: "Prepare Rivet Actors for production by reviewing authentication, persistence, scaling, observability, deployment, and recovery."
 skill: true
 ---
 
@@ -28,7 +28,7 @@ actor, not before shipping it.
 ### State
 
 - **Verify `c.state` does not grow unbounded.** Avoid using arrays or objects that grow over time in state. Use [SQLite](/actors/docs/sqlite) for unbounded or append-heavy data instead.
-- **Verify actor data does not exceed 10 GB.** Contact [enterprise support](https://rivet.dev/sales) if you need more storage.
+- **Verify actor data does not exceed 10 GB.** Contact [enterprise support](/talk-to-an-engineer/) if you need more storage.
 - **Use input parameters and `createState` for actor initialization.** See [Input Parameters](/actors/docs/input).
 
 ### Events
