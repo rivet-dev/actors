@@ -124,6 +124,12 @@ export const INSPECTOR_TAB_REGISTRATIONS: readonly TabRegistration[] = [
 	},
 ] as const;
 
+const availableInspectorRegistrations = __MCP_APP__
+	? INSPECTOR_TAB_REGISTRATIONS.filter(
+			(registration) => registration.descriptor.id !== "console",
+		)
+	: INSPECTOR_TAB_REGISTRATIONS;
+
 /**
  * Returns the descriptors of all inspector tabs available for this actor,
  * filtered by the live capability flags from the inspector context. Returns
@@ -179,12 +185,15 @@ export function useAvailableInspectorTabs(
 				.filter((t) => t.hidden === true)
 				.map((t) => t.id),
 		);
-		const builtIns = INSPECTOR_TAB_REGISTRATIONS.filter((t) =>
+		const builtIns = availableInspectorRegistrations.filter((t) =>
 			t.available(caps),
 		)
 			.map((t) => t.descriptor)
 			.filter((d) => !hideSet.has(d.id));
-		const customs: InspectorTabDescriptor[] = (tabConfig?.tabs ?? [])
+		const customs: InspectorTabDescriptor[] = (__MCP_APP__
+			? []
+			: (tabConfig?.tabs ?? [])
+		)
 			.filter((t) => t.hidden !== true && typeof t.label === "string")
 			.map((t) => ({
 				id: t.id,
@@ -224,7 +233,7 @@ export function InspectorTabContent({
 	actorId: ActorId;
 	activeTab: string | undefined;
 }) {
-	const registration = INSPECTOR_TAB_REGISTRATIONS.find(
+	const registration = availableInspectorRegistrations.find(
 		(t) => t.descriptor.id === activeTab,
 	);
 	if (!registration) return null;

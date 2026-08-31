@@ -1,4 +1,5 @@
 import { notFound, redirect } from "@tanstack/react-router";
+import { oauthProviderClient } from "@better-auth/oauth-provider/client";
 import { adminClient, organizationClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
 import { cloudEnv } from "./env";
@@ -8,7 +9,7 @@ const createClient = () =>
 	createAuthClient({
 		baseURL: cloudEnv().VITE_APP_CLOUD_API_URL,
 		fetchOptions: { credentials: "include" },
-		plugins: [organizationClient(), adminClient()],
+		plugins: [organizationClient(), adminClient(), oauthProviderClient()],
 	});
 
 type AuthClient = ReturnType<typeof createClient>;

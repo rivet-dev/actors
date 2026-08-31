@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en" class="dark">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Rivet Actor Inspector</title>
+		<script>
+			// MCP hosts may frame this app with `sandbox="allow-scripts"` and no
+			// `allow-same-origin`, which makes every `Window.localStorage` read throw
+			// a SecurityError. Shadow the accessors with in-memory stores before any
+			// module runs so storage reads degrade to per-session state.
+			(() => {
+				const memory = () => {
+					const entries = new Map();
+					return {
+						get length() {
+							return entries.size;
+						},
+						key(index) {
+							return [...entries.keys()][index] ?? null;
+						},
+						getItem(key) {
+							return entries.has(String(key))
+								? entries.get(String(key))
+								: null;
+						},
+						setItem(key, value) {
+							entries.set(String(key), String(value));
+						},
+						removeItem(key) {
+							entries.delete(String(key));
+						},
+						clear() {
+							entries.clear();
+						},
+					};
+				};
+				for (const name of ["localStorage", "sessionStorage"]) {
+					try {
+						const probe = "__rivet_storage_probe__";
+						window[name].setItem(probe, "1");
+						window[name].removeItem(probe);
+					} catch {
+						Object.defineProperty(window, name, {
+							configurable: true,
+							value: memory(),
+						});
+					}
+				}
+			})();
+		</script>
+	</head>
+	<body>
+		<div id="root"></div>
+		<script type="module" src="/src/mcp-main.tsx"></script>
+	</body>
+</html>

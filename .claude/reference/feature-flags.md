@@ -33,6 +33,7 @@ if (features.platform) {
 | `branding` | Rivet branding chrome. |
 | `datacenter` | Datacenter-related UI. |
 | `danger-zone` | Destructive settings actions (`features.dangerZone`). |
+| `mcp` | MCP connection settings card on the namespace settings drawer. Flavor-dependent content: `platform` renders the hosted `mcp.rivet.dev` endpoint pinned to this namespace, everything else renders the local stdio (`npx @rivet-dev/mcp`) config. |
 
 Deployment flavors map to flag sets roughly as: **cloud** = all on; **OSS** = `auth`/`platform`/`acl` off; **enterprise** = `acl` on, `auth`/`platform` off (engine enforces auth without a login UI). Do not treat `platform`/`auth` as "engine requires credentials" — that is `acl`. **`compute` is opt-in even on cloud** — each Railway service adds it to `VITE_FEATURE_FLAGS` per-environment (e.g. staging on, prod off) rather than inheriting the cloud default-on set.
 
@@ -48,15 +49,18 @@ Switch flavors in dev without restarting the server by setting the `localStorage
 // OSS self-host: everything off
 localStorage.setItem("FEATURE_FLAGS", ""); location.reload();
 
+// OSS self-host with the local MCP snippet shown
+localStorage.setItem("FEATURE_FLAGS", "mcp"); location.reload();
+
 // Full cloud: all flags on (see the commented canonical list in frontend/.env.local)
 localStorage.setItem(
   "FEATURE_FLAGS",
-  "compute,platform,acl,auth,captcha,branding,support,billing,datacenter,danger-zone,multitenancy",
+  "compute,platform,acl,auth,captcha,branding,support,billing,datacenter,danger-zone,multitenancy,mcp",
 );
 location.reload();
 
 // Enterprise: acl on, no login UI
-localStorage.setItem("FEATURE_FLAGS", "acl,branding,support,datacenter,danger-zone"); location.reload();
+localStorage.setItem("FEATURE_FLAGS", "acl,branding,support,datacenter,danger-zone,mcp"); location.reload();
 ```
 
 In an agent-browser / DevTools session, paste those into the page console. `localStorage` persists across reloads, so run `localStorage.removeItem("FEATURE_FLAGS")` to return to the env default when finished. Confirm the active flavor with `JSON.stringify(features)` after importing, or just observe whether auth/cloud chrome is present.
