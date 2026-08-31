@@ -528,6 +528,24 @@ where
 		.map_err(|error| callback_error(callback_name, error))
 }
 
+pub(crate) async fn call_bool<T>(
+	callback_name: &str,
+	callback: &CallbackTsfn<T>,
+	payload: T,
+) -> Result<bool>
+where
+	T: Send + TsfnPayloadSummary + 'static,
+{
+	log_tsfn_invocation(callback_name, &payload);
+	let promise = callback
+		.call_async::<Promise<bool>>(Ok(payload))
+		.await
+		.map_err(|error| callback_error(callback_name, error))?;
+	promise
+		.await
+		.map_err(|error| callback_error(callback_name, error))
+}
+
 #[allow(dead_code)]
 pub(crate) async fn call_buffer<T>(
 	callback_name: &str,

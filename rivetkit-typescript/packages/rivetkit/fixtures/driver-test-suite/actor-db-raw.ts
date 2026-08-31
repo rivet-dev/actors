@@ -1,6 +1,6 @@
 import { actor } from "rivetkit";
-import { db } from "@/common/database/mod";
 import { promiseWithResolvers } from "rivetkit/utils";
+import { db } from "@/common/database/mod";
 import type { registry } from "./registry-static";
 import { scheduleActorSleep } from "./schedule-sleep";
 
@@ -66,6 +66,8 @@ export const dbActorRaw = actor({
 		disconnectInsertDelayMs: 0,
 		lifecycleObserverKey: null as string | null,
 		transactionHolding: false,
+		atomicStateValue: null as string | null,
+		baselineCloneProbe: null as ArrayBuffer | null,
 	},
 	db: db({
 		onMigrate: async (db) => {
@@ -85,12 +87,22 @@ export const dbActorRaw = actor({
 			actorAwakeRelease: undefined,
 			sqlOperationSubmitted: false,
 			transactionRelease: undefined,
+			stateTransactionStarted: undefined,
+			stateTransactionRelease: undefined,
+			stateChangeValues: [] as Array<string | null>,
 		}) as {
 			actorAwakeHeld: boolean;
 			actorAwakeRelease: PromiseWithResolvers<void> | undefined;
 			sqlOperationSubmitted: boolean;
 			transactionRelease: PromiseWithResolvers<void> | undefined;
+			stateTransactionStarted: PromiseWithResolvers<void> | undefined;
+			stateTransactionRelease: PromiseWithResolvers<void> | undefined;
+			stateChangeValues: Array<string | null>;
 		},
+	createConnState: () => ({ atomicStateValue: null as string | null }),
+	onStateChange: (c, state) => {
+		c.vars.stateChangeValues.push(state.atomicStateValue);
+	},
 	onWake: async (c) => {
 		await recordLifecycleEvent(c, "wake");
 	},
@@ -294,6 +306,312 @@ export const dbActorRaw = actor({
 					throw error;
 				}
 			}
+		},
+		stateTransactionCommit: async (c, value: string) => {
+			await c.db.transaction(
+				async (tx) => {
+					await tx.execute(
+						"INSERT INTO test_data (value, payload, created_at) VALUES (?, '', ?)",
+						value,
+						Date.now(),
+					);
+					c.state.atomicStateValue = value;
+				},
+				{ experimental: { includeState: true } },
+			);
+			return {
+				state: c.state.atomicStateValue,
+				count: await c.db.execute<{ count: number }>(
+					"SELECT COUNT(*) AS count FROM test_data",
+				),
+			};
+		},
+		stateTransactionRollback: async (c, value: string) => {
+			try {
+				await c.db.transaction(
+					async (tx) => {
+						await tx.execute(
+							"INSERT INTO test_data (value, payload, created_at) VALUES (?, '', ?)",
+							value,
+							Date.now(),
+						);
+						c.state.atomicStateValue = value;
+						throw new Error("expected state transaction rollback");
+					},
+					{ experimental: { includeState: true } },
+				);
+			} catch (error) {
+				if (
+					!(error instanceof Error) ||
+					error.message !== "expected state transaction rollback"
+				) {
+					throw error;
+				}
+			}
+			return {
+				state: c.state.atomicStateValue,
+				count: await c.db.execute<{ count: number }>(
+					"SELECT COUNT(*) AS count FROM test_data",
+				),
+			};
+		},
+		stateTransactionHoldAndRollback: async (c, value: string) => {
+			c.vars.stateTransactionStarted = promiseWithResolvers<void>();
+			c.vars.stateTransactionRelease = promiseWithResolvers<void>();
+			try {
+				await c.db.transaction(
+					async (tx) => {
+						await tx.execute("SELECT 1");
+						c.state.atomicStateValue = value;
+						c.vars.stateTransactionStarted?.resolve();
+						await c.vars.stateTransactionRelease?.promise;
+						throw new Error(
+							"expected held state transaction rollback",
+						);
+					},
+					{ experimental: { includeState: true } },
+				);
+			} catch (error) {
+				if (
+					!(error instanceof Error) ||
+					error.message !== "expected held state transaction rollback"
+				) {
+					throw error;
+				}
+			}
+			return c.state.atomicStateValue;
+		},
+		stateTransactionRejectsMultiStatement: async (c) => {
+			try {
+				await c.db.transaction(
+					async (tx) => {
+						await tx.execute("SELECT 1; SELECT 2");
+					},
+					{ experimental: { includeState: true } },
+				);
+			} catch (error) {
+				return error instanceof Error ? error.message : String(error);
+			}
+			throw new Error("expected multi-statement transaction to fail");
+		},
+		waitForStateTransaction: async (c) => {
+			while (!c.vars.stateTransactionStarted) {
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			}
+			await c.vars.stateTransactionStarted.promise;
+		},
+		mutateStateDuringTransaction: async (c, value: string) => {
+			try {
+				c.state.atomicStateValue = value;
+			} finally {
+				c.vars.stateTransactionRelease?.resolve();
+			}
+		},
+		stateTransactionSetValue: async (c, value: string) => {
+			await c.db.transaction(
+				async (tx) => {
+					await tx.execute("SELECT 1");
+					c.state.atomicStateValue = value;
+				},
+				{ experimental: { includeState: true } },
+			);
+			return c.state.atomicStateValue;
+		},
+		releaseStateTransaction: (c) => {
+			c.vars.stateTransactionRelease?.resolve();
+		},
+		stateTransactionPreservesPredirtyState: async (c) => {
+			c.state.atomicStateValue = "before";
+			try {
+				await c.db.transaction(
+					async (tx) => {
+						await tx.execute("SELECT 1");
+						c.state.atomicStateValue = "inside";
+						throw new Error("expected pre-dirty rollback");
+					},
+					{ experimental: { includeState: true } },
+				);
+			} catch (error) {
+				if (
+					!(error instanceof Error) ||
+					error.message !== "expected pre-dirty rollback"
+				) {
+					throw error;
+				}
+			}
+			return c.state.atomicStateValue;
+		},
+		stateTransactionRejectsRetainedActorStateAfterRollback: async (c) => {
+			const retainedState = c.state;
+			try {
+				await c.db.transaction(
+					async (tx) => {
+						await tx.execute("SELECT 1");
+						retainedState.atomicStateValue = "inside";
+						throw new Error(
+							"expected retained actor state rollback",
+						);
+					},
+					{ experimental: { includeState: true } },
+				);
+			} catch (error) {
+				if (
+					!(error instanceof Error) ||
+					error.message !== "expected retained actor state rollback"
+				) {
+					throw error;
+				}
+			}
+
+			let staleWriteErrorCode: string | undefined;
+			try {
+				retainedState.atomicStateValue = "stale";
+			} catch (error) {
+				staleWriteErrorCode = (error as { code?: string }).code;
+			}
+			return {
+				staleWriteErrorCode,
+				state: c.state.atomicStateValue,
+			};
+		},
+		stateTransactionRejectsRetainedConnStateAfterRollback: async (c) => {
+			const conn = c.conns.values().next().value;
+			if (!conn) {
+				throw new Error("expected an active connection");
+			}
+			const retainedState = conn.state;
+			try {
+				await c.db.transaction(
+					async (tx) => {
+						await tx.execute("SELECT 1");
+						retainedState.atomicStateValue = "inside";
+						throw new Error(
+							"expected retained connection state rollback",
+						);
+					},
+					{ experimental: { includeState: true } },
+				);
+			} catch (error) {
+				if (
+					!(error instanceof Error) ||
+					error.message !==
+						"expected retained connection state rollback"
+				) {
+					throw error;
+				}
+			}
+
+			let staleWriteErrorCode: string | undefined;
+			try {
+				retainedState.atomicStateValue = "stale";
+			} catch (error) {
+				staleWriteErrorCode = (error as { code?: string }).code;
+			}
+			return {
+				staleWriteErrorCode,
+				state: conn.state.atomicStateValue,
+			};
+		},
+		stateTransactionRecoversFromBaselineCloneFailure: async (c) => {
+			const detached = new ArrayBuffer(1);
+			structuredClone(detached, { transfer: [detached] });
+			c.state.baselineCloneProbe = detached;
+			try {
+				await c.db.transaction(async () => {}, {
+					experimental: { includeState: true },
+				});
+			} catch {
+				// The detached buffer intentionally makes baseline cloning fail.
+			}
+			c.state.baselineCloneProbe = null;
+			await c.db.transaction(
+				async (tx) => {
+					await tx.execute("SELECT 1");
+					c.state.atomicStateValue = "after";
+				},
+				{ experimental: { includeState: true } },
+			);
+			return c.state.atomicStateValue;
+		},
+		stateTransactionHidesRolledBackStateFromOnStateChange: async (c) => {
+			c.state.atomicStateValue = "before";
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			c.vars.stateChangeValues = [];
+			try {
+				await c.db.transaction(
+					async (tx) => {
+						await tx.execute("SELECT 1");
+						c.state.atomicStateValue = "inside";
+						await new Promise<void>((resolve) =>
+							setImmediate(resolve),
+						);
+						throw new Error("expected onStateChange rollback");
+					},
+					{ experimental: { includeState: true } },
+				);
+			} catch (error) {
+				if (
+					!(error instanceof Error) ||
+					error.message !== "expected onStateChange rollback"
+				) {
+					throw error;
+				}
+			}
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			return {
+				state: c.state.atomicStateValue,
+				observed: c.vars.stateChangeValues,
+			};
+		},
+		stateTransactionRejectsImmediateSave: async (c) => {
+			let errorCode: string | undefined;
+			let errorMessage: string | undefined;
+			try {
+				await c.db.transaction(
+					async (tx) => {
+						await tx.execute("SELECT 1");
+						c.state.atomicStateValue = "inside";
+						await Promise.race([
+							c.saveState({ immediate: true }),
+							new Promise<never>((_, reject) =>
+								setTimeout(
+									() =>
+										reject(
+											new Error(
+												"immediate save timed out",
+											),
+										),
+									250,
+								),
+							),
+						]);
+					},
+					{ experimental: { includeState: true } },
+				);
+			} catch (error) {
+				errorCode = (error as { code?: string }).code;
+				errorMessage =
+					error instanceof Error ? error.message : String(error);
+			}
+
+			await c.db.transaction(
+				async (tx) => {
+					await tx.execute("SELECT 1");
+					c.state.atomicStateValue = "after";
+				},
+				{ experimental: { includeState: true } },
+			);
+			return { errorCode, errorMessage, state: c.state.atomicStateValue };
+		},
+		stateTransactionRejectsOuterClientReentry: async (c) => {
+			await c.db.transaction(
+				async () => {
+					await c.db.transaction(async () => {}, {
+						experimental: { includeState: true },
+					});
+				},
+				{ experimental: { includeState: true } },
+			);
 		},
 		transactionWithTimeout: async (c, timeout: number) => {
 			await c.db.transaction(
@@ -722,6 +1040,7 @@ export const actorRuntimeSocketWithoutDb = actor({
 		getActorRuntimeSocketPath: async (c) => {
 			return (await c.actorRuntimeSocket()).path;
 		},
+		destroy: (c) => c.destroy(),
 	},
 	options: {
 		enableActorRuntimeSocket: true,

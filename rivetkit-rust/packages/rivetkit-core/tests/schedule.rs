@@ -768,4 +768,137 @@ mod moved_tests {
 		advance_schedule_time(&ctx, BASE_TIME + 5_000, Duration::from_millis(1)).await;
 		assert_eq!(fired.load(Ordering::SeqCst), 1);
 	}
+
+	#[tokio::test]
+	async fn run_wake_and_schedule_share_the_earliest_alarm_without_overwriting() {
+		let ctx = context("actor-run-wake-multiplex");
+		ctx.set_run_wake_at(Some(BASE_TIME + 10_000)).await.unwrap();
+		ctx.wait_for_pending_alarm_writes().await;
+		assert_eq!(
+			crate::actor::internal_storage::load_last_pushed_alarm(ctx.sql())
+				.await
+				.unwrap(),
+			Some(BASE_TIME + 10_000),
+		);
+
+		ctx.at(BASE_TIME + 5_000, "tick", &[]).await.unwrap();
+		ctx.wait_for_pending_alarm_writes().await;
+		assert_eq!(
+			crate::actor::internal_storage::load_last_pushed_alarm(ctx.sql())
+				.await
+				.unwrap(),
+			Some(BASE_TIME + 5_000),
+		);
+
+		ctx.set_schedule_time_for_tests(BASE_TIME + 5_000);
+		let schedules = ctx.take_due_schedule_dispatches().await.unwrap();
+		assert_eq!(schedules.len(), 1);
+		assert_eq!(ctx.run_wake_at(), Some(BASE_TIME + 10_000));
+		ctx.wait_for_pending_alarm_writes().await;
+		assert_eq!(
+			crate::actor::internal_storage::load_last_pushed_alarm(ctx.sql())
+				.await
+				.unwrap(),
+			Some(BASE_TIME + 10_000),
+		);
+
+		ctx.set_schedule_time_for_tests(BASE_TIME + 10_000);
+		let (wake_at, _) = ctx
+			.consume_due_run_wake()
+			.await
+			.unwrap()
+			.expect("run wake should be due");
+		assert_eq!(wake_at, BASE_TIME + 10_000);
+		assert_eq!(ctx.run_wake_at(), None);
+	}
+
+	#[tokio::test]
+	async fn stale_run_wake_restore_does_not_resurrect_a_cleared_deadline() {
+		let ctx = context("actor-run-wake-stale-clear");
+		ctx.set_run_wake_at(Some(BASE_TIME)).await.unwrap();
+		let (wake_at, revision) = ctx
+			.consume_due_run_wake()
+			.await
+			.unwrap()
+			.expect("run wake should be due");
+
+		ctx.set_run_wake_at(None).await.unwrap();
+		assert!(
+			!ctx.restore_run_wake_at_if_unchanged(wake_at, revision)
+				.await
+				.unwrap()
+		);
+		assert_eq!(ctx.run_wake_at(), None);
+	}
+
+	#[tokio::test]
+	async fn stale_run_wake_restore_does_not_overwrite_a_newer_deadline() {
+		let ctx = context("actor-run-wake-stale-replace");
+		ctx.set_run_wake_at(Some(BASE_TIME)).await.unwrap();
+		let (wake_at, revision) = ctx
+			.consume_due_run_wake()
+			.await
+			.unwrap()
+			.expect("run wake should be due");
+
+		let newer = BASE_TIME + 10_000;
+		ctx.set_run_wake_at(Some(newer)).await.unwrap();
+		assert!(
+			!ctx.restore_run_wake_at_if_unchanged(wake_at, revision)
+				.await
+				.unwrap()
+		);
+		assert_eq!(ctx.run_wake_at(), Some(newer));
+	}
+
+	#[tokio::test]
+	async fn clearing_run_wake_preserves_a_later_schedule_alarm() {
+		let ctx = context("actor-run-wake-clear");
+		ctx.at(BASE_TIME + 10_000, "tick", &[]).await.unwrap();
+		ctx.set_run_wake_at(Some(BASE_TIME + 5_000)).await.unwrap();
+		ctx.wait_for_pending_alarm_writes().await;
+		assert_eq!(
+			crate::actor::internal_storage::load_last_pushed_alarm(ctx.sql())
+				.await
+				.unwrap(),
+			Some(BASE_TIME + 5_000),
+		);
+
+		ctx.set_run_wake_at(None).await.unwrap();
+		ctx.wait_for_pending_alarm_writes().await;
+		assert_eq!(
+			crate::actor::internal_storage::load_last_pushed_alarm(ctx.sql())
+				.await
+				.unwrap(),
+			Some(BASE_TIME + 10_000),
+		);
+	}
+
+	#[tokio::test]
+	async fn run_wake_is_persisted_independently_from_transport_alarm() {
+		let harness = ActorContextHarness::new();
+		let ctx = harness.context("actor-run-wake-persist", "actor", Vec::new(), "local");
+		ctx.set_schedule_time_for_tests(BASE_TIME);
+		ctx.set_run_wake_at(Some(BASE_TIME + 7_000)).await.unwrap();
+		ctx.wait_for_pending_alarm_writes().await;
+		crate::actor::internal_storage::persist_last_pushed_alarm(
+			ctx.sql(),
+			Some(BASE_TIME + 9_000),
+		)
+		.await
+		.unwrap();
+
+		assert_eq!(
+			crate::actor::internal_storage::load_run_wake_at(ctx.sql())
+				.await
+				.unwrap(),
+			Some(BASE_TIME + 7_000),
+		);
+		assert_eq!(
+			crate::actor::internal_storage::load_last_pushed_alarm(ctx.sql())
+				.await
+				.unwrap(),
+			Some(BASE_TIME + 9_000),
+		);
+	}
 }

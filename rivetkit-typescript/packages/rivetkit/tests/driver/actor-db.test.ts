@@ -1,8 +1,8 @@
 // @ts-nocheck
 
+import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
-import { once } from "node:events";
 import { describe, expect, test, vi } from "vitest";
 import {
 	decodeServerFrame,
@@ -231,7 +231,7 @@ describeDriverMatrix(
 					driverTestConfig.runtime !== "native" ||
 						driverTestConfig.sqliteBackend !== "local",
 				)(
-					"rejects Actor Runtime Socket provisioning when opt-in or SQLite is missing",
+					"requires opt-in and provisions the default embedded database",
 					async (c) => {
 						const { client } = await setupDriverTest(
 							c,
@@ -252,12 +252,14 @@ describeDriverMatrix(
 							client.actorRuntimeSocketWithoutDb.getOrCreate([
 								`runtime-socket-without-db-${crypto.randomUUID()}`,
 							]);
-						await expect(
-							withoutDb.getActorRuntimeSocketPath(),
-						).rejects.toMatchObject({
-							group: "actor_runtime_socket",
-							code: "database_unavailable",
-						});
+						const path =
+							await withoutDb.getActorRuntimeSocketPath();
+						expect(path).toBeTruthy();
+						expect(existsSync(path)).toBe(true);
+						await withoutDb.destroy();
+						await vi.waitFor(() =>
+							expect(existsSync(path)).toBe(false),
+						);
 					},
 					dbTestTimeout,
 				);
@@ -731,6 +733,285 @@ describeDriverMatrix(
 						expect(
 							await actor.transactionAutomaticRollback(),
 						).toEqual([{ id: 2, value: "after" }]);
+					},
+					dbTestTimeout,
+				);
+
+				test(
+					"commits and rolls back state-aware transactions through the runtime bridge",
+					async (c) => {
+						const { client } = await setupDriverTest(
+							c,
+							driverTestConfig,
+						);
+						const actorKey = `db-${variant}-state-tx-${crypto.randomUUID()}`;
+						const observerKey = `${actorKey}-observer`;
+						const observer = client.lifecycleObserver.getOrCreate([
+							observerKey,
+						]);
+						await observer.clearEvents();
+						const actor = getDbActor(client, variant).getOrCreate([
+							actorKey,
+						]);
+
+						await actor.reset();
+						await actor.configureLifecycleObserver(observerKey);
+						expect(
+							await actor.stateTransactionCommit("committed"),
+						).toEqual({
+							state: "committed",
+							count: [{ count: 1 }],
+						});
+						expect(
+							await actor.stateTransactionRollback("rolled-back"),
+						).toEqual({
+							state: "committed",
+							count: [{ count: 1 }],
+						});
+
+						// The in-process Wasm driver hosts a single envoy process, so
+						// explicitly sleeping its actor also tears down the test host.
+						// Native exercises the persisted reload; both runtimes exercise
+						// the commit and rollback bridges above.
+						if (
+							driverTestConfig.runtime === "native" &&
+							!driverTestConfig.skip?.sleep
+						) {
+							const sleepRequestedAt = Date.now();
+							await actor.triggerSleep();
+							await waitForDbLifecycleEvent(
+								driverTestConfig,
+								observer,
+								actorKey,
+								"sleep",
+								sleepRequestedAt,
+							);
+							expect(
+								await actor.stateTransactionRollback(
+									"rolled-back-after-wake",
+								),
+							).toEqual({
+								state: "committed",
+								count: [{ count: 1 }],
+							});
+						}
+					},
+					dbTestTimeout,
+				);
+
+				test(
+					"isolates state-aware transactions from concurrent state mutations",
+					async (c) => {
+						const { client } = await setupDriverTest(
+							c,
+							driverTestConfig,
+						);
+						const actor = getDbActor(client, variant).getOrCreate([
+							`db-${variant}-state-tx-isolation-${crypto.randomUUID()}`,
+						]);
+						await actor.reset();
+
+						const rollback =
+							actor.stateTransactionHoldAndRollback("held");
+						await actor.waitForStateTransaction();
+						await expect(
+							actor.mutateStateDuringTransaction("concurrent"),
+						).rejects.toMatchObject({
+							group: "actor",
+							code: "state_transaction_conflict",
+						});
+						expect(await rollback).toBeNull();
+					},
+					dbTestTimeout,
+				);
+
+				test(
+					"queues state transactions from separate actions",
+					async (c) => {
+						const { client } = await setupDriverTest(
+							c,
+							driverTestConfig,
+						);
+						const actor = getDbActor(client, variant).getOrCreate([
+							`db-${variant}-state-tx-queued-${crypto.randomUUID()}`,
+						]);
+						await actor.reset();
+
+						const rollback =
+							actor.stateTransactionHoldAndRollback("first");
+						await actor.waitForStateTransaction();
+						const commit = actor.stateTransactionSetValue("second");
+						await waitFor(driverTestConfig, 50);
+						await actor.releaseStateTransaction();
+
+						expect(await rollback).toBeNull();
+						expect(await commit).toBe("second");
+					},
+					dbTestTimeout,
+				);
+
+				test(
+					"rejects multi-statement state-aware transactions locally",
+					async (c) => {
+						const { client } = await setupDriverTest(
+							c,
+							driverTestConfig,
+						);
+						const actor = getDbActor(client, variant).getOrCreate([
+							`db-${variant}-state-tx-multi-${crypto.randomUUID()}`,
+						]);
+
+						expect(
+							await actor.stateTransactionRejectsMultiStatement(),
+						).toContain("single-statement execute calls");
+					},
+					dbTestTimeout,
+				);
+
+				test(
+					"preserves unsaved state from before a state transaction rollback",
+					async (c) => {
+						const { client } = await setupDriverTest(
+							c,
+							driverTestConfig,
+						);
+						const actor = getDbActor(client, variant).getOrCreate([
+							`db-${variant}-state-tx-predirty-${crypto.randomUUID()}`,
+						]);
+						await actor.reset();
+
+						expect(
+							await actor.stateTransactionPreservesPredirtyState(),
+						).toBe("before");
+					},
+					dbTestTimeout,
+				);
+
+				test(
+					"rejects state transaction reentry through the outer database client",
+					async (c) => {
+						const { client } = await setupDriverTest(
+							c,
+							driverTestConfig,
+						);
+						const actor = getDbActor(client, variant).getOrCreate([
+							`db-${variant}-state-tx-reentry-${crypto.randomUUID()}`,
+						]);
+
+						await expect(
+							actor.stateTransactionRejectsOuterClientReentry(),
+						).rejects.toMatchObject({
+							group: "actor",
+							code: "state_transaction_conflict",
+						});
+					},
+					dbTestTimeout,
+				);
+
+				test(
+					"rejects retained actor state proxies after rollback",
+					async (c) => {
+						const { client } = await setupDriverTest(
+							c,
+							driverTestConfig,
+						);
+						const actor = getDbActor(client, variant).getOrCreate([
+							`db-${variant}-state-tx-stale-actor-${crypto.randomUUID()}`,
+						]);
+						await actor.reset();
+
+						expect(
+							await actor.stateTransactionRejectsRetainedActorStateAfterRollback(),
+						).toEqual({
+							staleWriteErrorCode: "state_transaction_conflict",
+							state: null,
+						});
+					},
+					dbTestTimeout,
+				);
+
+				test(
+					"rejects retained connection state proxies after rollback",
+					async (c) => {
+						const { client } = await setupDriverTest(
+							c,
+							driverTestConfig,
+						);
+						const actor = getDbActor(client, variant).getOrCreate([
+							`db-${variant}-state-tx-stale-conn-${crypto.randomUUID()}`,
+						]);
+						const connection = actor.connect();
+						try {
+							await vi.waitFor(() => {
+								expect(connection.isConnected).toBe(true);
+							});
+							expect(
+								await actor.stateTransactionRejectsRetainedConnStateAfterRollback(),
+							).toEqual({
+								staleWriteErrorCode:
+									"state_transaction_conflict",
+								state: null,
+							});
+						} finally {
+							await connection.dispose();
+						}
+					},
+					dbTestTimeout,
+				);
+
+				test(
+					"releases transaction admission when baseline capture fails",
+					async (c) => {
+						const { client } = await setupDriverTest(
+							c,
+							driverTestConfig,
+						);
+						const actor = getDbActor(client, variant).getOrCreate([
+							`db-${variant}-state-tx-clone-failure-${crypto.randomUUID()}`,
+						]);
+
+						await expect(
+							actor.stateTransactionRecoversFromBaselineCloneFailure(),
+						).resolves.toBe("after");
+					},
+					dbTestTimeout,
+				);
+
+				test(
+					"does not expose rolled-back state through onStateChange",
+					async (c) => {
+						const { client } = await setupDriverTest(
+							c,
+							driverTestConfig,
+						);
+						const actor = getDbActor(client, variant).getOrCreate([
+							`db-${variant}-state-tx-on-change-${crypto.randomUUID()}`,
+						]);
+
+						expect(
+							await actor.stateTransactionHidesRolledBackStateFromOnStateChange(),
+						).toEqual({ state: "before", observed: ["before"] });
+					},
+					dbTestTimeout,
+				);
+
+				test(
+					"rejects immediate saves inside state-aware transactions without deadlocking",
+					async (c) => {
+						const { client } = await setupDriverTest(
+							c,
+							driverTestConfig,
+						);
+						const actor = getDbActor(client, variant).getOrCreate([
+							`db-${variant}-state-tx-immediate-save-${crypto.randomUUID()}`,
+						]);
+
+						expect(
+							await actor.stateTransactionRejectsImmediateSave(),
+						).toMatchObject({
+							errorCode: "state_transaction_conflict",
+							state: "after",
+						});
 					},
 					dbTestTimeout,
 				);

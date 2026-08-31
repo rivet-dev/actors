@@ -24,6 +24,7 @@ mod moved_tests {
 	use crate::actor::messages::StateDelta;
 	use crate::actor::task::LifecycleEvent;
 	use crate::kv::tests::new_in_memory;
+	use crate::sqlite::BindParam;
 	use crate::{ActorContext, RequestSaveOpts};
 
 	use super::{
@@ -320,6 +321,727 @@ mod moved_tests {
 				.expect("deleted hibernation should load")
 				.into_iter()
 				.all(|persisted| persisted.id != conn.id())
+		);
+	}
+
+	#[tokio::test]
+	async fn state_transaction_commits_user_sql_actor_state_and_dirty_connection_together() {
+		let ctx = new_with_kv(
+			"actor-state-tx",
+			"state-tx",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		ctx.sql()
+			.execute(
+				"CREATE TABLE user_values (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
+				None,
+			)
+			.await
+			.expect("create user table");
+
+		let conn = ConnHandle::new("conn-state-tx", Vec::new(), vec![1], true);
+		conn.configure_hibernation(Some(HibernatableConnectionMetadata {
+			gateway_id: *b"gate",
+			request_id: *b"tx01",
+			server_message_index: 1,
+			client_message_index: 2,
+			request_path: "/ws".to_owned(),
+			request_headers: Default::default(),
+		}));
+		ctx.add_conn(conn.clone());
+		conn.set_state_initial(vec![7, 8, 9]);
+		ctx.request_hibernation_transport_save(conn.id());
+		let removed_conn = ConnHandle::new("conn-state-tx-removed", Vec::new(), vec![3], true);
+		removed_conn.configure_hibernation(Some(HibernatableConnectionMetadata {
+			gateway_id: *b"gate",
+			request_id: *b"tx03",
+			server_message_index: 3,
+			client_message_index: 4,
+			request_path: "/removed".to_owned(),
+			request_headers: Default::default(),
+		}));
+		ctx.add_conn(removed_conn.clone());
+		ctx.save_state(vec![StateDelta::ConnHibernation {
+			conn: removed_conn.id().to_owned(),
+			bytes: vec![3],
+		}])
+		.await
+		.expect("seed connection that will be removed");
+		ctx.request_hibernation_transport_removal(removed_conn.id().to_owned());
+
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		transaction
+			.execute(
+				"INSERT INTO user_values (id, value) VALUES (1, 'committed')",
+				None,
+			)
+			.await
+			.expect("insert user row");
+		transaction
+			.commit(vec![StateDelta::ActorState(vec![4, 5, 6])])
+			.await
+			.expect("commit state transaction");
+
+		let rows = ctx
+			.sql()
+			.query("SELECT value FROM user_values WHERE id = 1", None)
+			.await
+			.expect("query user row");
+		assert_eq!(
+			rows.rows,
+			vec![vec![crate::sqlite::ColumnValue::Text("committed".into())]],
+		);
+		let actor = internal_storage::load_actor_snapshot(ctx.sql())
+			.await
+			.expect("load actor snapshot")
+			.expect("actor snapshot should exist")
+			.actor;
+		assert_eq!(actor.state, vec![4, 5, 6]);
+		let connections = internal_storage::load_connections(ctx.sql())
+			.await
+			.expect("load connection snapshots");
+		assert_eq!(connections.len(), 1);
+		assert_eq!(connections[0].id, conn.id());
+		assert_eq!(connections[0].state, vec![7, 8, 9]);
+		assert!(!ctx.has_pending_hibernation_changes());
+	}
+
+	#[tokio::test]
+	async fn state_transaction_begin_failure_restores_scheduled_state_save() {
+		let ctx = new_with_kv(
+			"actor-state-tx-begin-failure",
+			"state-tx-begin-failure",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		ctx.set_input(Some(vec![1]));
+		assert!(ctx.0.pending_save.lock().is_some());
+		let epoch_before = ctx.state_transaction_epoch();
+
+		let result = ctx.begin_state_transaction(Some(Duration::ZERO)).await;
+		assert!(
+			result.is_err(),
+			"zero timeout must reject transaction begin"
+		);
+
+		assert!(
+			ctx.0.pending_save.lock().is_some(),
+			"begin failure must reschedule the save cleared before acquiring exclusion",
+		);
+		assert_eq!(ctx.state_transaction_epoch(), epoch_before + 2);
+	}
+
+	#[tokio::test]
+	async fn state_transaction_callback_rollback_reschedules_state_and_reverts_sql() {
+		let ctx = new_with_kv(
+			"actor-state-tx-rollback",
+			"state-tx-rollback",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		ctx.sql()
+			.execute(
+				"CREATE TABLE user_values (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
+				None,
+			)
+			.await
+			.expect("create user table");
+		ctx.set_input(Some(vec![1]));
+
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		transaction
+			.execute(
+				"INSERT INTO user_values (id, value) VALUES (1, 'rolled-back')",
+				None,
+			)
+			.await
+			.expect("insert user row");
+		transaction
+			.rollback()
+			.await
+			.expect("roll back state transaction");
+
+		let rows = ctx
+			.sql()
+			.query("SELECT value FROM user_values", None)
+			.await
+			.expect("query user rows");
+		assert!(rows.rows.is_empty());
+		assert!(ctx.0.pending_save.lock().is_some());
+	}
+
+	#[tokio::test]
+	async fn save_serialized_during_state_transaction_is_discarded_after_rollback() {
+		let ctx = new_with_kv(
+			"actor-state-tx-stale-save",
+			"state-tx-stale-save",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		ctx.save_state(vec![StateDelta::ActorState(vec![1])])
+			.await
+			.expect("seed actor state");
+
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		let serialization_epoch = ctx.state_transaction_epoch();
+		let stale_save = tokio::spawn({
+			let ctx = ctx.clone();
+			async move {
+				ctx.save_state_with_revision_at_transaction_epoch(
+					vec![StateDelta::ActorState(vec![2])],
+					ctx.save_request_revision(),
+					serialization_epoch,
+				)
+				.await
+			}
+		});
+		tokio::task::yield_now().await;
+		transaction
+			.rollback()
+			.await
+			.expect("roll back state transaction");
+
+		assert!(!stale_save.await.expect("stale save task").expect("stale save"));
+		assert_eq!(ctx.state(), vec![1]);
+	}
+
+	#[tokio::test]
+	async fn state_transaction_rollback_restores_live_connection_state_at_admission() {
+		let ctx = new_with_kv(
+			"actor-state-tx-conn-rollback",
+			"state-tx-conn-rollback",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		let conn = ConnHandle::new("conn-state-tx-rollback", Vec::new(), vec![1], true);
+		ctx.add_conn(conn.clone());
+		conn.set_state(vec![2]);
+
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		conn.set_state(vec![3]);
+		transaction
+			.rollback()
+			.await
+			.expect("roll back state transaction");
+
+		assert_eq!(conn.state(), vec![2]);
+	}
+
+	#[tokio::test]
+	async fn state_transaction_finalization_is_one_shot_across_clones() {
+		let ctx = new_with_kv(
+			"actor-state-tx-finalize",
+			"state-tx-finalize",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		let cloned = transaction.clone();
+		transaction
+			.commit(Vec::new())
+			.await
+			.expect("first finalization should commit");
+
+		assert!(cloned.commit(Vec::new()).await.is_err());
+		assert!(cloned.rollback().await.is_err());
+		ctx.sql()
+			.execute("SELECT 1", None)
+			.await
+			.expect("coordinator should be released after one commit");
+	}
+
+	#[tokio::test]
+	async fn state_transaction_combined_statement_budget_accepts_exact_boundary() {
+		let ctx = new_with_kv(
+			"actor-state-tx-budget-boundary",
+			"state-tx-budget-boundary",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		// Actor state adds two internal upserts, reaching the combined 128-row
+		// limit exactly.
+		for _ in 0..126 {
+			transaction
+				.execute("SELECT 1", None)
+				.await
+				.expect("execute boundary statement");
+		}
+		transaction
+			.commit(vec![StateDelta::ActorState(vec![1])])
+			.await
+			.expect("exact transaction budget boundary should commit");
+		assert_eq!(
+			internal_storage::load_actor_snapshot(ctx.sql())
+				.await
+				.expect("load actor snapshot")
+				.expect("actor snapshot should exist")
+				.actor
+				.state,
+			vec![1],
+		);
+	}
+
+	#[tokio::test]
+	async fn state_transaction_combined_payload_budget_accepts_exact_boundary() {
+		let ctx = new_with_kv(
+			"actor-state-tx-payload-boundary",
+			"state-tx-payload-boundary",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		// The actor upsert contributes one eight-byte integer and the state
+		// upsert contributes the one-byte state below.
+		transaction
+			.execute(
+				"SELECT ?",
+				Some(vec![BindParam::Blob(vec![
+					0;
+					internal_storage::KV_TX_MAX_PAYLOAD_BYTES
+						- 9
+				])]),
+			)
+			.await
+			.expect("execute exact payload boundary statement");
+		transaction
+			.commit(vec![StateDelta::ActorState(vec![1])])
+			.await
+			.expect("exact payload budget boundary should commit");
+	}
+
+	#[tokio::test]
+	async fn state_transaction_rejects_manual_transaction_terminators() {
+		for sql in [
+			"COMMIT",
+			"/* leading comment */ END TRANSACTION",
+			"-- leading comment\nROLLBACK TRANSACTION",
+		] {
+			let ctx = new_with_kv(
+				format!("actor-state-tx-terminal-{sql}"),
+				"state-tx-terminal",
+				Vec::new(),
+				"local",
+				new_in_memory(),
+			);
+			let transaction = ctx
+				.begin_state_transaction(None)
+				.await
+				.expect("begin state transaction");
+			let error = transaction
+				.execute(sql, None)
+				.await
+				.expect_err("manual transaction terminator must be rejected");
+			assert!(
+				format!("{error:#}").contains("cannot execute transaction terminator"),
+				"unexpected error for {sql}: {error:#}",
+			);
+			transaction
+				.rollback()
+				.await
+				.expect("rejected terminator must leave rollback available");
+		}
+	}
+
+	#[tokio::test]
+	async fn state_transaction_allows_rollback_to_savepoint() {
+		let ctx = new_with_kv(
+			"actor-state-tx-rollback-savepoint",
+			"state-tx-rollback-savepoint",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		ctx.sql()
+			.execute("CREATE TABLE user_values (value TEXT NOT NULL)", None)
+			.await
+			.expect("create user table");
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		transaction
+			.execute("SAVEPOINT nested", None)
+			.await
+			.expect("create savepoint");
+		transaction
+			.execute("INSERT INTO user_values VALUES ('discarded')", None)
+			.await
+			.expect("insert user row");
+		transaction
+			.execute(
+				"ROLLBACK TRANSACTION /* comment */ TO SAVEPOINT nested",
+				None,
+			)
+			.await
+			.expect("rollback to savepoint remains supported");
+		transaction
+			.execute("RELEASE SAVEPOINT nested", None)
+			.await
+			.expect("release savepoint");
+		transaction
+			.commit(vec![StateDelta::ActorState(vec![9])])
+			.await
+			.expect("commit state transaction");
+
+		assert!(
+			ctx.sql()
+				.query("SELECT value FROM user_values", None)
+				.await
+				.expect("query user values")
+				.rows
+				.is_empty()
+		);
+	}
+
+	#[tokio::test]
+	async fn state_transaction_counts_unbound_sql_text_toward_payload_budget() {
+		let ctx = new_with_kv(
+			"actor-state-tx-inline-payload",
+			"state-tx-inline-payload",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		ctx.sql()
+			.execute("CREATE TABLE user_values (value TEXT NOT NULL)", None)
+			.await
+			.expect("create user table");
+
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		transaction
+			.execute("INSERT INTO user_values VALUES ('before')", None)
+			.await
+			.expect("insert user row");
+		transaction
+			.execute(
+				format!(
+					"SELECT '{}'",
+					"x".repeat(internal_storage::KV_TX_MAX_PAYLOAD_BYTES)
+				),
+				None,
+			)
+			.await
+			.expect("execute oversized inline literal before commit validation");
+		let error = transaction
+			.commit(Vec::new())
+			.await
+			.expect_err("inline SQL text must count toward the payload budget");
+		assert!(format!("{error:#}").contains("exceeds transaction budget"));
+
+		let rows = ctx
+			.sql()
+			.query("SELECT value FROM user_values", None)
+			.await
+			.expect("query rolled-back user rows");
+		assert!(rows.rows.is_empty());
+	}
+
+	#[tokio::test]
+	async fn state_transaction_combined_statement_budget_overflow_rolls_back_user_sql() {
+		let ctx = new_with_kv(
+			"actor-state-tx-budget-overflow",
+			"state-tx-budget-overflow",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		ctx.sql()
+			.execute(
+				"CREATE TABLE user_values (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
+				None,
+			)
+			.await
+			.expect("create user table");
+		ctx.sql()
+			.execute(
+				"INSERT INTO user_values (id, value) VALUES (1, 'before')",
+				None,
+			)
+			.await
+			.expect("seed user row");
+
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		transaction
+			.execute("UPDATE user_values SET value = 'after' WHERE id = 1", None)
+			.await
+			.expect("update user row");
+		for _ in 0..126 {
+			transaction
+				.execute("SELECT 1", None)
+				.await
+				.expect("execute counted statement");
+		}
+		let error = transaction
+			.commit(vec![StateDelta::ActorState(vec![2])])
+			.await
+			.expect_err("combined state statements must overflow row budget");
+		assert!(format!("{error:#}").contains("exceeds transaction budget"));
+
+		let rows = ctx
+			.sql()
+			.query("SELECT value FROM user_values WHERE id = 1", None)
+			.await
+			.expect("query rolled-back user row");
+		assert_eq!(
+			rows.rows,
+			vec![vec![crate::sqlite::ColumnValue::Text("before".into())]],
+		);
+		assert!(
+			internal_storage::load_actor_snapshot(ctx.sql())
+				.await
+				.expect("load actor snapshot")
+				.is_none(),
+		);
+	}
+
+	#[tokio::test]
+	async fn actor_state_payload_overflow_rolls_back_user_sql() {
+		let ctx = new_with_kv(
+			"actor-state-tx-state-overflow",
+			"state-tx-state-overflow",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		ctx.sql()
+			.execute(
+				"CREATE TABLE user_values (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
+				None,
+			)
+			.await
+			.expect("create user table");
+		ctx.sql()
+			.execute(
+				"INSERT INTO user_values (id, value) VALUES (1, 'before')",
+				None,
+			)
+			.await
+			.expect("seed user row");
+
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		transaction
+			.execute("UPDATE user_values SET value = 'after' WHERE id = 1", None)
+			.await
+			.expect("update user row");
+		transaction
+			.execute(
+				"SELECT ?",
+				Some(vec![BindParam::Blob(vec![
+					0;
+					internal_storage::KV_TX_MAX_PAYLOAD_BYTES
+						- 8
+				])]),
+			)
+			.await
+			.expect("execute user payload at pre-state limit");
+		transaction
+			.commit(vec![StateDelta::ActorState(vec![2])])
+			.await
+			.expect_err("actor state byte must overflow combined payload budget");
+
+		let rows = ctx
+			.sql()
+			.query("SELECT value FROM user_values WHERE id = 1", None)
+			.await
+			.expect("query rolled-back user row");
+		assert_eq!(
+			rows.rows,
+			vec![vec![crate::sqlite::ColumnValue::Text("before".into())]],
+		);
+		assert!(
+			internal_storage::load_actor_snapshot(ctx.sql())
+				.await
+				.expect("load actor snapshot")
+				.is_none(),
+		);
+	}
+
+	#[tokio::test]
+	async fn dropping_state_transaction_releases_state_save_exclusion() {
+		let ctx = new_with_kv(
+			"actor-state-tx-drop",
+			"state-tx-drop",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		let save_guard = Arc::clone(&ctx.0.save_guard);
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		assert!(save_guard.try_lock().is_err());
+
+		drop(transaction);
+		let acquired_save_guard =
+			tokio::time::timeout(Duration::from_millis(100), save_guard.lock())
+				.await
+				.expect("dropping transaction must release save exclusion");
+		drop(acquired_save_guard);
+		tokio::time::timeout(Duration::from_secs(1), ctx.sql().execute("SELECT 1", None))
+			.await
+			.expect("dropping transaction must release sqlite coordinator")
+			.expect("regular sqlite work should resume after dropped transaction");
+	}
+
+	#[tokio::test]
+	async fn state_transaction_failure_rolls_back_sql_and_restores_hibernation_changes() {
+		let ctx = new_with_kv(
+			"actor-state-tx-failure",
+			"state-tx-failure",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		ctx.sql()
+			.execute(
+				"CREATE TABLE user_values (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
+				None,
+			)
+			.await
+			.expect("create user table");
+		ctx.sql()
+			.execute(
+				"INSERT INTO user_values (id, value) VALUES (1, 'before')",
+				None,
+			)
+			.await
+			.expect("seed user row");
+
+		let conn = ConnHandle::new("conn-state-tx-failure", Vec::new(), vec![1], true);
+		conn.configure_hibernation(Some(HibernatableConnectionMetadata {
+			gateway_id: *b"gate",
+			request_id: *b"tx02",
+			server_message_index: 1,
+			client_message_index: 2,
+			request_path: "/ws".to_owned(),
+			request_headers: Default::default(),
+		}));
+		ctx.add_conn(conn.clone());
+		conn.set_state_initial(vec![2]);
+		ctx.request_hibernation_transport_save(conn.id());
+
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		transaction
+			.execute("UPDATE user_values SET value = 'after' WHERE id = 1", None)
+			.await
+			.expect("update user row");
+		transaction
+			.commit(vec![
+				StateDelta::ActorState(vec![9]),
+				StateDelta::ConnHibernation {
+					conn: "missing-connection".to_owned(),
+					bytes: vec![3],
+				},
+			])
+			.await
+			.expect_err("invalid hibernation delta must fail the atomic commit");
+
+		let rows = ctx
+			.sql()
+			.query("SELECT value FROM user_values WHERE id = 1", None)
+			.await
+			.expect("query user row");
+		assert_eq!(
+			rows.rows,
+			vec![vec![crate::sqlite::ColumnValue::Text("before".into())]],
+		);
+		assert!(
+			internal_storage::load_actor_snapshot(ctx.sql())
+				.await
+				.expect("load actor snapshot")
+				.is_none(),
+		);
+		assert!(ctx.has_pending_hibernation_changes());
+	}
+
+	#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+	async fn state_mutation_after_transaction_snapshot_remains_dirty() {
+		let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+		let release = Arc::new(Semaphore::new(0));
+		let ctx = Arc::new(new_with_kv_and_write_gate(
+			"actor-state-tx-revision",
+			"state-tx-revision",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+			TestSqliteWriteGate {
+				sql_prefix: "INSERT INTO _rivet_actor (",
+				entered_tx,
+				release: release.clone(),
+			},
+		));
+		ctx.set_input(Some(vec![1]));
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		let commit = tokio::spawn({
+			let transaction = transaction.clone();
+			async move {
+				transaction
+					.commit(vec![StateDelta::ActorState(vec![1])])
+					.await
+			}
+		});
+		entered_rx
+			.recv()
+			.await
+			.expect("commit should reach actor snapshot write");
+
+		ctx.set_input(Some(vec![2]));
+		release.add_permits(1);
+		commit
+			.await
+			.expect("commit task should not panic")
+			.expect("state transaction should commit");
+
+		assert!(
+			ctx.0.state_dirty.load(std::sync::atomic::Ordering::SeqCst),
+			"mutation after the serialized revision must remain dirty",
 		);
 	}
 

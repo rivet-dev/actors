@@ -159,6 +159,10 @@ impl<A: Actor> Events<A> {
 				reply.send(self.ctx.disconnect_conn(&conn_id).await);
 				None
 			}
+			ActorEvent::RunWake { reply, .. } => {
+				reply.send(Ok(()));
+				None
+			}
 			event => Some(event),
 		}
 	}
@@ -174,6 +178,10 @@ impl<A: Actor> Events<A> {
 				tokio::spawn(async move {
 					reply.send(ctx.disconnect_conn(&conn_id).await);
 				});
+				None
+			}
+			ActorEvent::RunWake { reply, .. } => {
+				reply.send(Ok(()));
 				None
 			}
 			event => Some(event),
@@ -205,8 +213,7 @@ pub async fn run_actor<A: Actor>(start: Start<A>) -> Result<()> {
 			// rivetkit-typescript where createState receives undefined input.
 			None => A::create_state(&ctx, input.decode_or_default()?).await?,
 		};
-		ctx.set_state(state);
-		ctx.clear_state_dirty();
+		ctx.set_initial_state(state);
 
 		let actor = Arc::new(A::create(&ctx).await?);
 		if is_new {
@@ -436,6 +443,9 @@ async fn handle_actor_event<A: Actor>(
 		}
 		ActorEvent::WorkflowReplayRequested { reply, .. } => {
 			reply.send(Err(not_configured("workflow replay")));
+		}
+		ActorEvent::RunWake { reply, .. } => {
+			reply.send(Ok(()));
 		}
 	}
 
@@ -891,6 +901,64 @@ mod tests {
 		assert_eq!(closed.conn.id(), "conn-id");
 	}
 
+	#[test]
+	fn events_try_recv_acknowledges_run_wake_before_next_user_event() {
+		let (tx, rx) = unbounded_channel();
+		let (wake_tx, wake_rx) = oneshot::channel();
+		tx.send(ActorEvent::RunWake {
+			wake_at: 123,
+			wake_revision: 1,
+			reply: wake_tx.into(),
+		})
+		.expect("queue run wake");
+		tx.send(ActorEvent::ConnectionClosed {
+			conn: rivetkit_core::ConnHandle::new("conn-id", cbor(&()), cbor(&()), true),
+		})
+		.expect("queue user event");
+		let mut events = Events::<EmptyActor> {
+			ctx: Ctx::new(rivetkit_core::testing::actor_context(
+				"actor-id",
+				"test",
+				Vec::new(),
+				"local",
+			)),
+			rx: rx.into(),
+			_p: PhantomData,
+		};
+
+		assert!(matches!(events.try_recv(), Some(RuntimeEvent::ConnClosed(_))));
+		assert!(wake_rx.blocking_recv().expect("run wake reply").is_ok());
+	}
+
+	#[tokio::test]
+	async fn events_recv_acknowledges_run_wake_before_next_user_event() {
+		let (tx, rx) = unbounded_channel();
+		let (wake_tx, wake_rx) = oneshot::channel();
+		tx.send(ActorEvent::RunWake {
+			wake_at: 123,
+			wake_revision: 1,
+			reply: wake_tx.into(),
+		})
+		.expect("queue run wake");
+		tx.send(ActorEvent::ConnectionClosed {
+			conn: rivetkit_core::ConnHandle::new("conn-id", cbor(&()), cbor(&()), true),
+		})
+		.expect("queue user event");
+		let mut events = Events::<EmptyActor> {
+			ctx: Ctx::new(rivetkit_core::testing::actor_context(
+				"actor-id",
+				"test",
+				Vec::new(),
+				"local",
+			)),
+			rx: rx.into(),
+			_p: PhantomData,
+		};
+
+		assert!(matches!(events.recv().await, Some(RuntimeEvent::ConnClosed(_))));
+		assert!(wake_rx.await.expect("run wake reply").is_ok());
+	}
+
 	#[tokio::test]
 	async fn run_actor_creates_state_and_replies_with_snapshot() {
 		let (tx, rx) = unbounded_channel();
@@ -912,6 +980,17 @@ mod tests {
 		);
 
 		request_sleep(&tx).await;
+		drop(tx);
+		actor.await.expect("join run_actor").expect("run actor");
+	}
+
+	#[tokio::test]
+	async fn run_actor_acknowledges_run_wake_without_a_handler() {
+		let (tx, rx) = unbounded_channel();
+		let start = lifecycle_start(Some(cbor(&LifecycleInput { count: 0 })), None, rx.into());
+		let actor = tokio::spawn(run_actor::<LifecycleActor>(start));
+
+		request_run_wake(&tx).await;
 		drop(tx);
 		actor.await.expect("join run_actor").expect("run actor");
 	}
@@ -2089,6 +2168,20 @@ mod tests {
 		})
 		.expect("send sleep cleanup");
 		reply_rx.await.expect("sleep reply").expect("sleep result");
+	}
+
+	async fn request_run_wake(tx: &tokio::sync::mpsc::UnboundedSender<ActorEvent>) {
+		let (reply_tx, reply_rx) = oneshot::channel();
+		tx.send(ActorEvent::RunWake {
+			wake_at: 123,
+			wake_revision: 1,
+			reply: reply_tx.into(),
+		})
+		.expect("send run wake");
+		reply_rx
+			.await
+			.expect("run wake reply")
+			.expect("run wake result");
 	}
 
 	async fn request_action(

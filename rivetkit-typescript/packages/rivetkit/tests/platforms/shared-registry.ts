@@ -19,10 +19,12 @@ interface SqliteDatabase {
 const COUNTER_ID = 1;
 
 const rawSqlDatabaseProvider = {
-	createClient: async () => ({
-		execute: async () => [],
-		close: async () => {},
-	}),
+	createClient: async (ctx: any) => {
+		if (!ctx.nativeDatabaseProvider) {
+			throw new Error("native SQLite is required");
+		}
+		return await ctx.nativeDatabaseProvider.open(ctx.actorId);
+	},
 	onMigrate: async () => {},
 };
 
@@ -86,14 +88,14 @@ async function readLifecycleCounts(db: SqliteDatabase): Promise<{
 export const sqliteCounterActor = actor({
 	db: rawSqlDatabaseProvider,
 	onWake: async (ctx) => {
-		await recordLifecycleEvent(ctx.sql as SqliteDatabase, "wake");
+		await recordLifecycleEvent(ctx.db as SqliteDatabase, "wake");
 	},
 	onSleep: async (ctx) => {
-		await recordLifecycleEvent(ctx.sql as SqliteDatabase, "sleep");
+		await recordLifecycleEvent(ctx.db as SqliteDatabase, "sleep");
 	},
 	actions: {
 		increment: async (ctx, amount = 1) => {
-			const db = ctx.sql as SqliteDatabase;
+			const db = ctx.db as SqliteDatabase;
 			await ensureCounterTable(db);
 			await db.run(
 				`
@@ -107,13 +109,13 @@ export const sqliteCounterActor = actor({
 			return await readCounter(db);
 		},
 		getCount: async (ctx) => {
-			const db = ctx.sql as SqliteDatabase;
+			const db = ctx.db as SqliteDatabase;
 			await ensureCounterTable(db);
 
 			return await readCounter(db);
 		},
 		getLifecycleCounts: async (ctx) => {
-			return await readLifecycleCounts(ctx.sql as SqliteDatabase);
+			return await readLifecycleCounts(ctx.db as SqliteDatabase);
 		},
 		triggerSleep: (ctx) => {
 			ctx.sleep();

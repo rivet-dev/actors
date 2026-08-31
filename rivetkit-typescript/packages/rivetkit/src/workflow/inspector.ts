@@ -10,12 +10,14 @@ import type {
 	WorkflowHistorySnapshot,
 	WorkflowState,
 } from "@rivetkit/workflow-engine";
-import * as transport from "@/common/bare/transport/v1";
-import type { JsonCompatValue } from "@/common/encoding";
-import type { WorkflowHistoryBytes } from "@/common/inspector-transport";
-import { encodeWorkflowHistoryTransport } from "@/common/inspector-transport";
-import { encodeCborCompat } from "@/serde";
-import { assertUnreachable, bufferToArrayBuffer } from "@/utils";
+import * as transport from "@/inspector/workflow";
+import {
+	encodeWorkflowHistoryTransport,
+	encodeWorkflowInspectorValue,
+	type WorkflowInspectorAdapter as PublicWorkflowInspectorAdapter,
+	type WorkflowHistoryBytes,
+} from "@/inspector/workflow";
+import { assertUnreachable } from "@/utils";
 
 type HistoryListener = (history: WorkflowHistoryBytes) => void;
 
@@ -35,14 +37,7 @@ function createHistoryEmitter() {
 	};
 }
 
-export interface WorkflowInspectorAdapter {
-	getHistory: () => WorkflowHistoryBytes | null;
-	getState: () => Promise<WorkflowState | null>;
-	onHistoryUpdated: (
-		listener: (history: WorkflowHistoryBytes) => void,
-	) => () => void;
-	replayFromStep: (entryId?: string) => Promise<WorkflowHistoryBytes | null>;
-}
+export type WorkflowInspectorAdapter = PublicWorkflowInspectorAdapter;
 
 export function createWorkflowInspectorAdapter(): {
 	adapter: WorkflowInspectorAdapter;
@@ -88,7 +83,7 @@ export function createWorkflowInspectorAdapter(): {
 }
 
 function encodeCbor(value: unknown): ArrayBuffer {
-	return bufferToArrayBuffer(encodeCborCompat(value as JsonCompatValue));
+	return encodeWorkflowInspectorValue(value);
 }
 
 function encodeOptionalCbor(value: unknown): ArrayBuffer | null {

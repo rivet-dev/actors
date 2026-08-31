@@ -185,6 +185,9 @@ impl<A: Actor> RuntimeEvent<A> {
 					"workflow events are handled by the TypeScript runtime; Rust actors never host workflows"
 				)
 			}
+			ActorEvent::RunWake { .. } => {
+				unreachable!("RunWake is acknowledged by the Rust event adapter")
+			}
 		}
 	}
 }

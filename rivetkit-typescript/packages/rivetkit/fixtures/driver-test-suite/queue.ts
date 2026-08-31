@@ -195,6 +195,30 @@ export const queueActor = actor({
 				return { group: actorError.group, code: actorError.code };
 			}
 		},
+		receiveCompleteByIdentityThenNext: async (c, name: "tasks") => {
+			const first = await c.queue.next({
+				names: [name],
+				completable: true,
+			});
+			if (!first) {
+				return { ok: false, reason: "no_first_message" };
+			}
+
+			await c.queue.complete(
+				{ id: first.id, name: first.name },
+				{ echo: first.body },
+			);
+			const second = await c.queue.next({
+				names: [name],
+				timeout: 1_000,
+				completable: true,
+			});
+			if (!second) {
+				return { ok: false, reason: "no_second_message" };
+			}
+			await second.complete({ echo: second.body });
+			return { ok: true, body: second.body };
+		},
 		receiveAndCompleteTwice: async (c, name: "twice") => {
 			const message = await c.queue.next({
 				names: [name],

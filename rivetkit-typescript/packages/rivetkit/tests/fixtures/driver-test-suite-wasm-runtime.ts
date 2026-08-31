@@ -62,4 +62,9 @@ const {
 	serveConfig,
 } = await buildConfiguredRegistry(registry.parseConfig());
 
+// buildConfiguredRegistry best-effort resolves the optional native Engine
+// package. This fixture connects Wasm to the Engine owned by the parent test,
+// so do not pass that native-only path across the Wasm runtime boundary.
+delete serveConfig.engineBinaryPath;
+
 await runtime.serveRegistry(wasmRegistry, serveConfig);

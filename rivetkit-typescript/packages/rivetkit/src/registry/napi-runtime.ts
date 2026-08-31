@@ -9,6 +9,7 @@ import type {
 import type {
 	ActorContextHandle,
 	ActorFactoryHandle,
+	ActorStateTransactionHandle,
 	CancellationTokenHandle,
 	ConnHandle,
 	CoreRuntime,
@@ -30,8 +31,8 @@ import type {
 	RuntimeQueueWaitOptions,
 	RuntimeRegistryRouteResponse,
 	RuntimeRequestSaveOpts,
-	RuntimeServeConfig,
 	RuntimeScheduledEventInfo,
+	RuntimeServeConfig,
 	RuntimeServerlessRequest,
 	RuntimeServerlessResponseHead,
 	RuntimeServerlessStreamCallback,
@@ -59,6 +60,9 @@ type NapiSqlBatchStatement = Parameters<
 type NapiSqlTransaction = Awaited<
 	ReturnType<NapiSqlDatabase["beginTransaction"]>
 >;
+type NapiActorStateTransaction = Awaited<
+	ReturnType<NativeActorContext["beginStateTransaction"]>
+>;
 
 function asNativeRegistry(handle: RegistryHandle): NativeCoreRegistry {
 	return handle as unknown as NativeCoreRegistry;
@@ -84,6 +88,11 @@ function asNativeSqlTransaction(
 	handle: SqliteTransactionHandle,
 ): NapiSqlTransaction {
 	return handle as unknown as NapiSqlTransaction;
+}
+function asNativeActorStateTransaction(
+	handle: ActorStateTransactionHandle,
+): NapiActorStateTransaction {
+	return handle as unknown as NapiActorStateTransaction;
 }
 
 function asNativeCancellationToken(
@@ -418,6 +427,13 @@ export class NapiCoreRuntime implements CoreRuntime {
 		timestampMs?: number | undefined | null,
 	): void {
 		asNativeActorContext(ctx).setAlarm(timestampMs);
+	}
+
+	async actorSetRunWakeAt(
+		ctx: ActorContextHandle,
+		timestampMs?: number | undefined | null,
+	): Promise<void> {
+		await asNativeActorContext(ctx).setRunWakeAt(timestampMs);
 	}
 
 	actorRequestSave(
@@ -763,6 +779,41 @@ export class NapiCoreRuntime implements CoreRuntime {
 	): Promise<void> {
 		await asNativeSqlTransaction(transaction).rollback();
 	}
+	async actorBeginStateTransaction(
+		ctx: ActorContextHandle,
+		timeoutMs?: number,
+	): Promise<ActorStateTransactionHandle> {
+		return (await asNativeActorContext(ctx).beginStateTransaction(
+			timeoutMs,
+		)) as unknown as ActorStateTransactionHandle;
+	}
+
+	async actorStateTransactionExecute(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): Promise<RuntimeSqlExecuteResult> {
+		const result = await asNativeActorStateTransaction(transaction).execute(
+			sql,
+			toNapiSqlBindParams(params),
+		);
+		return normalizeRuntimeSqlExecuteResult(result);
+	}
+
+	async actorStateTransactionCommit(
+		transaction: ActorStateTransactionHandle,
+		payload: RuntimeStateDeltaPayload,
+	): Promise<void> {
+		await asNativeActorStateTransaction(transaction).commit(
+			toNapiStateDeltaPayload(payload),
+		);
+	}
+
+	async actorStateTransactionRollback(
+		transaction: ActorStateTransactionHandle,
+	): Promise<void> {
+		await asNativeActorStateTransaction(transaction).rollback();
+	}
 
 	async actorSqlQuery(
 		ctx: ActorContextHandle,
@@ -861,6 +912,21 @@ export class NapiCoreRuntime implements CoreRuntime {
 				names,
 				options,
 				signal ? asNativeCancellationToken(signal) : signal,
+			);
+	}
+
+	async actorQueueCompletePersisted(
+		ctx: ActorContextHandle,
+		messageId: bigint,
+		expectedName: string,
+		response?: RuntimeBytes | undefined | null,
+	): Promise<boolean> {
+		return await asNativeActorContext(ctx)
+			.queue()
+			.completePersisted(
+				messageId,
+				expectedName,
+				response == null ? response : toNapiBuffer(response),
 			);
 	}
 

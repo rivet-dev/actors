@@ -44,6 +44,73 @@ describeDriverMatrix("Actor Run", (driverTestConfig) => {
 			expect(state2.tickCount).toBeGreaterThan(count1);
 		});
 
+		test("a run wake is consumed while the handler is already active", async (c) => {
+			const { client } = await setupDriverTest(c, driverTestConfig);
+			const actor = client.runWithTicks.getOrCreate([
+				`active-run-wake-${crypto.randomUUID()}`,
+			]);
+
+			await waitFor(driverTestConfig, 100);
+			expect((await actor.getState()).runCount).toBe(1);
+
+			await actor.setRunWakeAt(Date.now() + 100);
+			await waitFor(driverTestConfig, 300);
+
+			expect((await actor.getState()).runCount).toBe(1);
+		});
+
+		test(
+			"a persisted run wake starts a completed handler after sleep",
+			async (c) => {
+				const { client } = await setupDriverTest(c, driverTestConfig);
+				const key = `inactive-run-wake-${crypto.randomUUID()}`;
+				const observer = client.lifecycleObserver.getOrCreate([key]);
+				const actor = client.runWithWakeDeadline.getOrCreate([key]);
+
+				const wakeDelay = RUN_SLEEP_TIMEOUT + 500;
+				// This must be the first RPC to the subject. Any setup RPC before the
+				// deadline could wake it and turn this into a same-generation test.
+				await actor.setRunWakeAt(Date.now() + wakeDelay);
+				// Poll only the no-sleep observer. The second wake proves the persisted
+				// deadline started a new actor generation after sleep.
+				await vi.waitFor(
+					async () => {
+						const events = (await observer.getEvents()).map(
+							({ event }) => event,
+						);
+						expect(events.slice(0, 5)).toEqual([
+							"wake",
+							"run",
+							"sleep",
+							"wake",
+							"run",
+						]);
+					},
+					{ timeout: RUN_HANDLER_TIMEOUT_MS },
+				);
+			},
+			RUN_HANDLER_TIMEOUT_MS,
+		);
+
+		test("clearing a run wake prevents a completed handler rerun", async (c) => {
+			const { client } = await setupDriverTest(c, driverTestConfig);
+			const key = `cancelled-run-wake-${crypto.randomUUID()}`;
+			const observer = client.lifecycleObserver.getOrCreate([key]);
+			const actor = client.runWithWakeDeadline.getOrCreate([key]);
+
+			const wakeDelay = RUN_SLEEP_TIMEOUT + 5_000;
+			// Keep deadline setup and cancellation as the only subject RPCs so the
+			// observer cannot accidentally wake the actor under test.
+			await actor.setRunWakeAt(Date.now() + wakeDelay);
+			await actor.setRunWakeAt(null);
+			await waitFor(driverTestConfig, wakeDelay + 300);
+			expect(
+				(await observer.getEvents()).filter(
+					({ event }) => event === "run",
+				),
+			).toHaveLength(1);
+		});
+
 		test("active run handler keeps actor awake past sleep timeout", async (c) => {
 			const { client } = await setupDriverTest(c, driverTestConfig);
 

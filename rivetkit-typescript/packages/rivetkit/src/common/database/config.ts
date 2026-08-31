@@ -9,7 +9,7 @@ export interface ActorMetricsLike {
 export type InferDatabaseClient<DBProvider extends AnyDatabaseProvider> =
 	DBProvider extends DatabaseProvider<any>
 		? Awaited<ReturnType<DBProvider["createClient"]>>
-		: never;
+		: RawAccess;
 
 export type SqliteBindings = unknown[] | Record<string, unknown>;
 
@@ -33,6 +33,16 @@ export interface SqliteTransactionOptions {
 	name?: string;
 	/** Deadlock-safety timeout in milliseconds. */
 	timeout?: number;
+	/** @experimental */
+	experimental?: {
+		/**
+		 * Atomically includes actor and hibernatable connection state.
+		 * Only single-statement `execute` calls are supported in the transaction.
+		 * Concurrent actions that try to mutate state while the transaction is
+		 * active fail with `actor.state_transaction_conflict`.
+		 */
+		includeState?: boolean;
+	};
 }
 
 /**

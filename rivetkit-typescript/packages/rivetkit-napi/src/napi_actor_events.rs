@@ -66,6 +66,25 @@ impl Drop for RunHandlerActiveGuard {
 	}
 }
 
+async fn restore_suppressed_run_wake<F, Fut>(
+	run_handler_active: RunHandlerActiveGuard,
+	callback_accepted: bool,
+	run_wake: Option<(i64, u64)>,
+	restore: F,
+) -> Result<()>
+where
+	F: FnOnce(i64, u64) -> Fut,
+	Fut: std::future::Future<Output = Result<()>>,
+{
+	// Restore only after clearing the active marker. Otherwise an immediately
+	// due alarm can be consumed under the assumption that the run is active.
+	drop(run_handler_active);
+	if !callback_accepted && let Some((wake_at, wake_revision)) = run_wake {
+		restore(wake_at, wake_revision).await?;
+	}
+	Ok(())
+}
+
 impl Drop for DispatchCancelGuard {
 	fn drop(&mut self) {
 		self.token.cancel();
@@ -334,7 +353,7 @@ fn configure_run_handler(bindings: &CallbackBindings, ctx: &ActorContext) -> Run
 	let restart_ctx = ctx.clone();
 	let restart_callback = callback.clone();
 
-	ctx.attach_run_restart(move || {
+	ctx.attach_run_restart(move |run_wake| {
 		let mut guard = restart_slot.lock();
 		if let Some(handle) = guard.take() {
 			handle.abort();
@@ -342,13 +361,14 @@ fn configure_run_handler(bindings: &CallbackBindings, ctx: &ActorContext) -> Run
 		*guard = Some(spawn_run_handler(
 			restart_callback.clone(),
 			restart_ctx.clone(),
+			run_wake,
 		));
 		Ok(())
 	});
 
 	{
 		let mut guard = run_handler.lock();
-		*guard = Some(spawn_run_handler(callback, ctx.clone()));
+		*guard = Some(spawn_run_handler(callback, ctx.clone(), None));
 	}
 
 	run_handler
@@ -730,6 +750,18 @@ pub(crate) async fn dispatch_event(
 				call_workflow_replay(&callback, &ctx, entry_id).await
 			});
 		}
+		ActorEvent::RunWake {
+			wake_at,
+			wake_revision,
+			reply,
+		} => {
+			let result = if bindings.run.is_none() || ctx.inner().run_handler_active() {
+				Ok(())
+			} else {
+				ctx.restart_run_handler_for_wake(wake_at, wake_revision)
+			};
+			reply.send(result);
+		}
 	}
 }
 
@@ -956,18 +988,44 @@ fn callback_timeout_metadata(
 fn spawn_run_handler(
 	callback: crate::actor_factory::CallbackTsfn<LifecyclePayload>,
 	ctx: ActorContext,
+	run_wake: Option<(i64, u64)>,
 ) -> JoinHandle<()> {
 	let run_handler_active = RunHandlerActiveGuard::new(ctx.inner().clone());
 	tokio::spawn(async move {
-		let _run_handler_active = run_handler_active;
-		match call_run(&callback, &ctx).await {
-			Ok(()) => {
+		let result = call_run(&callback, &ctx).await;
+		match result {
+			Ok(callback_accepted) => {
+				let core_ctx = ctx.inner().clone();
+				if let Err(error) = restore_suppressed_run_wake(
+					run_handler_active,
+					callback_accepted,
+					run_wake,
+					move |wake_at, wake_revision| async move {
+						core_ctx
+							.restore_run_wake_at_if_unchanged(wake_at, wake_revision)
+							.await
+							.map(|_| ())
+					},
+				)
+				.await
+				{
+					tracing::error!(
+						actor_id = %ctx.inner().actor_id(),
+						?run_wake,
+						?error,
+						"failed to restore run wake suppressed by Inspector replay"
+					);
+				}
+				if !callback_accepted {
+					return;
+				}
 				tracing::debug!(
 					actor_id = %ctx.inner().actor_id(),
 					"napi run handler exited cleanly"
 				);
 			}
 			Err(error) => {
+				drop(run_handler_active);
 				let extracted = RivetTransportError::extract(&error);
 				if extracted.group() == "actor" && extracted.code() == "aborted" {
 					// The run handler was unwound because the actor is going to
@@ -1109,8 +1167,8 @@ async fn call_on_destroy(
 async fn call_run(
 	callback: &crate::actor_factory::CallbackTsfn<LifecyclePayload>,
 	ctx: &ActorContext,
-) -> Result<()> {
-	call_void(
+) -> Result<bool> {
+	crate::actor_factory::call_bool(
 		"run",
 		callback,
 		LifecyclePayload {

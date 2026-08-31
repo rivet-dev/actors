@@ -32,7 +32,7 @@
 		"build:cloudflare": "node scripts/build.mjs --target bundler --out-dir pkg-cloudflare",
 		"build:deno": "node scripts/build.mjs --target web --out-dir pkg-deno",
 		"check:package": "node scripts/check-package.mjs",
-		"check-types": "tsc --noEmit",
+		"check-types": "pnpm run build && tsc --noEmit",
 		"check:wasm": "cargo check -p rivetkit-wasm --target wasm32-unknown-unknown",
 		"prepack": "node scripts/build.mjs"
 	},

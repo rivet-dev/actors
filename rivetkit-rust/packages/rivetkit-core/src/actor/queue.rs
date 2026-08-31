@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::future::pending;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -13,7 +14,7 @@ use rivetkit_actor_persist::{generated::v4 as persist_v4, versioned as persist_v
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::runtime::{Builder, Handle};
-use tokio::sync::oneshot;
+use tokio::sync::{futures::Notified, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::actor::config::ActorConfig;
@@ -194,6 +195,18 @@ struct QueueAlreadyCompleted;
 struct QueueCompleteNotConfigured {
 	name: String,
 }
+#[derive(RivetError, Serialize, Deserialize)]
+#[error(
+	"queue",
+	"message_identity_mismatch",
+	"Queue message identity does not match",
+	"Queue message {message_id} is named '{actual_name}', not '{expected_name}'."
+)]
+struct QueueMessageIdentityMismatch {
+	message_id: u64,
+	expected_name: String,
+	actual_name: String,
+}
 
 #[derive(RivetError)]
 #[error("actor", "aborted", "Actor aborted")]
@@ -362,6 +375,9 @@ impl ActorContext {
 		let names = normalize_names(opts.names);
 
 		loop {
+			let notified = self.0.queue_notify.notified();
+			tokio::pin!(notified);
+			notified.as_mut().enable();
 			let messages = self
 				.try_receive_batch(names.as_ref(), count, opts.completable)
 				.await?;
@@ -377,7 +393,7 @@ impl ActorContext {
 
 			let wait_guard = ActiveQueueWaitGuard::new(self);
 			let result = self
-				.wait_for_message(remaining_timeout, opts.signal.as_ref())
+				.wait_for_message(notified.as_mut(), remaining_timeout, opts.signal.as_ref())
 				.await;
 			drop(wait_guard);
 
@@ -400,6 +416,9 @@ impl ActorContext {
 		let names = normalize_names(Some(names));
 
 		loop {
+			let notified = self.0.queue_notify.notified();
+			tokio::pin!(notified);
+			notified.as_mut().enable();
 			if let Some(message) = self
 				.try_receive_batch(names.as_ref(), 1, opts.completable)
 				.await?
@@ -422,7 +441,7 @@ impl ActorContext {
 
 			let wait_guard = ActiveQueueWaitGuard::new(self);
 			let result = self
-				.wait_for_message(remaining_timeout, opts.signal.as_ref())
+				.wait_for_message(notified.as_mut(), remaining_timeout, opts.signal.as_ref())
 				.await;
 			drop(wait_guard);
 
@@ -450,6 +469,9 @@ impl ActorContext {
 		let names = normalize_names(Some(names));
 
 		loop {
+			let notified = self.0.queue_notify.notified();
+			tokio::pin!(notified);
+			notified.as_mut().enable();
 			if internal_storage::has_queue_messages(self.sql(), names.as_ref())
 				.await
 				.context("check for matching sqlite queue messages")?
@@ -470,7 +492,7 @@ impl ActorContext {
 
 			let wait_guard = ActiveQueueWaitGuard::new(self);
 			let result = self
-				.wait_for_message(remaining_timeout, opts.signal.as_ref())
+				.wait_for_message(notified.as_mut(), remaining_timeout, opts.signal.as_ref())
 				.await;
 			drop(wait_guard);
 
@@ -485,6 +507,48 @@ impl ActorContext {
 				WaitOutcome::Aborted => return Err(QueueActorAborted.build()),
 			}
 		}
+	}
+	/// Completes a persisted message by durable identity. Missing or already
+	/// completed IDs are idempotent; an expected-name mismatch leaves the row
+	/// untouched.
+	pub async fn complete_persisted_message(
+		&self,
+		message_id: u64,
+		expected_name: &str,
+		response: Option<Vec<u8>>,
+	) -> Result<bool> {
+		self.ensure_initialized().await?;
+		let _receive_guard = self.0.queue_receive_lock.lock().await;
+		let Some(_) = self
+			.verify_persisted_message_identity_unlocked(message_id, expected_name)
+			.await?
+		else {
+			return Ok(false);
+		};
+		self.complete_message_by_id_unlocked(message_id, response)
+			.await?;
+		Ok(true)
+	}
+
+	async fn verify_persisted_message_identity_unlocked(
+		&self,
+		message_id: u64,
+		expected_name: &str,
+	) -> Result<Option<String>> {
+		let Some(actual_name) =
+			internal_storage::load_queue_message_name(self.sql(), message_id).await?
+		else {
+			return Ok(None);
+		};
+		if actual_name != expected_name {
+			return Err(QueueMessageIdentityMismatch {
+				message_id,
+				expected_name: expected_name.to_owned(),
+				actual_name: actual_name.clone(),
+			}
+			.build());
+		}
+		Ok(Some(actual_name))
 	}
 
 	pub fn try_next(&self, opts: QueueTryNextOpts) -> Result<Option<QueueMessage>> {
@@ -654,14 +718,13 @@ impl ActorContext {
 			return Ok(());
 		}
 
-		let deleted_count = message_ids.len();
-		internal_storage::delete_queue_messages(self.sql(), &message_ids)
+		let deleted_count = internal_storage::delete_queue_messages(self.sql(), &message_ids)
 			.await
 			.context("delete sqlite queue messages")?;
 
 		let queue_size = {
 			let mut metadata = self.0.queue_metadata.lock().await;
-			metadata.size = metadata.size.saturating_sub(deleted_count as u32);
+			metadata.size = metadata.size.saturating_sub(deleted_count);
 			metadata.size
 		};
 		self.0
@@ -672,6 +735,16 @@ impl ActorContext {
 	}
 
 	async fn complete_message_by_id(
+		&self,
+		message_id: u64,
+		response: Option<Vec<u8>>,
+	) -> Result<()> {
+		let _receive_guard = self.0.queue_receive_lock.lock().await;
+		self.complete_message_by_id_unlocked(message_id, response)
+			.await
+	}
+
+	async fn complete_message_by_id_unlocked(
 		&self,
 		message_id: u64,
 		response: Option<Vec<u8>>,
@@ -696,6 +769,7 @@ impl ActorContext {
 
 	async fn wait_for_message(
 		&self,
+		mut notified: Pin<&mut Notified<'_>>,
 		timeout: Option<Duration>,
 		signal: Option<&CancellationToken>,
 	) -> WaitOutcome {
@@ -707,7 +781,6 @@ impl ActorContext {
 			return WaitOutcome::Aborted;
 		}
 
-		let notified = self.0.queue_notify.notified();
 		let actor_aborted = async {
 			actor_abort_signal.cancelled().await;
 		};
@@ -722,7 +795,7 @@ impl ActorContext {
 		match timeout {
 			Some(timeout) => {
 				tokio::select! {
-					_ = notified => WaitOutcome::Notified,
+					_ = &mut notified => WaitOutcome::Notified,
 					_ = actor_aborted => WaitOutcome::Aborted,
 					_ = external_aborted => WaitOutcome::Aborted,
 					_ = sleep(timeout) => WaitOutcome::TimedOut,
@@ -730,7 +803,7 @@ impl ActorContext {
 			}
 			None => {
 				tokio::select! {
-					_ = notified => WaitOutcome::Notified,
+					_ = &mut notified => WaitOutcome::Notified,
 					_ = actor_aborted => WaitOutcome::Aborted,
 					_ = external_aborted => WaitOutcome::Aborted,
 				}

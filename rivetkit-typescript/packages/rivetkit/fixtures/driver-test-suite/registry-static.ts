@@ -105,6 +105,7 @@ import {
 	runWithoutHandler,
 	runWithQueueConsumer,
 	runWithTicks,
+	runWithWakeDeadline,
 } from "./run";
 import { saveStateActor, saveStateObserver } from "./save-state";
 import { scheduled } from "./scheduled";
@@ -318,6 +319,7 @@ export const registry = setup({
 		largePayloadConnActor,
 		// From run.ts
 		runWithTicks,
+		runWithWakeDeadline,
 		runWithQueueConsumer,
 		runWithEarlyExit,
 		runWithError,

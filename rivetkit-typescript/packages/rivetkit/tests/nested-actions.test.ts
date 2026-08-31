@@ -4,10 +4,12 @@ import {
 	flattenActionHandlers,
 	flattenActionInputSchemas,
 } from "../src/actor/actions";
-import { actor } from "../src/actor/definition";
+import { type ActionContext, hasRunInspectorConfig } from "../src/actor/config";
+import { actor, type BaseActorDefinition } from "../src/actor/definition";
 import type { ActorDefinitionActions } from "../src/client/actor-common";
 import type { ActorHandleRaw } from "../src/client/actor-handle";
 import { createActorProxy } from "../src/client/client";
+import type { RawAccess } from "../src/common/database/config";
 
 describe("nested actions", () => {
 	test("preserves nested handler context and client action types", () => {
@@ -30,6 +32,63 @@ describe("nested actions", () => {
 		expectTypeOf<
 			ClientActions["calculator"]["add"]
 		>().returns.toEqualTypeOf<Promise<number>>();
+	});
+
+	test("preserves default database context and actions on base definitions", () => {
+		const definition = actor({
+			actions: {
+				query: async (c, value: number) => {
+					expectTypeOf(c.db).toEqualTypeOf<RawAccess>();
+					return value.toString();
+				},
+			},
+		});
+		type DefinitionActions = ActorDefinitionActions<typeof definition>;
+		expectTypeOf<DefinitionActions["query"]>()
+			.parameter(0)
+			.toEqualTypeOf<number>();
+
+		type DefaultContext = ActionContext<
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined
+		>;
+		type DefaultActions = {
+			query: (c: DefaultContext, value: number) => string;
+		};
+		type WorkflowStyleDefinition = BaseActorDefinition<
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			Record<never, never>,
+			Record<never, never>,
+			DefaultActions
+		>;
+		type WorkflowStyleActions =
+			ActorDefinitionActions<WorkflowStyleDefinition>;
+		expectTypeOf<WorkflowStyleActions["query"]>()
+			.parameter(0)
+			.toEqualTypeOf<number>();
+		expectTypeOf<WorkflowStyleActions["query"]>().returns.toEqualTypeOf<
+			Promise<string>
+		>();
+	});
+
+	test("detects legacy run inspector metadata without invoking its factory", () => {
+		const inspectorFactory = vi.fn(() => undefined);
+		const run = () => {};
+		Object.defineProperty(run, Symbol.for("rivetkit.run_function_config"), {
+			value: { inspectorFactory },
+		});
+
+		expect(hasRunInspectorConfig(run)).toBe(true);
+		expect(inspectorFactory).not.toHaveBeenCalled();
 	});
 
 	test("dispatches nested proxy calls with dotted names", async () => {

@@ -348,6 +348,19 @@ describeDriverMatrix("Actor Queue", (driverTestConfig) => {
 			});
 		});
 
+		test("identity completion permits the next manual receive", async (c) => {
+			const { client } = await setupDriverTest(c, driverTestConfig);
+			const handle = client.queueActor.getOrCreate([
+				"identity-complete-then-next",
+			]);
+
+			await handle.send("tasks", { value: 1 });
+			await handle.send("tasks", { value: 2 });
+			expect(
+				await handle.receiveCompleteByIdentityThenNext("tasks"),
+			).toEqual({ ok: true, body: { value: 2 } });
+		});
+
 		test("manual receive includes complete even without completion schema", async (c) => {
 			const { client } = await setupDriverTest(c, driverTestConfig);
 			const handle = client.queueActor.getOrCreate([

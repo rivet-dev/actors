@@ -84,20 +84,33 @@ impl<S> Deref for StateRef<'_, S> {
 }
 
 pub struct StateMut<'a, S> {
-	guard: MappedRwLockWriteGuard<'a, S>,
+	guard: Option<MappedRwLockWriteGuard<'a, S>>,
+	inner: &'a ActorContext,
 }
 
 impl<S> Deref for StateMut<'_, S> {
 	type Target = S;
 
 	fn deref(&self) -> &Self::Target {
-		&self.guard
+		self.guard.as_deref().expect("state guard already dropped")
 	}
 }
 
 impl<S> DerefMut for StateMut<'_, S> {
 	fn deref_mut(&mut self) -> &mut Self::Target {
-		&mut self.guard
+		self.guard
+			.as_deref_mut()
+			.expect("state guard already dropped")
+	}
+}
+
+impl<S> Drop for StateMut<'_, S> {
+	fn drop(&mut self) {
+		// Release the state lock before scheduling serialization. This mirrors
+		// TypeScript's write-through state proxy and avoids relying on graceful
+		// process shutdown for persistence.
+		drop(self.guard.take());
+		self.inner.request_save(RequestSaveOpts::default());
 	}
 }
 
@@ -198,15 +211,22 @@ impl<A: Actor> Ctx<A> {
 	pub fn state_mut(&self) -> StateMut<'_, A::State> {
 		self.state.dirty.store(true, Ordering::Release);
 		StateMut {
-			guard: RwLockWriteGuard::map(self.state.value.write(), |state| {
+			guard: Some(RwLockWriteGuard::map(self.state.value.write(), |state| {
 				state.as_mut().expect("actor state not initialized")
-			}),
+			})),
+			inner: &self.inner,
 		}
 	}
 
 	pub fn set_state(&self, state: A::State) {
 		*self.state.value.write() = Some(state);
 		self.state.dirty.store(true, Ordering::Release);
+		self.inner.request_save(RequestSaveOpts::default());
+	}
+
+	pub(crate) fn set_initial_state(&self, state: A::State) {
+		*self.state.value.write() = Some(state);
+		self.clear_state_dirty();
 	}
 
 	pub fn state_dirty(&self) -> bool {
@@ -229,8 +249,7 @@ impl<A: Actor> Ctx<A> {
 	}
 
 	pub fn set_state_from_snapshot(&self, bytes: &[u8]) -> Result<()> {
-		self.set_state(Self::decode_state_snapshot(bytes)?);
-		self.clear_state_dirty();
+		self.set_initial_state(Self::decode_state_snapshot(bytes)?);
 		Ok(())
 	}
 

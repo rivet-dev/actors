@@ -140,7 +140,7 @@ pub use actor::sqlite::{
 	BindParam, ColumnValue, ExecResult, ExecuteResult, QueryResult, SqliteBackend,
 	SqliteBatchStatement, SqliteDb, SqliteTransaction,
 };
-pub use actor::state::RequestSaveOpts;
+pub use actor::state::{ActorStateTransaction, RequestSaveOpts};
 pub use actor::task::{
 	ActionDispatchResult, ActorTask, DispatchCommand, HttpDispatchResult, LifecycleCommand,
 	LifecycleEvent, LifecycleState,

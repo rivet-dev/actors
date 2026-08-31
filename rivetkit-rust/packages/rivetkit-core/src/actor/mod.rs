@@ -48,7 +48,7 @@ pub use sqlite::{
 	BindParam, ColumnValue, ExecResult, ExecuteResult, QueryResult, SqliteBackend,
 	SqliteBatchStatement, SqliteDb, SqliteTransaction,
 };
-pub use state::RequestSaveOpts;
+pub use state::{ActorStateTransaction, RequestSaveOpts};
 pub use task::{
 	ActionDispatchResult, ActorTask, DispatchCommand, HttpDispatchResult, LifecycleCommand,
 	LifecycleEvent, LifecycleState,

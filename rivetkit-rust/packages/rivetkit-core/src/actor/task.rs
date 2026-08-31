@@ -52,7 +52,7 @@ use crate::actor::messages::{
 	WorkflowKvWrite,
 };
 use crate::actor::metrics::startup_phase::StartupPhase;
-use crate::actor::state::PersistedActor;
+use crate::actor::state::{PersistedActor, RequestSaveOpts};
 use crate::actor::task_types::ShutdownKind;
 use crate::actor::work_registry::ActorWorkKind;
 use crate::error::{ActorLifecycle as ActorLifecycleError, ActorRuntime};
@@ -317,6 +317,7 @@ struct SleepGraceState {
 struct PersistedStartup {
 	actor: PersistedActor,
 	last_pushed_alarm: Option<i64>,
+	run_wake_at: Option<i64>,
 }
 
 struct PendingLifecycleReply {
@@ -855,21 +856,33 @@ impl ActorTask {
 		) {
 			return Err(ActorLifecycleError::NotReady.build());
 		}
-		let save_request_revision = self.ctx.save_request_revision();
-		let (reply_tx, reply_rx) = oneshot::channel();
-		self.send_actor_event(
-			"workflow_flush_serialize_state",
-			ActorEvent::SerializeState {
-				reason: SerializeStateReason::Save,
-				reply: Reply::from(reply_tx),
-			},
-		)?;
-		let deltas = reply_rx
-			.await
-			.context("receive workflow flush serialize-state reply")??;
-		self.ctx
-			.save_state_and_workflow_batch_with_revision(deltas, writes, save_request_revision)
-			.await
+		loop {
+			let save_request_revision = self.ctx.save_request_revision();
+			let state_transaction_epoch = self.ctx.state_transaction_epoch();
+			let (reply_tx, reply_rx) = oneshot::channel();
+			self.send_actor_event(
+				"workflow_flush_serialize_state",
+				ActorEvent::SerializeState {
+					reason: SerializeStateReason::Save,
+					reply: Reply::from(reply_tx),
+				},
+			)?;
+			let deltas = reply_rx
+				.await
+				.context("receive workflow flush serialize-state reply")??;
+			if self
+				.ctx
+				.save_state_and_workflow_batch_at_transaction_epoch(
+					deltas,
+					writes.clone(),
+					save_request_revision,
+					state_transaction_epoch,
+				)
+				.await?
+			{
+				return Ok(());
+			}
+		}
 	}
 
 	async fn handle_dispatch(&mut self, command: DispatchCommand) {
@@ -1178,6 +1191,7 @@ impl ActorTask {
 		let core_init_result: Result<()> = async {
 			self.ctx.load_persisted_actor(persisted.actor);
 			self.ctx.load_last_pushed_alarm(persisted.last_pushed_alarm);
+			self.ctx.load_run_wake_at(persisted.run_wake_at);
 			// New manual-startup runtimes must not persist initialization until the
 			// runtime startup_ready handshake completes. The runtime preamble owns
 			// initial state creation.
@@ -1277,6 +1291,7 @@ impl ActorTask {
 			return Ok(PersistedStartup {
 				actor: snapshot.actor,
 				last_pushed_alarm: snapshot.last_pushed_alarm,
+				run_wake_at: snapshot.run_wake_at,
 			});
 		}
 		Ok(PersistedStartup {
@@ -1285,6 +1300,7 @@ impl ActorTask {
 				..PersistedActor::default()
 			},
 			last_pushed_alarm: None,
+			run_wake_at: None,
 		})
 	}
 
@@ -1410,7 +1426,61 @@ impl ActorTask {
 			return Ok(());
 		}
 
-		self.ctx.drain_overdue_scheduled_events().await
+		let due_run_wake = self.ctx.consume_due_run_wake().await?;
+		if let Err(error) = self.ctx.drain_overdue_scheduled_events().await {
+			if self.lifecycle != LifecycleState::DestroyGrace
+				&& let Some((wake_at, wake_revision)) = due_run_wake
+				&& let Err(restore_error) = self
+					.ctx
+					.restore_run_wake_at_if_unchanged(wake_at, wake_revision)
+					.await
+			{
+				tracing::error!(
+					?restore_error,
+					wake_at,
+					"failed to restore run wake after schedule alarm dispatch failed",
+				);
+			}
+			return Err(error);
+		}
+		// Destroy is terminal. Consume the logical deadline so it cannot keep a
+		// past physical alarm armed, but never ensure the foreign run handler
+		// after its destroy cleanup has started.
+		if self.lifecycle == LifecycleState::DestroyGrace {
+			return Ok(());
+		}
+		if let Some((wake_at, wake_revision)) = due_run_wake {
+			let (reply_tx, reply_rx) = oneshot::channel();
+			if let Err(error) = self.ctx.try_send_actor_event(
+				ActorEvent::RunWake {
+					wake_at,
+					wake_revision,
+					reply: Reply::from(reply_tx),
+				},
+				"run_wake",
+			) {
+				self.ctx
+					.restore_run_wake_at_if_unchanged(wake_at, wake_revision)
+					.await?;
+				return Err(error).context("dispatch due run wake");
+			}
+			let restart_result = match reply_rx.await {
+				Ok(result) => result,
+				Err(error) => {
+					self.ctx
+						.restore_run_wake_at_if_unchanged(wake_at, wake_revision)
+						.await?;
+					return Err(error).context("receive due run wake reply");
+				}
+			};
+			if let Err(error) = restart_result {
+				self.ctx
+					.restore_run_wake_at_if_unchanged(wake_at, wake_revision)
+					.await?;
+				return Err(error).context("ensure run handler active for due wake");
+			}
+		}
+		Ok(())
 	}
 
 	fn handle_run_handle_outcome(
@@ -1940,6 +2010,7 @@ impl ActorTask {
 		}
 
 		let save_request_revision = self.ctx.save_request_revision();
+		let state_transaction_epoch = self.ctx.state_transaction_epoch();
 		let (reply_tx, reply_rx) = oneshot::channel();
 		match self.send_actor_event(
 			"save_tick",
@@ -1971,17 +2042,34 @@ impl ActorTask {
 				// triggers record_state_updated after persist, which the inspector
 				// websocket signal subscriber forwards as StateUpdated. Broadcasting
 				// the overlay here too would deliver a duplicate message.
-				if let Err(error) = self
+				match self
 					.ctx
-					.save_state_with_revision(deltas, save_request_revision)
+					.save_state_with_revision_at_transaction_epoch(
+						deltas,
+						save_request_revision,
+						state_transaction_epoch,
+					)
 					.await
 				{
-					tracing::error!(?error, "failed to persist actor save tick");
-					self.schedule_state_save(true);
-					self.sync_inspector_serialize_deadline();
-				} else if self.ctx.save_requested() {
-					self.schedule_state_save(self.ctx.save_requested_immediate());
-					self.sync_inspector_serialize_deadline();
+					Ok(true) => {
+						if self.ctx.save_requested() {
+							self.schedule_state_save(self.ctx.save_requested_immediate());
+							self.sync_inspector_serialize_deadline();
+						}
+					}
+					Ok(false) => {
+						self.ctx.request_save(RequestSaveOpts {
+							immediate: true,
+							max_wait_ms: None,
+						});
+						self.schedule_state_save(true);
+						self.sync_inspector_serialize_deadline();
+					}
+					Err(error) => {
+						tracing::error!(?error, "failed to persist actor save tick");
+						self.schedule_state_save(true);
+						self.sync_inspector_serialize_deadline();
+					}
 				}
 			}
 			Ok(Err(error)) => {

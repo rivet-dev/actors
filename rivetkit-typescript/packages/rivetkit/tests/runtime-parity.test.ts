@@ -4,7 +4,7 @@ import {
 	decodeBridgeRivetError,
 	type RivetError,
 } from "@/actor/errors";
-import { actor } from "@/actor/mod";
+import { actor, defineRunHandler, type RunControl } from "@/actor/mod";
 import { type RegistryConfig, RegistryConfigSchema } from "@/registry/config";
 import { NapiCoreRuntime } from "@/registry/napi-runtime";
 import { buildNativeFactory } from "@/registry/native";
@@ -35,6 +35,10 @@ type NativeCallbacks = {
 			input?: Uint8Array;
 		},
 	) => Promise<Uint8Array>;
+	run?: (
+		error: unknown,
+		payload: { ctx: ActorContextHandle },
+	) => Promise<void>;
 	actions: Record<
 		string,
 		(
@@ -93,7 +97,9 @@ class ParityScenario {
 	readonly save = new Gate();
 	readonly registerTask = new Gate();
 	readonly saves: unknown[] = [];
+	readonly runWakeAt: Array<number | null> = [];
 	registerTaskCompleted = false;
+	runRestarts = 0;
 }
 
 class FakeActorContext {
@@ -101,6 +107,14 @@ class FakeActorContext {
 	readonly runtimeBag = {};
 	readonly registeredTasks: Array<Promise<void>> = [];
 	readonly abortController = new AbortController();
+	queueMessages: Array<{
+		id(): bigint;
+		name(): string;
+		body(): Uint8Array;
+		createdAt(): number;
+		isCompletable(): boolean;
+		complete(): Promise<void>;
+	}> = [];
 
 	constructor(
 		private readonly scenario: ParityScenario,
@@ -165,6 +179,20 @@ class FakeActorContext {
 
 	abortSignal(): AbortSignal {
 		return this.abortController.signal;
+	}
+
+	queue() {
+		return {
+			nextBatch: async () => this.queueMessages.splice(0),
+		};
+	}
+
+	restartRunHandler(): void {
+		this.scenario.runRestarts += 1;
+	}
+
+	async setRunWakeAt(timestamp: number | null): Promise<void> {
+		this.scenario.runWakeAt.push(timestamp);
 	}
 }
 
@@ -420,6 +448,149 @@ async function invokePromotedStatus(
 }
 
 describe("CoreRuntime NAPI and wasm parity", () => {
+	test.each([
+		["napi", 42n, 42],
+		["wasm", 42n, 42],
+		["napi", 2n ** 53n + 1n, 2n ** 53n + 1n],
+		["wasm", 2n ** 53n + 1n, 2n ** 53n + 1n],
+	] as const)("%s exposes queue message id %s without losing precision", async (kind, messageId, expectedId) => {
+		const runtimeCase = createRuntimeCase(kind);
+		let receivedId: number | bigint | undefined;
+		const definition = actor({
+			state: {},
+			actions: {
+				receive: async (c) => {
+					receivedId = (await c.queue.next()).id;
+				},
+			},
+		});
+		const factory = buildNativeFactory(
+			runtimeCase.runtime,
+			registryConfig(definition),
+			definition,
+		) as unknown as FakeActorFactory;
+		const ctx = new FakeActorContext(runtimeCase.scenario);
+		ctx.stateBytes = Buffer.from(
+			(await factory.callbacks.createState?.(null, {
+				ctx,
+				input: encodeValue(null),
+			})) ?? encodeValue({}),
+		);
+		ctx.queueMessages.push({
+			id: () => messageId,
+			name: () => "work",
+			body: () => encodeValue({}),
+			createdAt: () => 0,
+			isCompletable: () => false,
+			complete: async () => {},
+		});
+
+		await factory.callbacks.actions.receive(null, {
+			ctx,
+			conn: null,
+			name: "receive",
+			args: encodeValue([]),
+			cancelToken: new FakeCancellationToken(),
+		});
+
+		expect(receivedId).toBe(expectedId);
+	});
+
+	test.each([
+		"napi",
+		"wasm",
+	] as const)("%s rejects run wake deadlines without a run handler", async (kind) => {
+		const runtimeCase = createRuntimeCase(kind);
+		const definition = actor({
+			actions: {
+				setWake: async (c) => {
+					await c.run.setWakeAt(123);
+				},
+			},
+		});
+		const factory = buildNativeFactory(
+			runtimeCase.runtime,
+			registryConfig(definition),
+			definition,
+		) as unknown as FakeActorFactory;
+		const ctx = new FakeActorContext(runtimeCase.scenario);
+
+		await expect(
+			factory.callbacks.actions.setWake(null, {
+				ctx,
+				conn: null,
+				name: "setWake",
+				args: encodeValue([]),
+				cancelToken: new FakeCancellationToken(),
+			}),
+		).rejects.toMatchObject({
+			group: "actor",
+			code: "run_handler_unavailable",
+		});
+		expect(runtimeCase.scenario.runWakeAt).toEqual([]);
+	});
+
+	test.each([
+		"napi",
+		"wasm",
+	] as const)("%s shares the public run-control gate with runtime starts", async (kind) => {
+		const runtimeCase = createRuntimeCase(kind);
+		const started = new Gate();
+		let control: RunControl | undefined;
+		const definition = actor({
+			run: defineRunHandler(
+				async () => {
+					started.markStarted();
+					await started.released;
+				},
+				{
+					inspectorKind: "workflow",
+					createInspector: (context) => {
+						control = context.control;
+						return {
+							inspector: {
+								workflow: {
+									getHistory: () => null,
+									getState: async () => null,
+									onHistoryUpdated: () => () => {},
+									replayFromStep: async () => null,
+								},
+							},
+						};
+					},
+				},
+			),
+		});
+		const factory = buildNativeFactory(
+			runtimeCase.runtime,
+			registryConfig(definition),
+			definition,
+		) as unknown as FakeActorFactory;
+		const callbacks = factory.callbacks as NativeCallbacks & {
+			getWorkflowHistory?: NativeCallbacks["run"];
+		};
+		const ctx = new FakeActorContext(runtimeCase.scenario);
+
+		await callbacks.getWorkflowHistory?.(null, { ctx });
+		expect(control).toBeDefined();
+		const running = callbacks.run?.(null, { ctx });
+		await started.started;
+
+		await expect(
+			control?.run.withInactive({}, async () => {}),
+		).rejects.toMatchObject({
+			group: "actor",
+			code: "run_handler_unavailable",
+		});
+
+		started.release();
+		await running;
+		await control?.run.withInactive(
+			{ restartOnSuccess: true },
+			async () => {},
+		);
+		expect(runtimeCase.scenario.runRestarts).toBe(1);
+	});
 	test("scheduled fire metadata is appended after validated action args", async () => {
 		const runtimeCase = createRuntimeCase("napi");
 		let received: unknown[] = [];

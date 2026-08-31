@@ -18,6 +18,7 @@ export type ActorContextHandle = OpaqueHandle<"actorContext">;
 export type ConnHandle = OpaqueHandle<"conn">;
 export type WebSocketHandle = OpaqueHandle<"webSocket">;
 export type CancellationTokenHandle = OpaqueHandle<"cancellationToken">;
+export type ActorStateTransactionHandle = OpaqueHandle<"actorStateTransaction">;
 export type SqliteTransactionHandle = OpaqueHandle<"sqliteTransaction">;
 
 export type RuntimeBytes = Uint8Array;
@@ -484,6 +485,10 @@ export interface CoreRuntime {
 		ctx: ActorContextHandle,
 		timestampMs?: number | undefined | null,
 	): void;
+	actorSetRunWakeAt(
+		ctx: ActorContextHandle,
+		timestampMs?: number | undefined | null,
+	): Promise<void>;
 	actorRequestSave(
 		ctx: ActorContextHandle,
 		opts?: RuntimeRequestSaveOpts | undefined | null,
@@ -623,6 +628,22 @@ export interface CoreRuntime {
 	actorSqlTransactionRollback(
 		transaction: SqliteTransactionHandle,
 	): Promise<void>;
+	actorBeginStateTransaction(
+		ctx: ActorContextHandle,
+		timeoutMs?: number,
+	): Promise<ActorStateTransactionHandle>;
+	actorStateTransactionExecute(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): Promise<RuntimeSqlExecuteResult>;
+	actorStateTransactionCommit(
+		transaction: ActorStateTransactionHandle,
+		payload: RuntimeStateDeltaPayload,
+	): Promise<void>;
+	actorStateTransactionRollback(
+		transaction: ActorStateTransactionHandle,
+	): Promise<void>;
 	actorSqlQuery(
 		ctx: ActorContextHandle,
 		sql: string,
@@ -662,6 +683,12 @@ export interface CoreRuntime {
 		options?: RuntimeQueueWaitOptions | undefined | null,
 		signal?: CancellationTokenHandle | undefined | null,
 	): Promise<void>;
+	actorQueueCompletePersisted(
+		ctx: ActorContextHandle,
+		messageId: bigint,
+		expectedName: string,
+		response?: RuntimeBytes | undefined | null,
+	): Promise<boolean>;
 	actorQueueEnqueueAndWait(
 		ctx: ActorContextHandle,
 		name: string,

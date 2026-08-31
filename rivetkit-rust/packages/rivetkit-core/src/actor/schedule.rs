@@ -7,6 +7,8 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use croner::Cron;
 use futures::future::BoxFuture;
+#[cfg(feature = "wasm-runtime")]
+use futures::future::{AbortHandle, Abortable};
 use rivet_envoy_client::handle::EnvoyHandle;
 use rivet_error::RivetError;
 use serde::{Deserialize, Serialize};
@@ -18,8 +20,6 @@ use uuid::Uuid;
 use crate::actor::context::ActorContext;
 use crate::actor::internal_storage::queries::*;
 use crate::error::{ScheduleRuntimeError, client_error_message, client_error_metadata};
-#[cfg(feature = "wasm-runtime")]
-use crate::runtime::RuntimeSpawner;
 use crate::sqlite::{BindParam, ColumnValue, SqliteBatchStatement};
 use crate::time::{SystemTime, UNIX_EPOCH, sleep};
 
@@ -37,6 +37,14 @@ const CLAIM_ONE_SHOT_BATCH_SIZE: usize = 128;
 pub(crate) const GLOBAL_HISTORY_PRUNE_INTERVAL: usize = 100;
 pub(crate) const GLOBAL_HISTORY_RETAINED_ROWS: i64 =
 	MAX_ACTOR_HISTORY - GLOBAL_HISTORY_PRUNE_INTERVAL as i64;
+
+fn min_deadline(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+	match (left, right) {
+		(Some(left), Some(right)) => Some(left.min(right)),
+		(Some(value), None) | (None, Some(value)) => Some(value),
+		(None, None) => None,
+	}
+}
 
 pub(super) type InternalKeepAwakeCallback =
 	Arc<dyn Fn(BoxFuture<'static, Result<()>>) -> BoxFuture<'static, Result<()>> + Send + Sync>;
@@ -807,6 +815,49 @@ impl ActorContext {
 			.store(true, Ordering::SeqCst);
 	}
 
+	/// Sets the durable Unix-millisecond deadline that should ensure the foreign
+	/// run handler is active, starting it if inactive. This deadline shares one
+	/// physical alarm with scheduled actions, but remains independently
+	/// addressable and clearable.
+	pub async fn set_run_wake_at(&self, wake_at: Option<i64>) -> Result<()> {
+		let _mutation = self.0.schedule_mutation_lock.lock().await;
+		self.persist_run_wake_at(wake_at).await?;
+		self.0.run_wake_revision.fetch_add(1, Ordering::SeqCst);
+		self.mark_schedule_dirty();
+		self.sync_alarm().await
+	}
+
+	pub(crate) async fn consume_due_run_wake(&self) -> Result<Option<(i64, u64)>> {
+		let _mutation = self.0.schedule_mutation_lock.lock().await;
+		let Some(wake_at) = self.run_wake_at() else {
+			return Ok(None);
+		};
+		if wake_at > self.schedule_now_timestamp_ms() {
+			return Ok(None);
+		}
+		self.persist_run_wake_at(None).await?;
+		let revision = self.0.run_wake_revision.fetch_add(1, Ordering::SeqCst) + 1;
+		self.mark_schedule_dirty();
+		Ok(Some((wake_at, revision)))
+	}
+
+	#[doc(hidden)]
+	pub async fn restore_run_wake_at_if_unchanged(
+		&self,
+		wake_at: i64,
+		consumed_revision: u64,
+	) -> Result<bool> {
+		let _mutation = self.0.schedule_mutation_lock.lock().await;
+		if self.0.run_wake_revision.load(Ordering::SeqCst) != consumed_revision {
+			return Ok(false);
+		}
+		self.persist_run_wake_at(Some(wake_at)).await?;
+		self.0.run_wake_revision.fetch_add(1, Ordering::SeqCst);
+		self.mark_schedule_dirty();
+		self.sync_alarm().await?;
+		Ok(true)
+	}
+
 	async fn next_schedule_timestamp(&self, future_only: bool) -> Result<Option<i64>> {
 		let (sql, params) = if future_only {
 			(
@@ -840,12 +891,18 @@ impl ActorContext {
 		{
 			anyhow::bail!("injected schedule alarm sync failure");
 		}
-		let next_alarm = self.next_schedule_timestamp(false).await?;
+		let next_alarm = min_deadline(
+			self.next_schedule_timestamp(false).await?,
+			self.run_wake_at(),
+		);
 		self.sync_alarm_timestamp(next_alarm)
 	}
 
 	async fn sync_future_alarm(&self) -> Result<()> {
-		let next_alarm = self.next_schedule_timestamp(true).await?;
+		let next_alarm = min_deadline(
+			self.next_schedule_timestamp(true).await?,
+			self.run_wake_at(),
+		);
 		self.sync_alarm_timestamp(next_alarm)
 	}
 
@@ -967,6 +1024,11 @@ impl ActorContext {
 		timestamp_ms: Option<i64>,
 		generation: Option<u32>,
 	) {
+		let push_epoch = self
+			.0
+			.schedule_alarm_push_epoch
+			.fetch_add(1, Ordering::SeqCst)
+			.wrapping_add(1);
 		let (ack_tx, ack_rx) = oneshot::channel();
 		envoy_handle.set_alarm_with_ack(
 			self.actor_id().to_owned(),
@@ -981,7 +1043,11 @@ impl ActorContext {
 			handle.spawn(
 				async move {
 					let _ = ack_rx.await;
-					if let Err(error) = state_ctx.persist_last_pushed_alarm(timestamp_ms).await {
+					let is_current = state_ctx.0.schedule_alarm_push_epoch.load(Ordering::SeqCst)
+						== push_epoch && state_ctx.last_pushed_alarm() == timestamp_ms;
+					if is_current
+						&& let Err(error) = state_ctx.persist_last_pushed_alarm(timestamp_ms).await
+					{
 						tracing::error!(
 							?error,
 							?timestamp_ms,
@@ -1033,7 +1099,16 @@ impl ActorContext {
 		#[cfg(not(feature = "wasm-runtime"))]
 		let handle = tokio_handle.spawn(task);
 		#[cfg(feature = "wasm-runtime")]
-		let handle = RuntimeSpawner::spawn(task);
+		let handle = {
+			let (handle, registration) = AbortHandle::new_pair();
+			// Public Wasm callbacks run on the wasm-bindgen executor, outside the
+			// Tokio LocalSet that owns the actor loop. Keep callback-triggered
+			// alarm timers on that same executor so they can be armed safely.
+			wasm_bindgen_futures::spawn_local(async move {
+				let _ = Abortable::new(task, registration).await;
+			});
+			handle
+		};
 		*self.0.schedule_local_alarm_task.lock() = Some(handle);
 	}
 

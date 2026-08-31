@@ -15,6 +15,7 @@ import type {
 import type {
 	ActorContextHandle,
 	ActorFactoryHandle,
+	ActorStateTransactionHandle,
 	CancellationTokenHandle,
 	ConnHandle,
 	CoreRuntime,
@@ -23,6 +24,8 @@ import type {
 	RuntimeActorKeySegment,
 	RuntimeApplicationListenerConfig,
 	RuntimeBytes,
+	RuntimeCronFire,
+	RuntimeCronJobInfo,
 	RuntimeHttpRequest,
 	RuntimeInspectorSnapshot,
 	RuntimeKvEntry,
@@ -34,12 +37,10 @@ import type {
 	RuntimeQueueNextBatchOptions,
 	RuntimeQueueTryNextBatchOptions,
 	RuntimeQueueWaitOptions,
-	RuntimeCronFire,
-	RuntimeCronJobInfo,
 	RuntimeRegistryRouteResponse,
 	RuntimeRequestSaveOpts,
-	RuntimeServeConfig,
 	RuntimeScheduledEventInfo,
+	RuntimeServeConfig,
 	RuntimeServerlessRequest,
 	RuntimeServerlessResponseHead,
 	RuntimeServerlessStreamCallback,
@@ -395,6 +396,17 @@ export class WasmCoreRuntime implements CoreRuntime {
 		callHandle(
 			asWasmActorContext(ctx),
 			"setAlarm",
+			optionalWasmNumber(timestampMs),
+		);
+	}
+
+	async actorSetRunWakeAt(
+		ctx: ActorContextHandle,
+		timestampMs?: number | undefined | null,
+	): Promise<void> {
+		await callHandleAsync(
+			asWasmActorContext(ctx),
+			"setRunWakeAt",
 			optionalWasmNumber(timestampMs),
 		);
 	}
@@ -803,6 +815,61 @@ export class WasmCoreRuntime implements CoreRuntime {
 			).rollback(),
 		);
 	}
+	async actorBeginStateTransaction(
+		ctx: ActorContextHandle,
+		timeoutMs?: number,
+	): Promise<ActorStateTransactionHandle> {
+		return (await callWasm(() =>
+			(
+				asWasmActorContext(ctx) as unknown as {
+					beginStateTransaction(
+						timeoutMs?: number,
+					): Promise<ActorStateTransactionHandle>;
+				}
+			).beginStateTransaction(timeoutMs),
+		)) as ActorStateTransactionHandle;
+	}
+
+	async actorStateTransactionExecute(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): Promise<RuntimeSqlExecuteResult> {
+		const result = await callWasm(() =>
+			(
+				transaction as unknown as {
+					execute(
+						sql: string,
+						params?: RuntimeSqlBindParams,
+					): Promise<RuntimeSqlExecuteResult>;
+				}
+			).execute(sql, params),
+		);
+		return normalizeRuntimeSqlExecuteResult(result);
+	}
+
+	async actorStateTransactionCommit(
+		transaction: ActorStateTransactionHandle,
+		payload: RuntimeStateDeltaPayload,
+	): Promise<void> {
+		await callWasm(() =>
+			(
+				transaction as unknown as {
+					commit(payload: RuntimeStateDeltaPayload): Promise<void>;
+				}
+			).commit(payload),
+		);
+	}
+
+	async actorStateTransactionRollback(
+		transaction: ActorStateTransactionHandle,
+	): Promise<void> {
+		await callWasm(() =>
+			(
+				transaction as unknown as { rollback(): Promise<void> }
+			).rollback(),
+		);
+	}
 
 	async actorSqlQuery(
 		ctx: ActorContextHandle,
@@ -910,6 +977,22 @@ export class WasmCoreRuntime implements CoreRuntime {
 			names,
 			options,
 			signal,
+		);
+	}
+
+	async actorQueueCompletePersisted(
+		ctx: ActorContextHandle,
+		messageId: bigint,
+		expectedName: string,
+		response?: RuntimeBytes | undefined | null,
+	): Promise<boolean> {
+		const queue = childHandle(asWasmActorContext(ctx), "queue");
+		return await callHandleAsync(
+			queue,
+			"completePersisted",
+			messageId,
+			expectedName,
+			response,
 		);
 	}
 

@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rivetkit_actor_persist::{generated::v4 as persist_v4, versioned as persist_versioned};
 #[cfg(not(feature = "wasm-runtime"))]
 use tokio::runtime::Handle;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard, mpsc, oneshot};
 use tokio::task::JoinHandle;
 #[cfg(test)]
 use tokio::time::timeout;
@@ -28,6 +28,7 @@ use crate::actor::task_types::StateMutationReason;
 use crate::error::ActorRuntime;
 #[cfg(feature = "wasm-runtime")]
 use crate::runtime::RuntimeSpawner;
+use crate::sqlite::{BindParam, ExecuteResult, SqliteTransaction};
 use crate::types::SaveStateOpts;
 
 #[cfg(test)]
@@ -83,6 +84,205 @@ pub(super) struct PendingSave {
 pub struct OnStateChangeGuard {
 	ctx: Option<ActorContext>,
 }
+/// A SQLite transaction that owns the actor state-save exclusion until it is
+/// committed or rolled back.
+#[derive(Clone)]
+pub struct ActorStateTransaction {
+	owner: Arc<AsyncMutex<ActorStateTransactionOwner>>,
+}
+
+struct ActorStateTransactionOwner {
+	ctx: ActorContext,
+	transaction: SqliteTransaction,
+	save_guard: Option<OwnedMutexGuard<()>>,
+	write_guard: Option<InFlightWrite>,
+	finalized: bool,
+	committed: bool,
+	save_request_revision: u64,
+	statement_count: usize,
+	bind_payload_bytes: usize,
+	rollback_connection_states: Vec<(String, Vec<u8>)>,
+}
+
+impl ActorStateTransactionOwner {
+	fn restore_connection_states(&self) {
+		for (conn_id, state) in &self.rollback_connection_states {
+			if let Some(conn) = self.ctx.connection(conn_id) {
+				conn.set_state(state.clone());
+			}
+		}
+	}
+
+	fn advance_epoch(&self) {
+		self.ctx
+			.0
+			.state_transaction_epoch
+			.fetch_add(1, Ordering::SeqCst);
+	}
+}
+
+impl Drop for ActorStateTransactionOwner {
+	fn drop(&mut self) {
+		if !self.finalized {
+			self.restore_connection_states();
+			self.advance_epoch();
+			let transaction = self.transaction.clone();
+			#[cfg(not(feature = "wasm-runtime"))]
+			if let Ok(handle) = Handle::try_current() {
+				handle.spawn(async move {
+					if let Err(error) = transaction.rollback().await {
+						tracing::debug!(?error, "dropped actor state transaction rollback failed");
+					}
+				});
+			}
+			#[cfg(feature = "wasm-runtime")]
+			wasm_bindgen_futures::spawn_local(async move {
+				if let Err(error) = transaction.rollback().await {
+					tracing::debug!(?error, "dropped actor state transaction rollback failed");
+				}
+			});
+		}
+		if !self.committed {
+			self.ctx.schedule_save(None);
+		}
+	}
+}
+
+impl ActorStateTransaction {
+	pub async fn execute(
+		&self,
+		sql: impl Into<String>,
+		params: Option<Vec<BindParam>>,
+	) -> Result<ExecuteResult> {
+		let mut owner = self.owner.lock().await;
+		if owner.finalized {
+			return Err(anyhow::anyhow!(
+				"actor state transaction is already finalized"
+			));
+		}
+		let sql = sql.into();
+		if is_transaction_terminator(&sql) {
+			return Err(anyhow::anyhow!(
+				"cannot execute transaction terminator inside an actor state transaction; use the transaction commit or rollback method"
+			));
+		}
+		let payload_bytes = match params.as_deref() {
+			Some(params) => params
+				.iter()
+				.map(internal_storage::bind_param_payload_len)
+				.fold(0usize, usize::saturating_add),
+			None => sql.len(),
+		};
+		let result = owner.transaction.execute(sql, params).await?;
+		owner.statement_count = owner.statement_count.saturating_add(1);
+		owner.bind_payload_bytes = owner.bind_payload_bytes.saturating_add(payload_bytes);
+		Ok(result)
+	}
+
+	pub async fn commit(&self, deltas: Vec<StateDelta>) -> Result<()> {
+		let mut owner = self.owner.lock().await;
+		if owner.finalized {
+			return Err(anyhow::anyhow!(
+				"actor state transaction is already finalized"
+			));
+		}
+
+		let save_request_revision = owner.save_request_revision;
+		let transaction = owner.transaction.clone();
+		let statement_count = owner.statement_count;
+		let bind_payload_bytes = owner.bind_payload_bytes;
+		let result = owner
+			.ctx
+			.commit_state_transaction(
+				&transaction,
+				deltas,
+				save_request_revision,
+				statement_count,
+				bind_payload_bytes,
+			)
+			.await;
+		owner.finalized = true;
+		owner.committed = result.is_ok();
+		if result.is_err() {
+			owner.restore_connection_states();
+		}
+		owner.advance_epoch();
+		owner.write_guard.take();
+		owner.save_guard.take();
+		if result.is_err() {
+			owner.ctx.schedule_save(None);
+		}
+		result
+	}
+
+	pub async fn rollback(&self) -> Result<()> {
+		let mut owner = self.owner.lock().await;
+		if owner.finalized {
+			return Err(anyhow::anyhow!(
+				"actor state transaction is already finalized"
+			));
+		}
+		let result = owner.transaction.rollback().await;
+		owner.finalized = true;
+		owner.restore_connection_states();
+		owner.advance_epoch();
+		owner.write_guard.take();
+		owner.save_guard.take();
+		owner.ctx.schedule_save(None);
+		result
+	}
+}
+
+fn is_transaction_terminator(sql: &str) -> bool {
+	let mut offset = 0;
+	let Some(first) = next_sql_keyword(sql, &mut offset) else {
+		return false;
+	};
+	if first.eq_ignore_ascii_case("COMMIT") || first.eq_ignore_ascii_case("END") {
+		return true;
+	}
+	if !first.eq_ignore_ascii_case("ROLLBACK") {
+		return false;
+	}
+
+	let mut next = next_sql_keyword(sql, &mut offset);
+	if next.is_some_and(|keyword| keyword.eq_ignore_ascii_case("TRANSACTION")) {
+		next = next_sql_keyword(sql, &mut offset);
+	}
+	!next.is_some_and(|keyword| keyword.eq_ignore_ascii_case("TO"))
+}
+
+fn next_sql_keyword<'a>(sql: &'a str, offset: &mut usize) -> Option<&'a str> {
+	let bytes = sql.as_bytes();
+	loop {
+		while bytes.get(*offset).is_some_and(u8::is_ascii_whitespace) {
+			*offset += 1;
+		}
+		if bytes.get(*offset..*offset + 2) == Some(b"--") {
+			*offset += 2;
+			while bytes.get(*offset).is_some_and(|byte| *byte != b'\n') {
+				*offset += 1;
+			}
+			continue;
+		}
+		if bytes.get(*offset..*offset + 2) == Some(b"/*") {
+			*offset += 2;
+			while bytes.get(*offset..*offset + 2) != Some(b"*/") {
+				bytes.get(*offset)?;
+				*offset += 1;
+			}
+			*offset += 2;
+			continue;
+		}
+		break;
+	}
+
+	let start = *offset;
+	while bytes.get(*offset).is_some_and(u8::is_ascii_alphabetic) {
+		*offset += 1;
+	}
+	(start != *offset).then(|| &sql[start..*offset])
+}
 
 impl OnStateChangeGuard {
 	fn new(ctx: ActorContext) -> Self {
@@ -100,6 +300,49 @@ impl Drop for OnStateChangeGuard {
 }
 
 impl ActorContext {
+	pub async fn begin_state_transaction(
+		&self,
+		timeout: Option<Duration>,
+	) -> Result<ActorStateTransaction> {
+		self.clear_pending_save();
+		let save_guard = Arc::clone(&self.0.save_guard).lock_owned().await;
+		self.0
+			.state_transaction_epoch
+			.fetch_add(1, Ordering::SeqCst);
+		self.wait_for_in_flight_writes().await;
+		let rollback_connection_states = self
+			.iter_connections()
+			.filter(|conn| conn.is_hibernatable())
+			.map(|conn| (conn.id().to_owned(), conn.state()))
+			.collect();
+		let transaction = match self.sql().begin_transaction(timeout).await {
+			Ok(transaction) => transaction,
+			Err(error) => {
+				self.0
+					.state_transaction_epoch
+					.fetch_add(1, Ordering::SeqCst);
+				drop(save_guard);
+				self.schedule_save(None);
+				return Err(error);
+			}
+		};
+		let write_guard = self.begin_write();
+		let save_request_revision = self.save_request_revision();
+		Ok(ActorStateTransaction {
+			owner: Arc::new(AsyncMutex::new(ActorStateTransactionOwner {
+				ctx: self.clone(),
+				transaction,
+				save_guard: Some(save_guard),
+				write_guard: Some(write_guard),
+				finalized: false,
+				committed: false,
+				save_request_revision,
+				statement_count: 0,
+				bind_payload_bytes: 0,
+				rollback_connection_states,
+			})),
+		})
+	}
 	pub fn state(&self) -> Vec<u8> {
 		self.0.current_state.read().clone()
 	}
@@ -333,26 +576,18 @@ impl ActorContext {
 		deltas: Vec<StateDelta>,
 		save_request_revision: u64,
 	) -> Result<()> {
-		self.apply_state_deltas_inner(deltas, None, save_request_revision)
+		self.apply_state_deltas_inner(deltas, None, save_request_revision, None)
 			.await
+			.map(|_| ())
 	}
 
-	pub(crate) async fn apply_state_deltas_and_workflow(
-		&self,
-		deltas: Vec<StateDelta>,
-		workflow_writes: Vec<WorkflowKvWrite>,
-		save_request_revision: u64,
-	) -> Result<()> {
-		self.apply_state_deltas_inner(deltas, Some(workflow_writes), save_request_revision)
-			.await
-	}
-
-	async fn apply_state_deltas_inner(
+	pub(super) async fn apply_state_deltas_inner(
 		&self,
 		deltas: Vec<StateDelta>,
 		workflow_writes: Option<Vec<WorkflowKvWrite>>,
 		save_request_revision: u64,
-	) -> Result<()> {
+		expected_state_transaction_epoch: Option<u64>,
+	) -> Result<bool> {
 		let delta_count = deltas.len();
 		let delta_bytes: usize = deltas.iter().map(StateDelta::payload_len).sum();
 		let workflow_write_count = workflow_writes.as_ref().map_or(0, Vec::len);
@@ -375,55 +610,69 @@ impl ActorContext {
 				save_request_revision,
 				"actor state deltas applied without kv write"
 			);
-			return Ok(());
+			return Ok(true);
 		}
 
-		let (
+		let prepared = {
+			let _save_guard = self.0.save_guard.lock().await;
+			if expected_state_transaction_epoch.is_some_and(|expected| {
+				self.0.state_transaction_epoch.load(Ordering::SeqCst) != expected
+			}) {
+				None
+			} else {
+				let revision = self.0.state_revision.load(Ordering::SeqCst);
+				let mut persisted = self.persisted();
+				let mut next_state = None;
+				let mut actor_to_persist = None;
+				let mut connections_to_persist: Vec<PersistedConnection> = Vec::new();
+				let mut connections_to_delete = Vec::new();
+
+				for delta in deltas {
+					match delta {
+						StateDelta::ActorState(bytes) => {
+							next_state = Some(bytes.clone());
+							persisted.state = bytes;
+						}
+						StateDelta::ConnHibernation { conn: _, bytes } => {
+							connections_to_persist.push(
+								decode_persisted_connection(&bytes)
+									.context("decode hibernatable connection state delta")?,
+							);
+						}
+						StateDelta::ConnHibernationRemoved(conn) => {
+							connections_to_delete.push(conn);
+						}
+					}
+				}
+
+				if next_state.is_some() {
+					actor_to_persist = Some(persisted.clone());
+				}
+
+				Some((
+					next_state,
+					actor_to_persist,
+					connections_to_persist,
+					connections_to_delete,
+					revision,
+					self.begin_write(),
+				))
+			}
+		};
+		let Some((
 			next_state,
 			actor_to_persist,
 			connections_to_persist,
 			connections_to_delete,
 			revision,
 			_write_guard,
-		) = {
-			let _save_guard = self.0.save_guard.lock().await;
-			let revision = self.0.state_revision.load(Ordering::SeqCst);
-			let mut persisted = self.persisted();
-			let mut next_state = None;
-			let mut actor_to_persist = None;
-			let mut connections_to_persist: Vec<PersistedConnection> = Vec::new();
-			let mut connections_to_delete = Vec::new();
-
-			for delta in deltas {
-				match delta {
-					StateDelta::ActorState(bytes) => {
-						next_state = Some(bytes.clone());
-						persisted.state = bytes;
-					}
-					StateDelta::ConnHibernation { conn: _, bytes } => {
-						connections_to_persist.push(
-							decode_persisted_connection(&bytes)
-								.context("decode hibernatable connection state delta")?,
-						);
-					}
-					StateDelta::ConnHibernationRemoved(conn) => {
-						connections_to_delete.push(conn);
-					}
-				}
-			}
-
-			if next_state.is_some() {
-				actor_to_persist = Some(persisted.clone());
-			}
-
-			(
-				next_state,
-				actor_to_persist,
-				connections_to_persist,
-				connections_to_delete,
-				revision,
-				self.begin_write(),
-			)
+		)) = prepared
+		else {
+			tracing::debug!(
+				save_request_revision,
+				"discarding state serialized across a state transaction boundary"
+			);
+			return Ok(false);
 		};
 
 		if let Some(workflow_writes) = workflow_writes.as_deref() {
@@ -476,6 +725,98 @@ impl ActorContext {
 			save_request_revision,
 			"actor state deltas applied"
 		);
+		Ok(true)
+	}
+	async fn commit_state_transaction(
+		&self,
+		transaction: &SqliteTransaction,
+		deltas: Vec<StateDelta>,
+		save_request_revision: u64,
+		statement_count: usize,
+		bind_payload_bytes: usize,
+	) -> Result<()> {
+		let (deltas, pending_hibernation_changes) = match self.prepare_state_deltas(deltas) {
+			Ok(prepared) => prepared,
+			Err(error) => {
+				let _ = transaction.rollback().await;
+				return Err(error);
+			}
+		};
+		let commit_result = async {
+			let revision = self.0.state_revision.load(Ordering::SeqCst);
+			let mut persisted = self.persisted();
+			let mut next_state = None;
+			let mut actor_to_persist = None;
+			let mut connections_to_persist: Vec<PersistedConnection> = Vec::new();
+			let mut connections_to_delete = Vec::new();
+
+			for delta in deltas {
+				match delta {
+					StateDelta::ActorState(bytes) => {
+						next_state = Some(bytes.clone());
+						persisted.state = bytes;
+					}
+					StateDelta::ConnHibernation { conn: _, bytes } => {
+						connections_to_persist.push(
+							decode_persisted_connection(&bytes)
+								.context("decode hibernatable connection state delta")?,
+						);
+					}
+					StateDelta::ConnHibernationRemoved(conn) => {
+						connections_to_delete.push(conn);
+					}
+				}
+			}
+
+			if next_state.is_some() {
+				actor_to_persist = Some(persisted);
+			}
+			let statements = internal_storage::build_actor_core_and_connection_statements(
+				actor_to_persist.as_ref(),
+				&connections_to_persist,
+				&connections_to_delete,
+			)?;
+			internal_storage::validate_atomic_state_transaction_budget(
+				statement_count.saturating_add(statements.len()),
+				bind_payload_bytes
+					.saturating_add(internal_storage::statement_bind_payload_len(&statements)),
+			)?;
+			for statement in statements {
+				transaction
+					.execute(statement.sql, statement.params)
+					.await
+					.context("persist actor state inside sqlite transaction")?;
+			}
+			transaction
+				.commit()
+				.await
+				.context("commit sqlite transaction with actor state")?;
+
+			if let Some(state) = next_state {
+				self.0.persisted.write().state = state.clone();
+				*self.0.current_state.write() = state;
+			}
+			for connection in &connections_to_persist {
+				if let Some(handle) = self.connection(&connection.id) {
+					handle.set_state_initial(connection.state.clone());
+				}
+			}
+			*self.0.last_save_at.lock() = Some(StdInstant::now());
+			if self.0.state_revision.load(Ordering::SeqCst) == revision {
+				self.0.state_dirty.store(false, Ordering::SeqCst);
+			}
+			self.mark_save_request_completed(save_request_revision);
+			self.finish_save_request(save_request_revision);
+			self.record_state_updated();
+			Ok(())
+		}
+		.await;
+
+		if let Err(error) = commit_result {
+			self.restore_pending_hibernation_changes(pending_hibernation_changes);
+			let _ = transaction.rollback().await;
+			return Err(error);
+		}
 		Ok(())
 	}
 
@@ -595,6 +936,22 @@ impl ActorContext {
 			.await
 			.context("persist last pushed alarm to sqlite")?;
 		self.load_last_pushed_alarm(alarm_ts);
+		Ok(())
+	}
+
+	pub(crate) fn load_run_wake_at(&self, wake_at: Option<i64>) {
+		*self.0.run_wake_at.write() = wake_at;
+	}
+
+	pub(crate) fn run_wake_at(&self) -> Option<i64> {
+		*self.0.run_wake_at.read()
+	}
+
+	pub(crate) async fn persist_run_wake_at(&self, wake_at: Option<i64>) -> Result<()> {
+		internal_storage::persist_run_wake_at(self.sql(), wake_at)
+			.await
+			.context("persist run wake deadline to sqlite")?;
+		self.load_run_wake_at(wake_at);
 		Ok(())
 	}
 

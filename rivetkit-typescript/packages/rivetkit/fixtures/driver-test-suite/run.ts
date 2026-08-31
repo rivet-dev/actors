@@ -9,10 +9,12 @@ export const runWithTicks = actor({
 	state: {
 		tickCount: 0,
 		lastTickAt: 0,
+		runCount: 0,
 		runStarted: false,
 		runExited: false,
 	},
 	run: async (c) => {
+		c.state.runCount += 1;
 		c.state.runStarted = true;
 		c.log.info("run handler started");
 
@@ -41,9 +43,43 @@ export const runWithTicks = actor({
 		getState: (c) => ({
 			tickCount: c.state.tickCount,
 			lastTickAt: c.state.lastTickAt,
+			runCount: c.state.runCount,
 			runStarted: c.state.runStarted,
 			runExited: c.state.runExited,
 		}),
+		setRunWakeAt: async (c, timestamp: number | null) => {
+			await c.run.setWakeAt(timestamp);
+		},
+	},
+	options: {
+		sleepTimeout: RUN_SLEEP_TIMEOUT,
+	},
+});
+
+// Finite run handler used to verify durable wake and cancellation behavior.
+export const runWithWakeDeadline = actor({
+	onWake: async (c) => {
+		const client = c.client<typeof registry>();
+		await client.lifecycleObserver
+			.getOrCreate([c.key[0]])
+			.recordEvent({ actorKey: c.actorId, event: "wake" });
+	},
+	run: async (c) => {
+		const client = c.client<typeof registry>();
+		await client.lifecycleObserver
+			.getOrCreate([c.key[0]])
+			.recordEvent({ actorKey: c.actorId, event: "run" });
+	},
+	onSleep: async (c) => {
+		const client = c.client<typeof registry>();
+		await client.lifecycleObserver
+			.getOrCreate([c.key[0]])
+			.recordEvent({ actorKey: c.actorId, event: "sleep" });
+	},
+	actions: {
+		setRunWakeAt: async (c, timestamp: number | null) => {
+			await c.run.setWakeAt(timestamp);
+		},
 	},
 	options: {
 		sleepTimeout: RUN_SLEEP_TIMEOUT,

@@ -335,6 +335,61 @@ mod moved_tests {
 	}
 
 	#[tokio::test]
+	async fn persisted_run_wake_is_consumed_after_the_handler_is_removed() {
+		let bindings = Arc::new(empty_bindings());
+		let config = test_adapter_config();
+		let core_ctx = actor_context("actor-run-wake", "actor", Vec::new(), "local");
+		let ctx = ActorContext::new(core_ctx);
+		let abort = CancellationToken::new();
+		let dirty = Arc::new(AtomicBool::new(false));
+		let mut tasks = JoinSet::new();
+		let (_registered_task_tx, mut registered_task_rx) = unbounded_channel();
+		let (tx, rx) = oneshot::channel();
+
+			dispatch_event(
+			ActorEvent::RunWake {
+				wake_at: 123,
+				wake_revision: 1,
+				reply: tx.into(),
+			},
+			&bindings,
+			&config,
+			&ctx,
+			&abort,
+			&mut tasks,
+			&mut registered_task_rx,
+			&dirty,
+		)
+		.await;
+
+		rx.await
+			.expect("run wake reply should resolve")
+			.expect("an obsolete run wake should be consumed");
+	}
+
+	#[tokio::test]
+	async fn suppressed_run_restores_exact_deadline_after_clearing_active_marker() {
+		let core_ctx = actor_context("actor-suppressed-run", "actor", Vec::new(), "local");
+		let active = RunHandlerActiveGuard::new(core_ctx.clone());
+		assert!(core_ctx.run_handler_active());
+
+		let restored = StdArc::new(parking_lot::Mutex::new(None));
+		restore_suppressed_run_wake(active, false, Some((123, 7)), {
+			let core_ctx = core_ctx.clone();
+			let restored = StdArc::clone(&restored);
+			move |wake_at, wake_revision| async move {
+				assert!(!core_ctx.run_handler_active());
+				*restored.lock() = Some((wake_at, wake_revision));
+				Ok(())
+			}
+		})
+		.await
+		.expect("suppressed wake should restore");
+
+		assert_eq!(*restored.lock(), Some((123, 7)));
+	}
+
+	#[tokio::test]
 	async fn spawn_reply_sends_stopping_when_abort_is_cancelled() {
 		let mut tasks = JoinSet::new();
 		let (_registered_task_tx, mut registered_task_rx) = unbounded_channel();

@@ -27,6 +27,11 @@ import type {
 } from "rivetkit/db";
 import { db as rawDb } from "rivetkit/db";
 import { defineConfig, db as drizzleDb } from "rivetkit/db/drizzle";
+import {
+	decodeWorkflowHistoryTransport as decodePublicWorkflowHistory,
+	encodeWorkflowHistoryTransport as encodePublicWorkflowHistory,
+	WorkflowEntryStatus,
+} from "rivetkit/experimental/inspector/workflow";
 import { decodeWorkflowHistoryTransport } from "rivetkit/inspector";
 import {
 	CURRENT_VERSION,
@@ -87,6 +92,9 @@ type RestoredDatabaseSurfaceTypes = [
 describe("package surface", () => {
 	test("restores supported package entrypoints", () => {
 		expect(packageJson.exports).toHaveProperty("./test");
+		expect(packageJson.exports).toHaveProperty(
+			"./experimental/inspector/workflow",
+		);
 		expect(packageJson.exports).toHaveProperty("./inspector");
 		expect(packageJson.exports).toHaveProperty("./inspector/client");
 		expect(packageJson.exports).toHaveProperty("./db");
@@ -95,6 +103,9 @@ describe("package surface", () => {
 
 	test("restored package entrypoints resolve", () => {
 		expect(setupTest).toBeTypeOf("function");
+		expect(decodePublicWorkflowHistory).toBeTypeOf("function");
+		expect(encodePublicWorkflowHistory).toBeTypeOf("function");
+		expect(WorkflowEntryStatus.COMPLETED).toBe("COMPLETED");
 		expect(decodeWorkflowHistoryTransport).toBeTypeOf("function");
 		expect(rawDb).toBeTypeOf("function");
 		expect(drizzleDb).toBeTypeOf("function");

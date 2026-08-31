@@ -203,6 +203,7 @@ impl ConnHandle {
 	#[doc(hidden)]
 	pub fn set_state_initial(&self, state: Vec<u8>) {
 		self.set_state_inner(state, false);
+		self.clear_hibernation_dirty();
 	}
 
 	fn set_state_inner(&self, state: Vec<u8>, mark_dirty: bool) {

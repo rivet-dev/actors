@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken as CoreCancellationToken;
 
 use crate::actor_factory::BridgeRivetErrorContext;
 use crate::connection::ConnHandle;
-use crate::database::JsNativeDatabase;
+use crate::database::{JsActorStateTransaction, JsNativeDatabase, transaction_timeout};
 use crate::kv::Kv;
 use crate::queue::Queue;
 use crate::schedule::Schedule;
@@ -36,7 +36,8 @@ use crate::{NapiInvalidArgument, NapiInvalidState, napi_anyhow_error};
 type AbortSignalTsfn = ThreadsafeFunction<(), ErrorStrategy::CalleeHandled>;
 type DisconnectPredicateTsfn =
 	ThreadsafeFunction<DisconnectPredicatePayload, ErrorStrategy::CalleeHandled>;
-type RunRestartHook = Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync + 'static>;
+type RunRestartHook =
+	Arc<dyn Fn(Option<(i64, u64)>) -> anyhow::Result<()> + Send + Sync + 'static>;
 pub(crate) type RegisteredTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 static ACTOR_CONTEXT_SHARED: LazyLock<SccHashMap<String, Weak<ActorContextShared>>> =
@@ -186,7 +187,7 @@ impl ActorContext {
 
 	pub(crate) fn attach_run_restart<F>(&self, restart: F)
 	where
-		F: Fn() -> anyhow::Result<()> + Send + Sync + 'static,
+		F: Fn(Option<(i64, u64)>) -> anyhow::Result<()> + Send + Sync + 'static,
 	{
 		self.shared.set_run_restart(Arc::new(restart));
 	}
@@ -414,6 +415,19 @@ impl ActorContext {
 	}
 
 	#[napi]
+	pub async fn begin_state_transaction(
+		&self,
+		timeout_ms: Option<f64>,
+	) -> napi::Result<JsActorStateTransaction> {
+		let timeout = timeout_ms.map(transaction_timeout).transpose()?;
+		self.inner
+			.begin_state_transaction(timeout)
+			.await
+			.map(JsActorStateTransaction::new)
+			.map_err(napi_anyhow_error)
+	}
+
+	#[napi]
 	pub async fn save_state_and_workflow_batch(
 		&self,
 		writes: Vec<WorkflowKvWritePayload>,
@@ -515,7 +529,23 @@ impl ActorContext {
 
 	#[napi]
 	pub fn restart_run_handler(&self) -> napi::Result<()> {
-		self.shared.run_restart().map_err(napi_anyhow_error)
+		self.shared.run_restart(None).map_err(napi_anyhow_error)
+	}
+
+	pub(crate) fn restart_run_handler_for_wake(
+		&self,
+		wake_at: i64,
+		wake_revision: u64,
+	) -> anyhow::Result<()> {
+		self.shared.run_restart(Some((wake_at, wake_revision)))
+	}
+
+	#[napi]
+	pub async fn set_run_wake_at(&self, timestamp_ms: Option<i64>) -> napi::Result<()> {
+		self.inner
+			.set_run_wake_at(timestamp_ms)
+			.await
+			.map_err(napi_anyhow_error)
 	}
 
 	#[napi]
@@ -734,7 +764,7 @@ impl ActorContextShared {
 		})
 	}
 
-	fn run_restart(&self) -> anyhow::Result<()> {
+	fn run_restart(&self, wake: Option<(i64, u64)>) -> anyhow::Result<()> {
 		let restart = self.run_restart.lock().clone().ok_or_else(|| {
 			NapiInvalidState {
 				state: "run handler restart".to_owned(),
@@ -742,7 +772,7 @@ impl ActorContextShared {
 			}
 			.build()
 		})?;
-		restart()
+		restart(wake)
 	}
 
 	fn run_restart_configured(&self) -> bool {

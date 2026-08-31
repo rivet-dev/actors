@@ -1,10 +1,12 @@
 import { getLogger } from "@/common/log";
 import type {
 	DatabaseProvider,
+	NativeDatabaseProvider,
 	RawAccess,
-	SqliteProfilingOptions,
 	SqliteDatabase,
+	SqliteProfilingOptions,
 	SqliteTransactionDatabase,
+	SqliteTransactionOptions,
 } from "./config";
 import {
 	isManualTransactionControl,
@@ -28,6 +30,50 @@ export interface DatabaseFactoryConfig {
 	 */
 	profiling?: SqliteProfilingOptions;
 }
+const nativeStateTransactionOpeners = new WeakMap<
+	NativeDatabaseProvider,
+	(
+		timeoutMs?: number,
+		context?: unknown,
+	) => Promise<SqliteTransactionDatabase>
+>();
+type NativeStateTransactionContext = {
+	enter(): Promise<unknown>;
+	exit(scope: unknown): void;
+};
+const nativeStateTransactionClientBinders = new WeakMap<
+	object,
+	(context: NativeStateTransactionContext) => object
+>();
+
+/** @internal */
+export function registerNativeStateTransactionOpener<
+	T extends NativeDatabaseProvider,
+>(
+	provider: T,
+	opener: (
+		timeoutMs?: number,
+		context?: unknown,
+	) => Promise<SqliteTransactionDatabase>,
+): T {
+	nativeStateTransactionOpeners.set(provider, opener);
+	return provider;
+}
+
+/** @internal */
+export function bindNativeStateTransactionContext<T>(
+	client: T,
+	context: NativeStateTransactionContext,
+): T {
+	if (
+		(typeof client !== "object" || client === null) &&
+		typeof client !== "function"
+	) {
+		return client;
+	}
+	const bind = nativeStateTransactionClientBinders.get(client as object);
+	return (bind?.(context) ?? client) as T;
+}
 
 function hasMultipleStatements(query: string): boolean {
 	const trimmed = query.trim().replace(/;+$/, "").trimEnd();
@@ -39,7 +85,7 @@ export function db({
 	warnOnManualTransactions = true,
 	profiling,
 }: DatabaseFactoryConfig = {}): DatabaseProvider<RawAccess> {
-	return {
+	const provider: DatabaseProvider<RawAccess> = {
 		sqliteProfiling: profiling,
 		createClient: async (ctx) => {
 			const nativeDatabaseProvider = ctx.nativeDatabaseProvider;
@@ -63,112 +109,161 @@ export function db({
 			const createClient = (
 				target: SqliteDatabase | SqliteTransactionDatabase,
 				transactionScoped = false,
-			): RawAccess => ({
-				execute: async <
-					TRow extends Record<string, unknown> = Record<
-						string,
-						unknown
-					>,
-				>(
-					query: string,
-					...args: unknown[]
-				): Promise<TRow[]> => {
-					ensureOpen();
-					if (
-						!transactionScoped &&
-						warnOnManualTransactions &&
-						!manualTransactionWarned &&
-						!hasMultipleStatements(query) &&
-						isManualTransactionControl(query)
-					) {
-						manualTransactionWarned = true;
-						getLogger("database").warn(
-							{ actorId: ctx.actorId },
-							"Manual cross-call SQLite transactions can interleave with other actor work. Use db.transaction() for coordinated transactions. Set warnOnManualTransactions: false in your db(...) configuration to disable this warning.",
-						);
-					}
-
-					const kvReadsBefore = ctx.metrics?.totalKvReads ?? 0;
-					const kvWritesBefore = ctx.metrics?.totalKvWrites ?? 0;
-					const start = performance.now();
-
-					try {
-						if (args.length > 0) {
-							const bindings =
-								args.length === 1 &&
-								isSqliteBindingObject(args[0])
-									? toSqliteBindings(args[0])
-									: toSqliteBindings(args);
-							const { rows, columns } = await target.execute(
-								query,
-								bindings,
-							);
-							return rows.map((row) =>
-								rowToObject<TRow>(row, columns),
+				stateTransactionContext?: NativeStateTransactionContext,
+			): RawAccess => {
+				const client: RawAccess = {
+					execute: async <
+						TRow extends Record<string, unknown> = Record<
+							string,
+							unknown
+						>,
+					>(
+						query: string,
+						...args: unknown[]
+					): Promise<TRow[]> => {
+						ensureOpen();
+						if (
+							!transactionScoped &&
+							warnOnManualTransactions &&
+							!manualTransactionWarned &&
+							!hasMultipleStatements(query) &&
+							isManualTransactionControl(query)
+						) {
+							manualTransactionWarned = true;
+							getLogger("database").warn(
+								{ actorId: ctx.actorId },
+								"Manual cross-call SQLite transactions can interleave with other actor work. Use db.transaction() for coordinated transactions. Set warnOnManualTransactions: false in your db(...) configuration to disable this warning.",
 							);
 						}
 
-						if (!hasMultipleStatements(query)) {
-							const { rows, columns } = await target.execute(
-								query,
-								undefined,
-							);
-							return rows.map((row) =>
-								rowToObject<TRow>(row, columns),
-							);
-						}
+						const kvReadsBefore = ctx.metrics?.totalKvReads ?? 0;
+						const kvWritesBefore = ctx.metrics?.totalKvWrites ?? 0;
+						const start = performance.now();
 
-						return await execMultiStatement<TRow>(target, query);
-					} finally {
-						const durationMs = performance.now() - start;
-						ctx.metrics?.trackSql(query, durationMs);
-						if (ctx.metrics) {
-							const kvReads =
-								ctx.metrics.totalKvReads - kvReadsBefore;
-							const kvWrites =
-								ctx.metrics.totalKvWrites - kvWritesBefore;
-							ctx.log?.debug({
-								msg: "sql query",
-								query: query.slice(0, 120),
-								durationMs,
-								kvReads,
-								kvWrites,
-							});
-						}
-					}
-				},
-				transaction: async <T>(
-					callback: (tx: RawAccess) => Promise<T> | T,
-					options?: import("./config").SqliteTransactionOptions,
-				): Promise<T> => {
-					validateTransactionTimeout(options?.timeout);
-					validateTransactionName(options?.name);
-					const transaction = await db.beginTransaction(
-						options?.timeout,
-						options?.name,
-					);
-					const tx = createClient(transaction, true);
-					try {
-						const result = await callback(tx);
-						await transaction.commit();
-						return result;
-					} catch (error) {
 						try {
-							await transaction.rollback();
-						} catch {
-							// Preserve the callback or commit error after expiry cleanup.
+							if (args.length > 0) {
+								const bindings =
+									args.length === 1 &&
+									isSqliteBindingObject(args[0])
+										? toSqliteBindings(args[0])
+										: toSqliteBindings(args);
+								const { rows, columns } = await target.execute(
+									query,
+									bindings,
+								);
+								return rows.map((row) =>
+									rowToObject<TRow>(row, columns),
+								);
+							}
+
+							if (!hasMultipleStatements(query)) {
+								const { rows, columns } = await target.execute(
+									query,
+									undefined,
+								);
+								return rows.map((row) =>
+									rowToObject<TRow>(row, columns),
+								);
+							}
+
+							return await execMultiStatement<TRow>(
+								target,
+								query,
+							);
+						} finally {
+							const durationMs = performance.now() - start;
+							ctx.metrics?.trackSql(query, durationMs);
+							if (ctx.metrics) {
+								const kvReads =
+									ctx.metrics.totalKvReads - kvReadsBefore;
+								const kvWrites =
+									ctx.metrics.totalKvWrites - kvWritesBefore;
+								ctx.log?.debug({
+									msg: "sql query",
+									query: query.slice(0, 120),
+									durationMs,
+									kvReads,
+									kvWrites,
+								});
+							}
 						}
-						throw error;
-					}
-				},
-				close: async () => {
-					if (!closed) {
-						closed = true;
-						await db.close();
-					}
-				},
-				nativeMetrics: () => db.nativeMetrics?.() ?? null,
-			});
+					},
+					transaction: async <T>(
+						callback: (tx: RawAccess) => Promise<T> | T,
+						options?: SqliteTransactionOptions,
+					): Promise<T> => {
+						validateTransactionTimeout(options?.timeout);
+						validateTransactionName(options?.name);
+						if (
+							transactionScoped &&
+							options?.experimental?.includeState
+						) {
+							throw new Error(
+								"experimental.includeState is not supported for nested transactions",
+							);
+						}
+						const includeState =
+							options?.experimental?.includeState === true;
+						const stateScope =
+							includeState && stateTransactionContext
+								? await stateTransactionContext.enter()
+								: undefined;
+						try {
+							const transaction = includeState
+								? await (() => {
+										const beginStateTransaction =
+											ctx.nativeDatabaseProvider &&
+											nativeStateTransactionOpeners.get(
+												ctx.nativeDatabaseProvider,
+											);
+										if (!beginStateTransaction) {
+											throw new Error(
+												"experimental.includeState is only supported by RivetKit's embedded database provider",
+											);
+										}
+										return beginStateTransaction(
+											options?.timeout,
+											stateScope,
+										);
+									})()
+								: await db.beginTransaction(
+										options?.timeout,
+										options?.name,
+									);
+							const tx = createClient(transaction, true);
+							try {
+								const result = await callback(tx);
+								await transaction.commit();
+								return result;
+							} catch (error) {
+								try {
+									await transaction.rollback();
+								} catch {
+									// Preserve the callback or commit error after expiry cleanup.
+								}
+								throw error;
+							}
+						} finally {
+							if (stateScope !== undefined) {
+								stateTransactionContext?.exit(stateScope);
+							}
+						}
+					},
+					close: async () => {
+						if (!closed) {
+							closed = true;
+							await db.close();
+						}
+					},
+					nativeMetrics: () => db.nativeMetrics?.() ?? null,
+				};
+				if (!transactionScoped) {
+					nativeStateTransactionClientBinders.set(client, (context) =>
+						createClient(target, false, context),
+					);
+				}
+				return client;
+			};
 			const client = createClient(db);
 			return client;
 		},
@@ -180,6 +275,7 @@ export function db({
 			}
 		},
 	};
+	return provider;
 }
 
 function rowToObject<TRow extends Record<string, unknown>>(

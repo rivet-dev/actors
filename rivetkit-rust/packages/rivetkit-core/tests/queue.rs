@@ -3,11 +3,14 @@ use super::*;
 mod moved_tests {
 	use super::{QueueNextBatchOpts, QueueNextOpts, QueueWaitOpts};
 
+	use crate::actor::config::ActorConfig;
 	use crate::actor::context::ActorContext;
 	use crate::actor::keys::{
 		QUEUE_METADATA_KEY, decode_queue_message_key, make_queue_message_key,
 	};
 	use crate::kv::Kv;
+	use std::sync::atomic::{AtomicBool, Ordering};
+	use std::sync::Arc;
 	use std::time::Duration;
 	use tokio::task::yield_now;
 	use tokio_util::sync::CancellationToken;
@@ -69,6 +72,174 @@ mod moved_tests {
 				.collect::<Vec<_>>(),
 			vec![b"first".to_vec(), b"fourth".to_vec()]
 		);
+	}
+
+	#[tokio::test]
+	async fn wait_for_available_does_not_consume_or_reorder_messages() {
+		let queue = test_queue();
+		crate::actor::internal_storage::schema::ensure_internal_schema(queue.sql())
+			.await
+			.expect("initialize queue storage");
+		queue.send("first", b"one").await.expect("send first");
+		queue.send("target", b"two").await.expect("send target");
+
+		queue
+			.wait_for_names_available(vec!["target".to_owned()], QueueWaitOpts::default())
+			.await
+			.expect("wait for matching queue message");
+
+		let messages = queue.inspect_messages().await.expect("inspect queue");
+		assert_eq!(
+			messages
+				.iter()
+				.map(|message| message.name.as_str())
+				.collect::<Vec<_>>(),
+			vec!["first", "target"],
+		);
+	}
+
+	#[tokio::test]
+	async fn durable_completion_verifies_persisted_name_and_is_idempotent() {
+		let queue = test_queue();
+		crate::actor::internal_storage::schema::ensure_internal_schema(queue.sql())
+			.await
+			.expect("initialize queue storage");
+		let message = queue
+			.send("expected", b"body")
+			.await
+			.expect("send queue message");
+		let error = queue
+			.complete_persisted_message(message.id, "wrong", None)
+			.await
+			.expect_err("wrong name must fail while completing");
+		let error = rivet_error::RivetError::extract(&error);
+		assert_eq!(error.group(), "queue");
+		assert_eq!(error.code(), "message_identity_mismatch");
+		assert_eq!(queue.inspect_messages().await.expect("inspect").len(), 1);
+
+		assert!(
+			queue
+				.complete_persisted_message(message.id, "expected", None)
+				.await
+				.expect("complete matching message")
+		);
+		assert!(
+			!queue
+				.complete_persisted_message(message.id, "expected", None)
+				.await
+				.expect("repeat completion is an idempotent miss")
+		);
+	}
+
+	#[tokio::test]
+	async fn durable_completion_survives_actor_context_recreation() {
+		let queue = test_queue();
+		crate::actor::internal_storage::schema::ensure_internal_schema(queue.sql())
+			.await
+			.expect("initialize queue storage");
+		let message = queue
+			.send("durable", b"body")
+			.await
+			.expect("send queue message");
+		let sql = queue.sql().clone();
+		drop(queue);
+
+		let recreated = ActorContext::build(
+			"actor-queue".to_owned(),
+			"queue-test".to_owned(),
+			Vec::new(),
+			"local".to_owned(),
+			Some(2),
+			"test-envoy".to_owned(),
+			ActorConfig::default(),
+			Kv::new_in_memory(),
+			sql,
+		);
+		assert!(
+			recreated
+				.complete_persisted_message(message.id, "durable", None)
+				.await
+				.expect("complete persisted message from recreated context")
+		);
+		assert!(
+			recreated
+				.inspect_messages()
+				.await
+				.expect("inspect recreated queue")
+				.is_empty()
+		);
+	}
+
+	#[tokio::test]
+	async fn stale_completion_does_not_decrement_queue_size_twice() {
+		let queue = test_queue();
+		crate::actor::internal_storage::schema::ensure_internal_schema(queue.sql())
+			.await
+			.expect("initialize queue storage");
+		queue.send("first", b"one").await.expect("send first");
+		queue.send("second", b"two").await.expect("send second");
+
+		let first = queue
+			.next(QueueNextOpts {
+				completable: true,
+				..Default::default()
+			})
+			.await
+			.expect("receive first")
+			.expect("first message");
+		assert!(
+			queue
+				.complete_persisted_message(first.id, &first.name, None)
+				.await
+				.expect("complete first by identity")
+		);
+		first
+			.complete(None)
+			.await
+			.expect("stale completion is idempotent");
+
+		assert_eq!(queue.0.queue_metadata.lock().await.size, 1);
+		let remaining = queue.inspect_messages().await.expect("inspect queue");
+		assert_eq!(remaining.len(), 1);
+		assert_eq!(remaining[0].name, "second");
+	}
+
+	#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+	async fn wait_for_available_observes_enqueue_before_waiter_parks() {
+		let queue = test_queue();
+		crate::actor::internal_storage::schema::ensure_internal_schema(queue.sql())
+			.await
+			.expect("initialize queue storage");
+		let runtime = tokio::runtime::Handle::current();
+		let enqueued = Arc::new(AtomicBool::new(false));
+		queue.set_wait_activity_callback(Some(Arc::new({
+			let queue = queue.clone();
+			let enqueued = enqueued.clone();
+			move || {
+				if enqueued.swap(true, Ordering::SeqCst) {
+					return;
+				}
+				let queue = queue.clone();
+				let runtime = runtime.clone();
+				std::thread::spawn(move || {
+					runtime.block_on(queue.send("target", b"ready"))
+				})
+				.join()
+				.expect("enqueue thread joins")
+				.expect("enqueue target before waiter parks");
+			}
+		})));
+
+		queue
+			.wait_for_names_available(
+				vec!["target".to_owned()],
+				QueueWaitOpts {
+					timeout: Some(Duration::from_millis(100)),
+					..Default::default()
+				},
+			)
+			.await
+			.expect("notification is retained until the waiter parks");
 	}
 
 	#[tokio::test]

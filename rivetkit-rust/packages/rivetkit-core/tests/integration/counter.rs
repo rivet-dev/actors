@@ -136,6 +136,7 @@ fn counter_factory() -> ActorFactory {
 					ActorEvent::WorkflowReplayRequested { entry_id: _, reply } => {
 						reply.send(Ok(None));
 					}
+					ActorEvent::RunWake { .. } => {}
 				}
 			}
 

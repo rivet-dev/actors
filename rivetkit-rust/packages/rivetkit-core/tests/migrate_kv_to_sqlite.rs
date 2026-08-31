@@ -698,6 +698,7 @@ async fn imports_legacy_kv_snapshot_to_sqlite_once() -> Result<()> {
 				..actor.clone()
 			},
 			last_pushed_alarm: Some(5678),
+			run_wake_at: None,
 		})
 	);
 	let schedule_rows = ctx
@@ -1699,7 +1700,7 @@ async fn atomic_workflow_flush_rejects_whole_units_over_transaction_budget() -> 
 		)
 		.await
 		.expect_err("the atomic unit must not be chunked");
-	assert!(format!("{error:#}").contains("exceeds sqlite transaction budget"));
+	assert!(format!("{error:#}").contains("exceeds transaction budget"));
 	assert!(
 		internal_storage::load_actor_snapshot(ctx.sql())
 			.await?

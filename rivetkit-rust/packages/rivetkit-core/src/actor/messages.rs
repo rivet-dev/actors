@@ -348,6 +348,13 @@ pub enum ActorEvent {
 		entry_id: Option<String>,
 		reply: Reply<Option<Vec<u8>>>,
 	},
+	/// The persisted logical run deadline became due. Foreign runtimes ensure
+	/// their run callback is active without restarting the actor runtime itself.
+	RunWake {
+		wake_at: i64,
+		wake_revision: u64,
+		reply: Reply<()>,
+	},
 }
 
 impl ActorEvent {
@@ -378,6 +385,7 @@ impl ActorEvent {
 			Self::Destroy { .. } => "destroy",
 			Self::WorkflowHistoryRequested { .. } => "workflow_history_requested",
 			Self::WorkflowReplayRequested { .. } => "workflow_replay_requested",
+			Self::RunWake { .. } => "run_wake",
 		}
 	}
 }

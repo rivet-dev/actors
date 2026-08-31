@@ -81,6 +81,10 @@ export interface JsNativeDatabaseLike {
 	executeBatch?(
 		statements: NativeBatchStatement[],
 	): Promise<NativeExecuteResult[]>;
+	beginStateTransaction?(
+		timeoutMs?: number,
+		context?: unknown,
+	): Promise<JsNativeTransactionLike>;
 	beginTransaction(
 		timeoutMs?: number,
 		name?: string,
@@ -97,6 +101,12 @@ export interface JsNativeDatabaseLike {
 	takeLastKvError?(): string | null;
 	close(): Promise<void>;
 }
+export type StateAwareSqliteDatabase = SqliteDatabase & {
+	beginStateTransaction(
+		timeoutMs?: number,
+		context?: unknown,
+	): Promise<SqliteTransactionDatabase>;
+};
 
 export interface JsNativeTransactionLike {
 	exec(sql: string): Promise<NativeExecResult>;
@@ -315,7 +325,7 @@ class NativeCloseGate {
 
 export function wrapJsNativeDatabase(
 	database: JsNativeDatabaseLike,
-): SqliteDatabase {
+): StateAwareSqliteDatabase {
 	const gate = new NativeCloseGate();
 	let closePromise: Promise<void> | undefined;
 	let lastInsertRowId: number | null = null;
@@ -428,6 +438,31 @@ export function wrapJsNativeDatabase(
 			let transaction: JsNativeTransactionLike;
 			try {
 				transaction = await database.beginTransaction(timeoutMs, name);
+			} catch (error) {
+				enrichNativeDatabaseError(database, error);
+			} finally {
+				release();
+			}
+			return wrapTransaction(database, transaction, gate, (result) => {
+				if (result.lastInsertRowId !== undefined) {
+					lastInsertRowId = result.lastInsertRowId;
+				}
+			});
+		},
+		async beginStateTransaction(
+			timeoutMs?: number,
+			context?: unknown,
+		): Promise<SqliteTransactionDatabase> {
+			if (!database.beginStateTransaction) {
+				throw new Error("actor state transactions are not configured");
+			}
+			const release = gate.enter();
+			let transaction: JsNativeTransactionLike;
+			try {
+				transaction = await database.beginStateTransaction(
+					timeoutMs,
+					context,
+				);
 			} catch (error) {
 				enrichNativeDatabaseError(database, error);
 			} finally {

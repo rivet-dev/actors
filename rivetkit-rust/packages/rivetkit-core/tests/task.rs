@@ -21,7 +21,7 @@ pub(crate) mod moved_tests {
 		RemoteSqliteRequest, RemoteSqliteResponse, RemoteSqliteResponseEnvelope,
 	};
 	use rusqlite::types::{Value, ValueRef};
-	use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
+	use tokio::sync::{Mutex as AsyncMutex, Notify, mpsc, oneshot};
 	use tokio::task::yield_now;
 	use tokio::time::{advance, sleep, timeout};
 	use tracing::field::{Field, Visit};
@@ -245,7 +245,13 @@ pub(crate) mod moved_tests {
 		let (_dispatch_tx, dispatch_rx) = mpsc::unbounded_channel();
 		let (events_tx, events_rx) = mpsc::unbounded_channel();
 		ctx.configure_lifecycle_events(Some(events_tx));
-		let factory = Arc::new(ActorFactory::new(Default::default(), |start| {
+		let serialize_count = Arc::new(AtomicUsize::new(0));
+		let first_serialized = Arc::new(Notify::new());
+		let factory_serialize_count = serialize_count.clone();
+		let factory_first_serialized = first_serialized.clone();
+		let factory = Arc::new(ActorFactory::new(Default::default(), move |start| {
+			let serialize_count = factory_serialize_count.clone();
+			let first_serialized = factory_first_serialized.clone();
 			Box::pin(async move {
 				let mut events = start.events;
 				while let Some(event) = events.recv().await {
@@ -254,9 +260,17 @@ pub(crate) mod moved_tests {
 						reply,
 					} = event
 					{
+						let index = serialize_count.fetch_add(1, Ordering::SeqCst);
 						reply.send(Ok(vec![StateDelta::ActorState(
-							b"lifecycle-state".to_vec(),
+							if index == 0 {
+								b"stale-transaction-state".to_vec()
+							} else {
+								b"lifecycle-state".to_vec()
+							},
 						)]));
+						if index == 0 {
+							first_serialized.notify_one();
+						}
 					}
 				}
 				Ok(())
@@ -279,6 +293,17 @@ pub(crate) mod moved_tests {
 			.await
 			.expect("start reply should send")
 			.expect("start should succeed");
+		let transaction = ctx
+			.begin_state_transaction(None)
+			.await
+			.expect("begin state transaction");
+		let rollback = tokio::spawn(async move {
+			first_serialized.notified().await;
+			transaction
+				.rollback()
+				.await
+				.expect("roll back state transaction");
+		});
 
 		let flush_ctx = ctx.clone();
 		let flush = tokio::spawn(async move {
@@ -298,11 +323,13 @@ pub(crate) mod moved_tests {
 			LifecycleEvent::WorkflowFlushRequested { .. }
 		));
 		task.handle_event(event).await;
+		rollback.await.expect("rollback task should join");
 		flush
 			.await
 			.expect("workflow flush task should join")
 			.expect("workflow flush should succeed");
 
+		assert_eq!(serialize_count.load(Ordering::SeqCst), 2);
 		assert_eq!(ctx.state(), b"lifecycle-state");
 		assert_eq!(load_persisted_actor(&ctx).await.state, b"lifecycle-state");
 		let workflow = ctx
@@ -2705,6 +2732,194 @@ pub(crate) mod moved_tests {
 	}
 
 	#[tokio::test]
+	async fn startup_restores_persisted_run_wake_before_runtime_preamble() {
+		let ctx = new_with_kv(
+			"actor-startup-run-wake",
+			"task-startup-run-wake",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		crate::actor::internal_storage::schema::ensure_internal_schema(ctx.sql())
+			.await
+			.expect("initialize schema");
+		crate::actor::internal_storage::persist_actor_core_and_connections(
+			ctx.sql(),
+			Some(&PersistedActor {
+				has_initialized: true,
+				..PersistedActor::default()
+			}),
+			&[],
+			&[],
+		)
+		.await
+		.expect("persist actor row");
+		crate::actor::internal_storage::persist_run_wake_at(ctx.sql(), Some(4_000))
+			.await
+			.expect("persist logical run wake");
+		let (handle, mut rx) = test_envoy_handle();
+		ctx.configure_envoy(handle, Some(14));
+		ctx.set_schedule_time_for_tests(1_000);
+		let mut task = new_task(ctx.clone());
+		let (start_tx, start_rx) = oneshot::channel();
+
+		task.handle_lifecycle(LifecycleCommand::Start { reply: start_tx })
+			.await;
+		start_rx
+			.await
+			.expect("start reply should send")
+			.expect("start should succeed");
+
+		assert_eq!(ctx.run_wake_at(), Some(4_000));
+		assert_eq!(
+			recv_alarm_now(&mut rx, "actor-startup-run-wake", Some(14)),
+			Some(4_000),
+		);
+	}
+
+	#[tokio::test]
+	async fn startup_delivers_a_persisted_run_wake_that_became_overdue() {
+		let ctx = new_with_kv(
+			"actor-startup-overdue-run-wake",
+			"task-startup-overdue-run-wake",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		crate::actor::internal_storage::schema::ensure_internal_schema(ctx.sql())
+			.await
+			.expect("initialize schema");
+		crate::actor::internal_storage::persist_actor_core_and_connections(
+			ctx.sql(),
+			Some(&PersistedActor {
+				has_initialized: true,
+				..PersistedActor::default()
+			}),
+			&[],
+			&[],
+		)
+		.await
+		.expect("persist actor row");
+		crate::actor::internal_storage::persist_run_wake_at(ctx.sql(), Some(500))
+			.await
+			.expect("persist overdue logical run wake");
+		let (handle, mut rx) = test_envoy_handle();
+		ctx.configure_envoy(handle, Some(15));
+		ctx.set_schedule_time_for_tests(1_000);
+
+		let wake_count = Arc::new(AtomicUsize::new(0));
+		let factory = Arc::new(ActorFactory::new(Default::default(), {
+			let wake_count = wake_count.clone();
+			move |start| {
+				let wake_count = wake_count.clone();
+				Box::pin(async move {
+					let mut events = start.events;
+					while let Some(event) = events.recv().await {
+						match event {
+							ActorEvent::RunWake { reply, .. } => {
+								wake_count.fetch_add(1, Ordering::SeqCst);
+								reply.send(Ok(()));
+							}
+							ActorEvent::BeginSleep => {}
+							ActorEvent::FinalizeSleep { reply } | ActorEvent::Destroy { reply } => {
+								reply.send(Ok(()));
+								break;
+							}
+							_ => {}
+						}
+					}
+					Ok(())
+				})
+			}
+		}));
+		let mut task = new_task_with_factory(ctx.clone(), factory);
+		let (start_tx, start_rx) = oneshot::channel();
+
+		task.handle_lifecycle(LifecycleCommand::Start { reply: start_tx })
+			.await;
+		start_rx
+			.await
+			.expect("start reply should send")
+			.expect("start should succeed");
+
+		assert_eq!(
+			recv_alarm_now(&mut rx, "actor-startup-overdue-run-wake", Some(15)),
+			Some(500),
+		);
+		let (alarm_tx, alarm_rx) = oneshot::channel();
+		task.handle_lifecycle(LifecycleCommand::FireAlarm { reply: alarm_tx })
+			.await;
+		alarm_rx
+			.await
+			.expect("alarm reply should send")
+			.expect("overdue alarm should fire");
+		assert_eq!(
+			recv_alarm_now(&mut rx, "actor-startup-overdue-run-wake", Some(15)),
+			None,
+		);
+		wait_for_count(&wake_count, 1).await;
+		assert_eq!(ctx.run_wake_at(), None);
+		assert_eq!(
+			crate::actor::internal_storage::load_run_wake_at(ctx.sql())
+				.await
+				.expect("load persisted run wake"),
+			None,
+		);
+	}
+
+	#[tokio::test]
+	async fn stale_alarm_ack_cannot_overwrite_the_latest_transport_deadline() {
+		let ctx = new_with_kv(
+			"actor-stale-alarm-ack",
+			"task-stale-alarm-ack",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		let (handle, mut rx) = test_envoy_handle();
+		ctx.configure_envoy(handle, Some(13));
+		ctx.set_schedule_time_for_tests(1_000);
+
+		ctx.set_run_wake_at(Some(3_000)).await.expect("first alarm");
+		let first_ack = match rx.recv().await.expect("first alarm message") {
+			ToEnvoyMessage::SetAlarm {
+				alarm_ts,
+				ack_tx: Some(ack_tx),
+				..
+			} => {
+				assert_eq!(alarm_ts, Some(3_000));
+				ack_tx
+			}
+			_ => panic!("expected first alarm message"),
+		};
+
+		ctx.set_run_wake_at(Some(2_000))
+			.await
+			.expect("second alarm");
+		let second_ack = match rx.recv().await.expect("second alarm message") {
+			ToEnvoyMessage::SetAlarm {
+				alarm_ts,
+				ack_tx: Some(ack_tx),
+				..
+			} => {
+				assert_eq!(alarm_ts, Some(2_000));
+				ack_tx
+			}
+			_ => panic!("expected second alarm message"),
+		};
+
+		second_ack.send(()).expect("ack latest alarm");
+		first_ack.send(()).expect("ack stale alarm");
+		ctx.wait_for_pending_alarm_writes().await;
+		assert_eq!(
+			crate::actor::internal_storage::load_last_pushed_alarm(ctx.sql())
+				.await
+				.expect("load persisted transport alarm"),
+			Some(2_000),
+		);
+	}
+
+	#[tokio::test]
 	async fn fire_due_alarms_dispatches_overdue_work_during_sleep_grace() {
 		let ctx = new_with_kv(
 			"actor-sleep-grace-alarm",
@@ -2735,6 +2950,248 @@ pub(crate) mod moved_tests {
 			other => panic!("expected scheduled action dispatch, got {}", other.kind()),
 		}
 		assert!(ctx.list_scheduled_events().await.unwrap().is_empty());
+	}
+
+	#[tokio::test]
+	async fn fire_due_alarms_dispatches_run_wake_once_alongside_schedules() {
+		let ctx = new_with_kv(
+			"actor-run-wake",
+			"task-run-wake",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+		ctx.configure_actor_events(Some(events_tx));
+		ctx.set_schedule_time_for_tests(100);
+		ctx.set_run_wake_at(Some(100))
+			.await
+			.expect("persist run wake");
+		ctx.at(100, "tick", &[]).await.expect("persist schedule");
+
+		let mut task = new_task(ctx.clone());
+		task.lifecycle = LifecycleState::Started;
+		let fire = tokio::spawn(async move {
+			let result = task.fire_due_alarms().await;
+			(task, result)
+		});
+
+		let mut saw_action = false;
+		let mut saw_run_wake = false;
+		for _ in 0..2 {
+			match events_rx.recv().await.expect("due actor event") {
+				ActorEvent::Action { reply, .. } => {
+					saw_action = true;
+					reply.send(Ok(Vec::new()));
+				}
+				ActorEvent::RunWake { reply, .. } => {
+					saw_run_wake = true;
+					reply.send(Ok(()));
+				}
+				other => panic!("unexpected due event {}", other.kind()),
+			}
+		}
+		assert!(saw_action);
+		assert!(saw_run_wake);
+		let (mut task, fire_result) = fire.await.expect("alarm task should not panic");
+		fire_result.expect("dispatch due alarms");
+		assert_eq!(ctx.run_wake_at(), None);
+
+		task.fire_due_alarms()
+			.await
+			.expect("repeat alarm delivery should be a no-op");
+		assert!(matches!(
+			events_rx.try_recv(),
+			Err(mpsc::error::TryRecvError::Empty)
+		));
+	}
+
+	#[tokio::test]
+	async fn failed_run_wake_restart_restores_the_logical_deadline() {
+		let ctx = new_with_kv(
+			"actor-run-wake-restart-retry",
+			"task-run-wake-restart-retry",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+		ctx.configure_actor_events(Some(events_tx));
+		ctx.set_schedule_time_for_tests(100);
+		ctx.set_run_wake_at(Some(100))
+			.await
+			.expect("persist run wake");
+
+		let mut task = new_task(ctx.clone());
+		task.lifecycle = LifecycleState::Started;
+		let fire = tokio::spawn(async move { task.fire_due_alarms().await });
+		match events_rx.recv().await.expect("due run wake event") {
+			ActorEvent::RunWake { reply, .. } => {
+				reply.send(Err(anyhow::anyhow!("runtime restart unavailable")));
+			}
+			other => panic!("expected run wake, got {}", other.kind()),
+		}
+
+		let error = fire
+			.await
+			.expect("alarm task should not panic")
+			.expect_err("failed restart should fail alarm dispatch");
+		assert!(format!("{error:#}").contains("ensure run handler active for due wake"));
+		assert_eq!(ctx.run_wake_at(), Some(100));
+		assert_eq!(
+			crate::actor::internal_storage::load_run_wake_at(ctx.sql())
+				.await
+				.expect("load restored run wake"),
+			Some(100),
+		);
+	}
+
+	#[tokio::test]
+	async fn failed_run_wake_restart_preserves_a_newer_deadline() {
+		let ctx = new_with_kv(
+			"actor-run-wake-restart-newer",
+			"task-run-wake-restart-newer",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+		ctx.configure_actor_events(Some(events_tx));
+		ctx.set_schedule_time_for_tests(100);
+		ctx.set_run_wake_at(Some(100)).await.unwrap();
+
+		let mut task = new_task(ctx.clone());
+		task.lifecycle = LifecycleState::Started;
+		let fire = tokio::spawn(async move { task.fire_due_alarms().await });
+		match events_rx.recv().await.expect("due run wake event") {
+			ActorEvent::RunWake { reply, .. } => {
+				ctx.set_run_wake_at(Some(200)).await.unwrap();
+				reply.send(Err(anyhow::anyhow!("runtime restart unavailable")));
+			}
+			other => panic!("expected run wake, got {}", other.kind()),
+		}
+
+		fire.await
+			.expect("alarm task should not panic")
+			.expect_err("failed restart should fail alarm dispatch");
+		assert_eq!(ctx.run_wake_at(), Some(200));
+		assert_eq!(
+			crate::actor::internal_storage::load_run_wake_at(ctx.sql())
+				.await
+				.unwrap(),
+			Some(200),
+		);
+	}
+
+	#[tokio::test]
+	async fn failed_run_wake_delivery_restores_the_logical_deadline() {
+		let ctx = new_with_kv(
+			"actor-run-wake-retry",
+			"task-run-wake-retry",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		let (events_tx, events_rx) = mpsc::unbounded_channel();
+		drop(events_rx);
+		ctx.configure_actor_events(Some(events_tx));
+		ctx.set_schedule_time_for_tests(100);
+		ctx.set_run_wake_at(Some(100))
+			.await
+			.expect("persist run wake");
+
+		let mut task = new_task(ctx.clone());
+		task.lifecycle = LifecycleState::Started;
+		let error = task
+			.fire_due_alarms()
+			.await
+			.expect_err("closed runtime inbox should fail delivery");
+
+		assert!(format!("{error:#}").contains("dispatch due run wake"));
+		assert_eq!(ctx.run_wake_at(), Some(100));
+		assert_eq!(
+			crate::actor::internal_storage::load_run_wake_at(ctx.sql())
+				.await
+				.expect("load restored run wake"),
+			Some(100),
+		);
+	}
+
+	#[tokio::test]
+	async fn failed_schedule_drain_restores_the_consumed_run_wake() {
+		let ctx = new_with_kv(
+			"actor-run-wake-schedule-failure",
+			"task-run-wake-schedule-failure",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+		ctx.configure_actor_events(Some(events_tx));
+		ctx.set_schedule_time_for_tests(100);
+		ctx.set_run_wake_at(Some(100))
+			.await
+			.expect("persist run wake");
+		ctx.sql()
+			.execute(
+				"INSERT INTO _rivet_schedule_events (event_id, trigger_at, action, args, kind, cron_expression, timezone, interval_ms, last_started_at, max_history) VALUES ('invalid', 100, 'tick', NULL, 99, NULL, NULL, NULL, NULL, 0)",
+				None,
+			)
+			.await
+			.expect("seed malformed due schedule");
+
+		let mut task = new_task(ctx.clone());
+		task.lifecycle = LifecycleState::Started;
+		task.fire_due_alarms()
+			.await
+			.expect_err("malformed schedule should fail alarm dispatch");
+
+		assert_eq!(ctx.run_wake_at(), Some(100));
+		assert_eq!(
+			crate::actor::internal_storage::load_run_wake_at(ctx.sql())
+				.await
+				.expect("load restored run wake"),
+			Some(100),
+		);
+		assert!(matches!(
+			events_rx.try_recv(),
+			Err(mpsc::error::TryRecvError::Empty)
+		));
+	}
+
+	#[tokio::test]
+	async fn destroy_grace_does_not_restart_the_run_handler() {
+		let ctx = new_with_kv(
+			"actor-run-wake-destroy",
+			"task-run-wake-destroy",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+		ctx.configure_actor_events(Some(events_tx));
+		ctx.set_schedule_time_for_tests(100);
+		ctx.set_run_wake_at(Some(100))
+			.await
+			.expect("persist run wake");
+
+		let mut task = new_task(ctx.clone());
+		task.lifecycle = LifecycleState::DestroyGrace;
+		task.fire_due_alarms()
+			.await
+			.expect("destroy grace alarm should be ignored");
+
+		assert_eq!(ctx.run_wake_at(), None);
+		assert_eq!(
+			crate::actor::internal_storage::load_run_wake_at(ctx.sql())
+				.await
+				.expect("load consumed destroy wake"),
+			None,
+		);
+		assert!(matches!(
+			events_rx.try_recv(),
+			Err(mpsc::error::TryRecvError::Empty)
+		));
 	}
 
 	#[tokio::test(start_paused = true)]

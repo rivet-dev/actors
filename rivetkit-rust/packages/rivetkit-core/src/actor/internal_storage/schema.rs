@@ -10,9 +10,10 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 // `_rivet_meta` is the bootstrap root created before the numbered migrations.
 // `schema_version` cannot live in a table created by those migrations, and
 // `kv_import_state` must survive clearing partially imported runtime tables so
-// interrupted imports can be detected and retried. This is not a general-
-// purpose runtime KV store; its text accessors are migration bookkeeping only.
-// W[bootstrap + import bookkeeping only | point upsert | <100 B | 1-page map]
+// interrupted imports can be detected and retried. Fixed core-owned logical
+// metadata may also live here when adding a column would break older runtimes'
+// ability to open the database. This is not a general-purpose runtime KV store.
+// W[bootstrap + core metadata only | point upsert | <100 B | 1-page map]
 pub(crate) const CREATE_META_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS _rivet_meta (
     key   TEXT PRIMARY KEY,
@@ -135,6 +136,9 @@ CREATE TABLE _rivet_queue (
 CREATE INDEX _rivet_queue_name_id
     ON _rivet_queue (name, id)
 "#,
+	// RivetKit core owns this table's creation and migrations. External workflow
+	// packages are format-compatible clients and must never create or migrate it;
+	// any format change requires bidirectional old/new compatibility fixtures.
 	// W[per workflow step flush | keyed upsert + range delete | values <=256 KiB | verbatim fdb-tuple keys in one clustered tree]
 	r#"
 CREATE TABLE _rivet_wf_kv (
@@ -148,7 +152,7 @@ CREATE TABLE _rivet_user_kv (
     key   BLOB PRIMARY KEY,
     value BLOB NOT NULL
 ) STRICT, WITHOUT ROWID
-"#,
+	"#,
 ]];
 
 pub(crate) async fn ensure_internal_schema(db: &SqliteDb) -> Result<()> {

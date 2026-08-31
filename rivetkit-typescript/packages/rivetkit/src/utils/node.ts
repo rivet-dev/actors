@@ -19,20 +19,35 @@ let nodeStream: typeof import("node:stream/promises") | undefined;
 let nodeUrl: typeof import("node:url") | undefined;
 
 let hasImportedDependencies = false;
+type NodeBuiltin = `node:${string}`;
+let fallbackRequire: ReturnType<typeof createRequire> | undefined;
 
-// Helper to get a require function that works in both CommonJS and ESM.
-// We use require() instead of await import() because registry.start() cannot
-// be async and needs immediate access to Node.js modules during setup.
-export function getRequireFn() {
-	// TODO: This causes issues in tsup
-	// CommonJS context - use global require
-	// if (typeof require !== "undefined") {
-	// 	console.log("existing require");
-	// 	return require;
-	// }
+/**
+ * Loads a Node.js built-in synchronously without relying on `import.meta`,
+ * which esbuild cannot preserve in CommonJS output. Prefer Node's dedicated
+ * built-in loader and retain `createRequire` for Node 22.0-22.2 compatibility.
+ *
+ * @see https://nodejs.org/api/process.html#processgetbuiltinmoduleid
+ * @see https://github.com/evanw/esbuild/issues/1492
+ */
+export function loadNodeBuiltin<T>(id: NodeBuiltin): T {
+	const nodeProcess = globalThis.process;
+	const builtin = nodeProcess?.getBuiltinModule?.(id);
 
-	// ESM context - use createRequire with import.meta.url
-	return createRequire(import.meta.url);
+	if (builtin !== undefined) {
+		return builtin as T;
+	}
+
+	if (!nodeProcess?.execPath) {
+		throw new Error("Node.js built-ins are not available");
+	}
+
+	// Node 22.0-22.2 does not provide getBuiltinModule(). Avoid import.meta here:
+	// esbuild replaces it with an empty shim in CommonJS output, leaving
+	// import_meta.url undefined. This loader only resolves built-ins, so the
+	// fallback base does not affect package resolution.
+	fallbackRequire ??= createRequire(nodeProcess.execPath);
+	return fallbackRequire(id) as T;
 }
 
 /**
@@ -48,22 +63,23 @@ export function importNodeDependencies(): void {
 	if (hasImportedDependencies) return;
 
 	try {
-		// Get a require function that works in both CommonJS and ESM
-		const requireFn = getRequireFn();
-
-		// Use requireFn with webpack ignore comment to prevent bundling
-		nodeCrypto = requireFn(/* webpackIgnore: true */ "node:crypto");
-		nodeFsSync = requireFn(/* webpackIgnore: true */ "node:fs");
-		nodeFs = requireFn(/* webpackIgnore: true */ "node:fs/promises");
-		nodePath = requireFn(/* webpackIgnore: true */ "node:path");
-		nodeOs = requireFn(/* webpackIgnore: true */ "node:os");
-		nodeChildProcess = requireFn(
-			/* webpackIgnore: true */ "node:child_process",
+		nodeCrypto =
+			loadNodeBuiltin<typeof import("node:crypto")>("node:crypto");
+		nodeFsSync = loadNodeBuiltin<typeof import("node:fs")>("node:fs");
+		nodeFs =
+			loadNodeBuiltin<typeof import("node:fs/promises")>(
+				"node:fs/promises",
+			);
+		nodePath = loadNodeBuiltin<typeof import("node:path")>("node:path");
+		nodeOs = loadNodeBuiltin<typeof import("node:os")>("node:os");
+		nodeChildProcess =
+			loadNodeBuiltin<typeof import("node:child_process")>(
+				"node:child_process",
+			);
+		nodeStream = loadNodeBuiltin<typeof import("node:stream/promises")>(
+			"node:stream/promises",
 		);
-		nodeStream = requireFn(
-			/* webpackIgnore: true */ "node:stream/promises",
-		);
-		nodeUrl = requireFn(/* webpackIgnore: true */ "node:url");
+		nodeUrl = loadNodeBuiltin<typeof import("node:url")>("node:url");
 		hasImportedDependencies = true;
 	} catch (err) {
 		console.warn(
