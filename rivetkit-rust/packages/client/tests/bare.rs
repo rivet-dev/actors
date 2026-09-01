@@ -2,27 +2,30 @@ use std::{
 	collections::HashMap,
 	net::SocketAddr,
 	sync::{
-		atomic::{AtomicBool, AtomicUsize, Ordering},
 		Arc,
+		atomic::{AtomicBool, AtomicUsize, Ordering},
 	},
 	time::Duration,
 };
 
 use axum::{
+	Json, Router,
 	body::Bytes,
 	extract::{
-		ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
 		Path, State,
+		ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
 	},
-	http::{header, HeaderMap, Method as AxumMethod, StatusCode, Uri},
+	http::{HeaderMap, Method as AxumMethod, StatusCode, Uri, header},
 	response::IntoResponse,
 	routing::{any, get, post, put},
-	Json, Router,
 };
 use futures_util::{SinkExt, StreamExt};
+use opentelemetry::baggage::BaggageExt as _;
+use opentelemetry::trace::{TraceContextExt as _, TracerProvider as _};
+use opentelemetry::{Context as OtelContext, KeyValue};
 use reqwest::{
-	header::{HeaderMap as ReqwestHeaderMap, HeaderValue},
 	Method, Url,
+	header::{HeaderMap as ReqwestHeaderMap, HeaderValue},
 };
 use rivetkit_client::{
 	Client, ClientConfig, ConnectionStatus, CreateOptions, EncodingKind, GetOptions,
@@ -30,12 +33,15 @@ use rivetkit_client::{
 };
 use rivetkit_client_protocol as wire;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use tokio::{
 	net::TcpListener,
-	sync::{mpsc, Notify},
+	sync::{Notify, mpsc},
 	time::timeout,
 };
+use tracing::Instrument as _;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+use tracing_subscriber::layer::SubscriberExt as _;
 use vbare::OwnedVersionedData;
 
 #[derive(Clone)]
@@ -62,6 +68,11 @@ struct ConfigHeaderTestState {
 	saw_action: Arc<AtomicBool>,
 	saw_connection_websocket: Arc<AtomicBool>,
 	saw_raw_websocket: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+struct TelemetryHeaderState {
+	seen: Arc<std::sync::Mutex<Vec<HashMap<String, String>>>>,
 }
 
 #[derive(Clone)]
@@ -548,6 +559,100 @@ async fn config_headers_are_sent_on_http_and_websocket_paths() {
 }
 
 #[tokio::test]
+async fn active_span_and_ray_reach_the_actor_over_configured_headers() {
+	let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+	let subscriber = tracing_subscriber::registry()
+		.with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
+	let _subscriber = tracing::subscriber::set_default(subscriber);
+
+	let state = TelemetryHeaderState {
+		seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+	};
+	let app = Router::new()
+		.route(
+			"/gateway/{actor_id}/action/{action}",
+			post(action_capturing_telemetry_headers),
+		)
+		.with_state(state.clone());
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let addr = listener.local_addr().unwrap();
+	let server = tokio::spawn(async move {
+		axum::serve(listener, app).await.unwrap();
+	});
+
+	let client = Client::new(
+		ClientConfig::new(endpoint(addr))
+			.disable_metadata_lookup(true)
+			.header(
+				"traceparent",
+				"00-000000000000000000000000000000aa-00000000000000aa-01",
+			)
+			.header("x-rivet-ray-id", "ray-from-config"),
+	);
+	let actor = client
+		.get_or_create(
+			"counter",
+			vec!["telemetry-headers".to_owned()],
+			GetOrCreateOptions::default(),
+		)
+		.unwrap();
+
+	let span = tracing::info_span!("caller");
+	let expected_span = span.context().span().span_context().clone();
+	let output = async { actor.action("increment", vec![json!(2)]).await.unwrap() }
+		.instrument(span)
+		.await;
+	assert_eq!(output, json!({ "count": 3 }));
+
+	let baggage =
+		OtelContext::current_with_baggage(vec![KeyValue::new("rivet.ray.id", "ray-from-baggage")]);
+	let baggage_span = tracing::info_span!(parent: None, "handler");
+	baggage_span.set_parent(baggage);
+	let output = async { actor.action("increment", vec![json!(2)]).await.unwrap() }
+		.instrument(baggage_span)
+		.await;
+	assert_eq!(output, json!({ "count": 3 }));
+
+	let invalid_baggage =
+		OtelContext::current_with_baggage(vec![KeyValue::new("rivet.ray.id", "a".repeat(129))]);
+	let invalid_baggage_span = tracing::info_span!(parent: None, "handler");
+	invalid_baggage_span.set_parent(invalid_baggage);
+	let output = async { actor.action("increment", vec![json!(2)]).await.unwrap() }
+		.instrument(invalid_baggage_span)
+		.await;
+	assert_eq!(output, json!({ "count": 3 }));
+
+	let seen = state.seen.lock().unwrap().clone();
+	assert_eq!(seen.len(), 3);
+	assert_eq!(
+		seen[0].get("traceparent").map(String::as_str),
+		Some(
+			format!(
+				"00-{}-{}-01",
+				expected_span.trace_id(),
+				expected_span.span_id()
+			)
+			.as_str()
+		)
+	);
+	assert_eq!(seen[0].get("tracestate"), None);
+	assert_eq!(
+		seen[0].get("x-rivet-ray-id").map(String::as_str),
+		Some("ray-from-config")
+	);
+	assert_eq!(
+		seen[1].get("x-rivet-ray-id").map(String::as_str),
+		Some("ray-from-baggage")
+	);
+	assert_eq!(
+		seen[2].get("x-rivet-ray-id").map(String::as_str),
+		Some("ray-from-config")
+	);
+
+	server.abort();
+}
+
+#[tokio::test]
 async fn max_input_size_checks_raw_query_input_before_base64url_encoding() {
 	let client = Client::new(
 		ClientConfig::new("http://127.0.0.1:6420")
@@ -669,9 +774,11 @@ fn gateway_url_uses_query_backed_get_or_create_target() {
 		params.get("rvt-token").map(String::as_str),
 		Some("dev-token")
 	);
-	assert!(params
-		.get("rvt-input")
-		.is_some_and(|value| !value.is_empty()));
+	assert!(
+		params
+			.get("rvt-input")
+			.is_some_and(|value| !value.is_empty())
+	);
 }
 
 #[tokio::test]
@@ -1155,6 +1262,34 @@ async fn action_with_config_header(
 ) -> impl IntoResponse {
 	assert_config_header(&headers);
 	state.saw_action.store(true, Ordering::SeqCst);
+	action(
+		State(TestState {
+			saw_bare_action: Arc::new(AtomicBool::new(false)),
+			saw_bare_queue: Arc::new(AtomicBool::new(false)),
+			saw_raw_fetch: Arc::new(AtomicBool::new(false)),
+			saw_raw_websocket: Arc::new(AtomicBool::new(false)),
+		}),
+		Path((actor_id, action_name)),
+		headers,
+		body,
+	)
+	.await
+}
+
+async fn action_capturing_telemetry_headers(
+	State(state): State<TelemetryHeaderState>,
+	Path((actor_id, action_name)): Path<(String, String)>,
+	headers: HeaderMap,
+	body: Bytes,
+) -> impl IntoResponse {
+	state.seen.lock().unwrap().push(
+		headers
+			.iter()
+			.filter_map(|(name, value)| {
+				Some((name.as_str().to_owned(), value.to_str().ok()?.to_owned()))
+			})
+			.collect(),
+	);
 	action(
 		State(TestState {
 			saw_bare_action: Arc::new(AtomicBool::new(false)),

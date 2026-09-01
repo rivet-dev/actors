@@ -236,6 +236,7 @@
 		"@copilotkit/llmock": "^1.6.0",
 		"@hono/node-server": "^1.18.2",
 		"@hono/node-ws": "^1.1.1",
+		"@opentelemetry/sdk-trace-node": "2.11.0",
 		"@rivet-dev/agent-os-common": "*",
 		"@rivet-dev/agent-os-pi": "^0.1.1",
 		"@standard-schema/spec": "^1.0.0",

@@ -12,6 +12,7 @@ import type {
 } from "@/engine-client/driver";
 import { ActorError } from "./errors";
 import { logger } from "./log";
+import { addOutboundTelemetryHeaders } from "./outbound-telemetry";
 
 /** Buffer a one-shot ReadableStream body to bytes so every retry attempt can re-send it. */
 export async function prepareRetryableInit(
@@ -37,6 +38,7 @@ export async function rawHttpFetch(
 	input: string | URL | Request,
 	init?: RequestInit,
 	options: GatewayRequestOptions = {},
+	telemetryHeaders: Record<string, string> = {},
 ): Promise<Response> {
 	// Extract path and merge init options
 	let path: string;
@@ -111,6 +113,7 @@ export async function rawHttpFetch(
 		if (params) {
 			proxyRequestHeaders.set(HEADER_CONN_PARAMS, JSON.stringify(params));
 		}
+		addOutboundTelemetryHeaders(proxyRequestHeaders, telemetryHeaders);
 
 		// Forward the request to the actor
 		const proxyRequest = new Request(url, {
