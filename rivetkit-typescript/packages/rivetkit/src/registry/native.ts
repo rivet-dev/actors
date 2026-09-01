@@ -307,6 +307,11 @@ type NativePersistActorState = {
 	pendingStateTransactionOwners?: Set<symbol>;
 	stateTransactionTail?: Promise<void>;
 	stateTransactionSaveDeferred?: boolean;
+	// Present only while an includeState transaction is active and state is
+	// enabled. Holds a structured clone of the state as of transaction start.
+	// The owner keeps mutating the live `state`; every other context reads this
+	// snapshot so it observes only committed values until the owner commits.
+	committedStateSnapshot?: { value: unknown };
 };
 type NativeDestroyGate = {
 	destroyCompletion?: Promise<void>;
@@ -3094,11 +3099,21 @@ export class ActorContextHandleAdapter {
 			pendingOwners.delete(this.#stateTransactionOwner);
 			actorState.activeStateTransactionOwner =
 				this.#stateTransactionOwner;
+			// Snapshot the committed state up front. The owner mutates the live
+			// `state` in place; every non-owner context reads this snapshot
+			// instead, so actions observe only committed values while the
+			// transaction is open. Doubles as the rollback baseline.
+			const actorStateBaseline = this.#stateEnabled
+				? structuredClone(this.#readState())
+				: undefined;
+			if (this.#stateEnabled) {
+				actorState.committedStateSnapshot = {
+					value: actorStateBaseline,
+				};
+			}
 			return {
 				actorContext: this,
-				actorStateBaseline: this.#stateEnabled
-					? structuredClone(this.#readState())
-					: undefined,
+				actorStateBaseline,
 				connectionStateBaselines: new Map(
 					callNativeSync(() =>
 						this.#runtime.actorConns(this.#ctx),
@@ -3132,6 +3147,9 @@ export class ActorContextHandleAdapter {
 				this.#restoreStateTransactionBaseline(scope);
 			}
 		} finally {
+			// Tear down the read snapshot so non-owner contexts see the
+			// committed (or restored) live state again.
+			actorState.committedStateSnapshot = undefined;
 			if (
 				actorState.activeStateTransactionOwner ===
 				this.#stateTransactionOwner
@@ -3446,6 +3464,17 @@ export class ActorContextHandleAdapter {
 			actorState.state = decodeValue(
 				callNativeSync(() => this.#runtime.actorState(this.#ctx)),
 			);
+		}
+		// While a transaction owner is mutating the live state, every other
+		// context reads the committed snapshot so it never observes the owner's
+		// uncommitted writes. The owner itself keeps reading the live state.
+		const snapshot = actorState.committedStateSnapshot;
+		if (
+			snapshot !== undefined &&
+			actorState.activeStateTransactionOwner !==
+				this.#stateTransactionOwner
+		) {
+			return snapshot.value;
 		}
 		return actorState.state;
 	}
