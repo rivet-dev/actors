@@ -165,6 +165,10 @@ impl DeliveryKey {
 			delivery_id,
 		}
 	}
+
+	pub fn subspace(namespace_id: Id, name: String) -> DeliverySubspaceKey {
+		DeliverySubspaceKey::new(namespace_id, name)
+	}
 }
 
 impl FormalKey for DeliveryKey {
@@ -209,5 +213,29 @@ impl<'de> TupleUnpack<'de> for DeliveryKey {
 		};
 
 		Ok((input, v))
+	}
+}
+
+// Subspace of all `DeliveryKey`s for a single webhook, used to list its delivery history.
+#[derive(Debug)]
+pub struct DeliverySubspaceKey {
+	pub namespace_id: Id,
+	pub name: String,
+}
+
+impl DeliverySubspaceKey {
+	pub fn new(namespace_id: Id, name: String) -> Self {
+		DeliverySubspaceKey { namespace_id, name }
+	}
+}
+
+impl TuplePack for DeliverySubspaceKey {
+	fn pack<W: std::io::Write>(
+		&self,
+		w: &mut W,
+		tuple_depth: TupleDepth,
+	) -> std::io::Result<VersionstampOffset> {
+		let t = (WEBHOOK, DELIVERY, DATA, self.namespace_id, &self.name);
+		t.pack(w, tuple_depth)
 	}
 }

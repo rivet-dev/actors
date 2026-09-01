@@ -70,13 +70,15 @@ impl From<DeliveryStatus> for rivet_data::generated::webhook_delivery_v1::Delive
 
 // Stored record for a single delivery (a triggered event, identified by delivery id, and every
 // attempt made to deliver it). Not the CloudEvents payload itself, just enough to retry it and
-// report its outcome.
+// report its outcome. `created_at` is when the delivery was first triggered; a `Retry` reuses it
+// rather than resetting it, so event history sorts by when the event actually happened.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeliveryRecord {
 	pub payload: String,
 	pub status: DeliveryStatus,
 	pub attempt_count: u32,
 	pub last_error: Option<String>,
+	pub created_at: i64,
 }
 
 impl From<rivet_data::generated::webhook_delivery_v1::Data> for DeliveryRecord {
@@ -86,6 +88,7 @@ impl From<rivet_data::generated::webhook_delivery_v1::Data> for DeliveryRecord {
 			status: value.status.into(),
 			attempt_count: value.attempt_count,
 			last_error: value.last_error,
+			created_at: value.created_at,
 		}
 	}
 }
@@ -97,6 +100,7 @@ impl From<DeliveryRecord> for rivet_data::generated::webhook_delivery_v1::Data {
 			status: value.status.into(),
 			attempt_count: value.attempt_count,
 			last_error: value.last_error,
+			created_at: value.created_at,
 		}
 	}
 }

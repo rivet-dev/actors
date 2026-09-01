@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use epoxy::ops::propose::ProposalResult;
 use futures_util::FutureExt;
 use gas::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -116,35 +117,59 @@ pub struct RecordDeliveryInput {
 	pub namespace_id: Id,
 	pub name: String,
 	pub delivery_id: String,
-	pub record: DeliveryRecord,
+	pub payload: String,
+	pub status: DeliveryStatus,
+	pub attempt_count: u32,
+	pub last_error: Option<String>,
 }
 
 // Writes the current state of a delivery to the local UDB mirror so it can be looked up later by
 // `Retry` or listed for event history. Local only, not proposed through epoxy: a delivery only
 // ever matters to the datacenter that ran it (see `keys::DeliveryKey`).
+//
+// Preserves `created_at` from any existing record for this delivery id instead of taking it from
+// the caller, so a `Retry` (which re-enters this same activity) doesn't reset when the delivery
+// was first triggered. Stamps a fresh `created_at` only the first time a delivery id is recorded.
 #[activity(RecordDelivery)]
 pub async fn record_delivery(ctx: &ActivityCtx, input: &RecordDeliveryInput) -> Result<()> {
 	let namespace_id = input.namespace_id;
 	let name = input.name.clone();
 	let delivery_id = input.delivery_id.clone();
-	let record = input.record.clone();
+	let payload = input.payload.clone();
+	let status = input.status;
+	let attempt_count = input.attempt_count;
+	let last_error = input.last_error.clone();
+	let now = ctx.ts();
 
 	ctx.udb()?
 		.txn("webhook_record_delivery", move |tx| {
 			let name = name.clone();
 			let delivery_id = delivery_id.clone();
-			let record = record.clone();
+			let payload = payload.clone();
+			let last_error = last_error.clone();
 			async move {
 				let tx = tx.with_subspace(namespace::keys::subspace());
+				let key = keys::DeliveryKey::new(namespace_id, name, delivery_id);
+
+				let created_at = match tx.read_opt(&key, Serializable).await? {
+					Some(existing) => existing.created_at,
+					None => now,
+				};
+
 				tx.write(
-					&keys::DeliveryKey::new(namespace_id, name, delivery_id),
-					record,
+					&key,
+					DeliveryRecord {
+						payload,
+						status,
+						attempt_count,
+						last_error,
+						created_at,
+					},
 				)?;
 				Ok(())
 			}
 		})
 		.await?;
-
 	Ok(())
 }
 
@@ -366,12 +391,10 @@ async fn deliver_with_retries(
 		namespace_id,
 		name: name.clone(),
 		delivery_id: delivery_id.clone(),
-		record: DeliveryRecord {
-			payload: payload.clone(),
-			status: DeliveryStatus::Pending,
-			attempt_count: 0,
-			last_error: None,
-		},
+		payload: payload.clone(),
+		status: DeliveryStatus::Pending,
+		attempt_count: 0,
+		last_error: None,
 	})
 	.await?;
 
@@ -394,12 +417,10 @@ async fn deliver_with_retries(
 					namespace_id,
 					name: name.clone(),
 					delivery_id: delivery_id.clone(),
-					record: DeliveryRecord {
-						payload,
-						status: DeliveryStatus::Succeeded,
-						attempt_count: attempt + 1,
-						last_error: None,
-					},
+					payload,
+					status: DeliveryStatus::Succeeded,
+					attempt_count: attempt + 1,
+					last_error: None,
 				})
 				.await?;
 
@@ -428,12 +449,10 @@ async fn deliver_with_retries(
 					namespace_id,
 					name: name.clone(),
 					delivery_id: delivery_id.clone(),
-					record: DeliveryRecord {
-						payload,
-						status: DeliveryStatus::Failed,
-						attempt_count: attempt + 1,
-						last_error: Some(error.build().to_string()),
-					},
+					payload,
+					status: DeliveryStatus::Failed,
+					attempt_count: attempt + 1,
+					last_error: Some(error.build().to_string()),
 				})
 				.await?;
 
@@ -567,8 +586,8 @@ pub async fn upsert_config(
 		.await?;
 
 	match propose_res {
-		epoxy::ops::propose::ProposalResult::Committed => {}
-		epoxy::ops::propose::ProposalResult::ConsensusFailed { reason } => match reason {
+		ProposalResult::Committed => {}
+		ProposalResult::ConsensusFailed { reason } => match reason {
 			epoxy::ops::propose::ConsensusFailedReason::ExpectedValueDoesNotMatch { .. } => {
 				return Ok(Err(errors::Webhook::Conflict));
 			}

@@ -9,4 +9,5 @@ type Data struct {
 	status: DeliveryStatus
 	attemptCount: u32
 	lastError: optional<str>
+	createdAt: i64
 }

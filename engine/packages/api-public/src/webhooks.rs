@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result};
 use axum::response::{IntoResponse, Response};
 use rivet_api_builder::{
 	ApiError,
@@ -374,15 +374,70 @@ pub async fn events(
 	}
 }
 
+const DEFAULT_EVENTS_LIMIT: usize = 20;
+
 #[tracing::instrument(skip_all)]
-async fn events_inner(
-	ctx: ApiCtx,
-	_path: EventsPath,
-	_query: EventsQuery,
-) -> Result<EventsResponse> {
+async fn events_inner(ctx: ApiCtx, path: EventsPath, query: EventsQuery) -> Result<EventsResponse> {
 	ctx.auth().await?;
 
-	// TODO: Read the webhook workflow's event history for this (namespace,
-	// webhook name, dc), paginated (see webhook spec).
-	bail!("webhooks_events is not implemented yet");
+	let namespace = ctx
+		.op(namespace::ops::resolve_for_name_global::Input {
+			name: query.namespace.clone(),
+		})
+		.await?
+		.ok_or_else(|| namespace::errors::Namespace::NotFound.build())?;
+
+	let mut deliveries = ctx
+		.op(webhook::ops::list_deliveries::Input {
+			namespace_id: namespace.namespace_id,
+			name: path.webhook_name.clone(),
+		})
+		.await?;
+
+	// Most recent first. `delivery_id` breaks ties deterministically since two deliveries can
+	// share a `created_at` millisecond.
+	deliveries.sort_by(|a, b| {
+		b.record
+			.created_at
+			.cmp(&a.record.created_at)
+			.then_with(|| b.delivery_id.cmp(&a.delivery_id))
+	});
+
+	// The cursor is the `(created_at, delivery_id)` of the last item on the previous page;
+	// resume strictly after it in the same sorted order.
+	if let Some(cursor) = query.cursor {
+		let (created_at, delivery_id) = cursor
+			.split_once(':')
+			.and_then(|(ts, id)| ts.parse::<i64>().ok().map(|ts| (ts, id.to_string())))
+			.context("invalid cursor")?;
+
+		deliveries.retain(|d| {
+			(d.record.created_at, d.delivery_id.as_str()) < (created_at, delivery_id.as_str())
+		});
+	}
+
+	let limit = query.limit.unwrap_or(DEFAULT_EVENTS_LIMIT);
+	let has_more = deliveries.len() > limit;
+	deliveries.truncate(limit);
+
+	let cursor = has_more
+		.then(|| deliveries.last())
+		.flatten()
+		.map(|last| format!("{}:{}", last.record.created_at, last.delivery_id));
+
+	Ok(EventsResponse {
+		events: deliveries
+			.into_iter()
+			.map(|d| WebhookEvent {
+				id: d.delivery_id,
+				create_ts: d.record.created_at,
+				status: match d.record.status {
+					webhook::types::DeliveryStatus::Pending => "pending".to_string(),
+					webhook::types::DeliveryStatus::Succeeded => "succeeded".to_string(),
+					webhook::types::DeliveryStatus::Failed => "failed".to_string(),
+				},
+			})
+			.collect(),
+		pagination: Pagination { cursor },
+	})
 }

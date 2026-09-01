@@ -1233,6 +1233,57 @@
         ]
       }
     },
+    "/webhooks/{webhook_name}/deliveries/{delivery_id}/retry": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "webhooks_retry_delivery",
+        "parameters": [
+          {
+            "name": "webhook_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "delivery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhooksRetryDeliveryResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/webhooks/{webhook_name}/events": {
       "get": {
         "tags": [
@@ -2565,6 +2616,10 @@
             }
           }
         },
+        "additionalProperties": false
+      },
+      "WebhooksRetryDeliveryResponse": {
+        "type": "object",
         "additionalProperties": false
       },
       "WebhooksUpsertRequestBody": {
