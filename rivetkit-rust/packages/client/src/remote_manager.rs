@@ -80,6 +80,22 @@ struct ActorsGetOrCreateResponse {
 	created: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct ApiErrorBody {
+	group: Option<String>,
+	code: Option<String>,
+}
+
+fn is_key_reserved_in_different_datacenter(body: &str) -> bool {
+	serde_json::from_str::<ApiErrorBody>(body)
+		.ok()
+		.map(|err| {
+			err.group.as_deref() == Some("actor")
+				&& err.code.as_deref() == Some("key_reserved_in_different_datacenter")
+		})
+		.unwrap_or(false)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ActorsCreateRequest {
 	name: String,
@@ -316,6 +332,21 @@ impl RemoteManager {
 		let status = res.status();
 		if !status.is_success() {
 			let body = res.text().await.unwrap_or_default();
+
+			// Retry with a get in case of collision, heals after race.
+			if is_key_reserved_in_different_datacenter(&body) {
+				tracing::warn!(
+					%name,
+					"actor key reserved in different datacenter, falling back to get by key"
+				);
+
+				return self.get_with_key(name, key).await?.ok_or_else(|| {
+					anyhow!(
+						"actor key reserved in different datacenter but get by key found no actor"
+					)
+				});
+			}
+
 			return Err(anyhow!("failed to get or create actor ({status}): {body}"));
 		}
 
