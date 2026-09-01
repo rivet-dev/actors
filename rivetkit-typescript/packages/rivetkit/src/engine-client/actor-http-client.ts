@@ -1,9 +1,12 @@
 import type { ClientConfig } from "@/client/config";
 import {
 	HEADER_RIVET_ACTOR,
+	HEADER_RIVET_RAY_ID,
 	HEADER_RIVET_SKIP_READY_WAIT,
 	HEADER_RIVET_TARGET,
 	HEADER_RIVET_TOKEN,
+	HEADER_TRACEPARENT,
+	HEADER_TRACESTATE,
 } from "@/common/actor-router-consts";
 import { type GatewayRequestOptions, shouldSkipReadyWait } from "./driver";
 
@@ -54,6 +57,18 @@ function buildGuardHeaders(
 	// Add extra headers from config
 	for (const [key, value] of Object.entries(runConfig.headers)) {
 		headers.set(key, value as string);
+	}
+	// Configured trace context is never sent: it would pin every call to one span.
+	for (const name of [HEADER_TRACEPARENT, HEADER_TRACESTATE]) {
+		headers.delete(name);
+		const value = actorRequest.headers.get(name);
+		if (value !== null) {
+			headers.set(name, value);
+		}
+	}
+	const requestRayId = actorRequest.headers.get(HEADER_RIVET_RAY_ID);
+	if (requestRayId !== null) {
+		headers.set(HEADER_RIVET_RAY_ID, requestRayId);
 	}
 	// Add guard-specific headers
 	if (runConfig.token) {

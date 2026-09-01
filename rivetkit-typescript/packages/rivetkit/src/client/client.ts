@@ -3,6 +3,7 @@ import type { ActorQuery } from "@/client/query";
 import type { Encoding } from "@/common/encoding";
 import type { EngineControlClient } from "@/engine-client/driver";
 import type { Registry } from "@/registry";
+import type { CurrentActorInvocation } from "@/registry/runtime";
 import type { ActorActionFunction, ActorGatewayOptions } from "./actor-common";
 import {
 	type ActorConn,
@@ -175,6 +176,18 @@ export interface Region {
 export const ACTOR_CONNS_SYMBOL = Symbol("actorConns");
 export const CREATE_ACTOR_CONN_PROXY = Symbol("createActorConnProxy");
 
+/** Options for constructing a raw actor client. */
+export interface ClientRawOptions {
+	encoding?: Encoding;
+	gateway?: ActorGatewayOptions;
+}
+
+/** Runtime-supplied wiring for clients created inside an actor. Set only by the native runtime. */
+export interface ActorClientRuntimeOptions {
+	/** Supplies the calling actor's invocation so actor-to-actor clients propagate its trace and ray ID. */
+	currentActorInvocation?: CurrentActorInvocation;
+}
+
 /**
  * Client for managing & connecting to actors.
  *
@@ -189,19 +202,20 @@ export class ClientRaw {
 	#driver: EngineControlClient;
 	#encodingKind: Encoding;
 	#gatewayOptions: ActorGatewayOptions;
+	#currentActorInvocation?: CurrentActorInvocation;
 
 	/**
 	 * Creates an instance of Client.
 	 */
 	public constructor(
 		driver: EngineControlClient,
-		encoding: Encoding | undefined,
-		gatewayOptions: ActorGatewayOptions = {},
+		options: ClientRawOptions & ActorClientRuntimeOptions = {},
 	) {
 		this.#driver = driver;
 
-		this.#encodingKind = encoding ?? "bare";
-		this.#gatewayOptions = gatewayOptions;
+		this.#encodingKind = options.encoding ?? "bare";
+		this.#gatewayOptions = options.gateway ?? {};
+		this.#currentActorInvocation = options.currentActorInvocation;
 	}
 
 	/**
@@ -403,6 +417,7 @@ export class ClientRaw {
 			actorQuery,
 			this.#gatewayOptions,
 			signal,
+			this.#currentActorInvocation,
 		);
 	}
 
@@ -459,9 +474,9 @@ export type AnyClient = Client<Registry<any>>;
 
 export function createClientWithDriver<A extends Registry<any>>(
 	driver: EngineControlClient,
-	config: { encoding?: Encoding; gateway?: ActorGatewayOptions } = {},
+	options: ClientRawOptions & ActorClientRuntimeOptions = {},
 ): Client<A> {
-	const client = new ClientRaw(driver, config.encoding, config.gateway);
+	const client = new ClientRaw(driver, options);
 
 	// Create proxy for accessing actors by name
 	return new Proxy(client, {

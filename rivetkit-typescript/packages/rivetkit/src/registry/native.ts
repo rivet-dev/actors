@@ -8,6 +8,7 @@ import {
 	type ActorCron,
 	type ActorCronEveryOptions,
 	type ActorCronSetOptions,
+	type ActorLogger,
 	type ActorSchedule,
 	CONN_STATE_MANAGER_SYMBOL,
 	type CronFire,
@@ -46,6 +47,7 @@ import {
 } from "@/client/client";
 import { convertRegistryConfigToClientConfig } from "@/client/config";
 import { HEADER_CONN_PARAMS } from "@/common/actor-router-consts";
+import type { ActorInvocationTraceContext } from "@/common/actor-telemetry-context";
 import type {
 	AnyDatabaseProvider,
 	SqliteProfilingOptions,
@@ -2720,6 +2722,7 @@ export class ActorContextHandleAdapter {
 	#db?: unknown;
 	#dispatchCancelToken?: CancellationTokenHandle;
 	#kv?: NativeKvAdapter;
+	#log?: ActorLogger;
 	#queue?: NativeQueueAdapter;
 	#request?: Request;
 	#schedule?: NativeScheduleAdapter;
@@ -2956,8 +2959,27 @@ export class ActorContextHandleAdapter {
 		return this.#connMap;
 	}
 
+	#invocationTraceContext(): ActorInvocationTraceContext | undefined {
+		return callNativeSync(() =>
+			this.#runtime.actorInvocationTraceContext(this.#ctx),
+		);
+	}
+
 	get log() {
-		return logger();
+		if (!this.#log) {
+			const invocation = this.#invocationTraceContext();
+			this.#log = logger().child({
+				actorId: this.actorId,
+				actorName: this.name,
+				actorKey: this.key,
+				...(invocation?.rayId && { rayId: invocation.rayId }),
+				...(invocation?.span && {
+					traceId: invocation.span.traceId,
+					spanId: invocation.span.spanId,
+				}),
+			});
+		}
+		return this.#log;
 	}
 
 	get abortSignal(): AbortSignal {
@@ -3995,12 +4017,18 @@ export function buildNativeFactory(
 		events: config.events,
 		queues: config.queues,
 	};
-	const createClient = () =>
+	const createClient = (ctx: ActorContextHandle) =>
 		createClientWithDriver(
 			new RemoteEngineControlClient(
 				convertRegistryConfigToClientConfig(registryConfig),
 			),
-			{ encoding: "bare" },
+			{
+				encoding: "bare",
+				currentActorInvocation: () =>
+					callNativeSync(() =>
+						runtime.actorInvocationTraceContext(ctx),
+					),
+			},
 		);
 	const run = getRunFunction(config.run);
 	const runHandlerCoordinator =
@@ -4044,7 +4072,7 @@ export function buildNativeFactory(
 		new ActorContextHandleAdapter(
 			runtime,
 			ctx,
-			createClient,
+			() => createClient(ctx),
 			schemaConfig,
 			databaseProvider,
 			request,
@@ -4063,7 +4091,7 @@ export function buildNativeFactory(
 			runtime,
 			ctx,
 			conn,
-			createClient,
+			() => createClient(ctx),
 			schemaConfig,
 			databaseProvider,
 			request,
@@ -5373,7 +5401,7 @@ export function buildNativeFactory(
 					runtime,
 					ctx,
 					conn,
-					createClient,
+					() => createClient(ctx),
 					schemaConfig,
 					databaseProvider,
 					jsRequest,

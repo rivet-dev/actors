@@ -22,7 +22,9 @@ pub mod serverless_http;
 mod services_process;
 pub mod telemetry;
 #[doc(hidden)]
-pub use telemetry::ActorInvocationTelemetry;
+pub use telemetry::{
+	ActorInvocationSpanContext, ActorInvocationTelemetry, ActorInvocationTraceContext,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(not(target_arch = "wasm32"))]

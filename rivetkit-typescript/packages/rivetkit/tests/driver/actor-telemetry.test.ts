@@ -291,6 +291,42 @@ describeDriverMatrix(
 					"rivet.operation.name": "transaction.commit",
 				});
 			});
+
+			test("keeps the invocation span open for waitUntil work", async () => {
+				const token = crypto.randomUUID();
+				expect(await handle.insertAfterReply(token)).toBe("replied");
+				await handle.send("jobs", { id: token });
+				const spans = await waitForSpans(
+					traceExports,
+					"the insertAfterReply invocation and its deferred sqlite span",
+					(exported) => {
+						const invocation = findInvocation(
+							exported,
+							"insertAfterReply",
+						);
+						return (
+							invocation !== undefined &&
+							exported.some(
+								(span) =>
+									isSqliteSpan(span) &&
+									span.parentSpanId === invocation.spanId,
+							)
+						);
+					},
+				);
+				const invocation = findInvocation(spans, "insertAfterReply");
+				const deferred = spans.find(
+					(span) =>
+						isSqliteSpan(span) &&
+						span.parentSpanId === invocation?.spanId,
+				);
+				expect(deferred?.statusCode).toBe(OTLP_STATUS_OK);
+				expect(
+					invocation !== undefined &&
+						deferred !== undefined &&
+						invocation.endTimeUnixNano >= deferred.endTimeUnixNano,
+				).toBe(true);
+			});
 		});
 	},
 	{

@@ -93,6 +93,7 @@ pub(crate) struct ActorTelemetryIdentity {
 
 #[derive(Debug)]
 struct InvocationInner {
+	ray_id: Option<String>,
 	// This lock is used from Drop paths, and its guard never crosses an await.
 	state: Mutex<InvocationState>,
 	identity: Arc<ActorTelemetryIdentity>,
@@ -102,9 +103,35 @@ struct InvocationInner {
 struct InvocationState {
 	span: Option<tracing::Span>,
 	finished: bool,
+	pending_work: usize,
 }
 
 const OPERATION_ABANDONED_ERROR_TYPE: &str = "actor.operation_abandoned";
+
+/// Keeps an invocation open while one piece of `wait_until` work runs. The
+/// span is released when the last guard drops after the terminal status has
+/// been recorded, so work that settles before the reply changes nothing.
+pub(crate) struct InvocationWorkGuard(ActorInvocationTelemetry);
+
+/// Active actor invocation fields exposed to foreign-runtime adapters.
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct ActorInvocationTraceContext {
+	pub ray_id: Option<String>,
+	/// Present only while the invocation runs inside a valid span.
+	pub span: Option<ActorInvocationSpanContext>,
+}
+
+/// W3C span context of the current invocation span. A span context is either
+/// complete or absent, so these fields are never optional individually.
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct ActorInvocationSpanContext {
+	pub trace_id: String,
+	pub span_id: String,
+	pub trace_flags: u8,
+	pub tracestate: Option<String>,
+}
 
 /// The closed set of SQLite operations that get a span.
 ///
@@ -155,6 +182,7 @@ impl ActionInvocationSpan {
 		incoming: IncomingInvocationContext,
 	) -> Self {
 		let identity = ctx.telemetry_identity();
+		let ray_id = incoming.ray_id;
 		let span = if tracing::enabled!(target: "rivetkit::telemetry", tracing::Level::INFO) {
 			let span = tracing::info_span!(
 				target: "rivetkit::telemetry",
@@ -170,7 +198,7 @@ impl ActionInvocationSpan {
 				otel.status_code = tracing::field::Empty,
 				error.type = tracing::field::Empty,
 			);
-			if let Some(ray_id) = incoming.ray_id.as_deref() {
+			if let Some(ray_id) = ray_id.as_deref() {
 				span.record("rivet.ray.id", ray_id);
 			}
 			if let Some(parent) = incoming.remote_parent {
@@ -182,7 +210,7 @@ impl ActionInvocationSpan {
 		};
 
 		Self {
-			telemetry: ActorInvocationTelemetry::new(span, identity),
+			telemetry: ActorInvocationTelemetry::new(ray_id, span, identity),
 		}
 	}
 
@@ -202,22 +230,75 @@ impl Drop for ActionInvocationSpan {
 }
 
 impl ActorInvocationTelemetry {
-	fn new(span: Option<tracing::Span>, identity: Arc<ActorTelemetryIdentity>) -> Self {
+	fn new(
+		ray_id: Option<String>,
+		span: Option<tracing::Span>,
+		identity: Arc<ActorTelemetryIdentity>,
+	) -> Self {
 		Self {
 			inner: Arc::new(InvocationInner {
+				ray_id,
 				state: Mutex::new(InvocationState {
 					span,
 					finished: false,
+					pending_work: 0,
 				}),
 				identity,
 			}),
 		}
 	}
 
+	/// Registers work that outlives the reply, so the invocation span stays
+	/// open and keeps parenting operations until the returned guard drops.
+	pub(crate) fn hold_open(&self) -> Option<InvocationWorkGuard> {
+		let mut state = self.inner.state.lock();
+		if state.finished {
+			return None;
+		}
+		state.pending_work += 1;
+		Some(InvocationWorkGuard(self.clone()))
+	}
+
+	/// Returns correlation fields only while this actor invocation is active.
+	#[doc(hidden)]
+	pub fn trace_context(&self) -> Option<ActorInvocationTraceContext> {
+		let span = {
+			let state = self.inner.state.lock();
+			if state.finished && state.pending_work == 0 {
+				return None;
+			}
+			state.span.clone()
+		};
+		let span = span.and_then(|span| {
+			let context = span.context();
+			let context_span = context.span();
+			let span_context = context_span.span_context();
+			if !span_context.is_valid() {
+				return None;
+			}
+			let tracestate = span_context.trace_state().header();
+			Some(ActorInvocationSpanContext {
+				trace_id: span_context.trace_id().to_string(),
+				span_id: span_context.span_id().to_string(),
+				trace_flags: span_context.trace_flags().to_u8(),
+				tracestate: if tracestate.is_empty() {
+					None
+				} else {
+					Some(tracestate)
+				},
+			})
+		});
+
+		Some(ActorInvocationTraceContext {
+			ray_id: self.inner.ray_id.clone(),
+			span,
+		})
+	}
+
 	pub(crate) fn start_sqlite(&self, operation: SqliteOperation) -> Option<SqliteOperationSpan> {
 		let parent = {
 			let state = self.inner.state.lock();
-			if state.finished {
+			if state.finished && state.pending_work == 0 {
 				return None;
 			}
 			state.span.clone()?
@@ -231,6 +312,7 @@ impl ActorInvocationTelemetry {
 			otel.kind = "internal",
 			rivet.operation.system = "sqlite",
 			rivet.operation.name = operation_name,
+			rivet.ray.id = self.inner.ray_id.as_deref(),
 			rivet.actor.id = %self.inner.identity.actor_id,
 			rivet.actor.name = %self.inner.identity.actor_name,
 			rivet.actor.key = %self.inner.identity.actor_key,
@@ -241,29 +323,41 @@ impl ActorInvocationTelemetry {
 	}
 
 	fn finish(&self, error: Option<&anyhow::Error>) {
-		let Some(span) = self.take_span() else {
-			return;
-		};
-		record_outcome(&span, error);
+		self.finish_with(|span| record_outcome(span, error));
 	}
 
 	fn finish_dropped(&self) {
-		let Some(span) = self.take_span() else {
-			return;
-		};
-		span.record("otel.status_code", "ERROR");
-		span.record("error.type", "actor.dropped_reply");
+		self.finish_with(|span| {
+			span.record("otel.status_code", "ERROR");
+			span.record("error.type", "actor.dropped_reply");
+		});
 	}
 
-	/// Claims the terminal record, so the finish and drop paths cannot both
-	/// record a status for the same invocation.
-	fn take_span(&self) -> Option<tracing::Span> {
+	fn finish_with(&self, record: impl FnOnce(&tracing::Span)) {
 		let mut state = self.inner.state.lock();
 		if state.finished {
-			return None;
+			return;
+		}
+		if let Some(span) = state.span.as_ref() {
+			record(span);
+			if state.pending_work > 0 {
+				tracing::info!(target: "rivetkit::telemetry", parent: span, "reply sent");
+			}
 		}
 		state.finished = true;
-		state.span.take()
+		if state.pending_work == 0 {
+			state.span.take();
+		}
+	}
+}
+
+impl Drop for InvocationWorkGuard {
+	fn drop(&mut self) {
+		let mut state = self.0.inner.state.lock();
+		state.pending_work -= 1;
+		if state.pending_work == 0 && state.finished {
+			state.span.take();
+		}
 	}
 }
 
