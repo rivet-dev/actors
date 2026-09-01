@@ -81,6 +81,25 @@ pub async fn pegboard_runner_config_refresh_metadata(
 			&input.runner_name,
 		)
 		.await?;
+		if let Err(err) = ctx
+			.signal(crate::workflows::runner_pool::Bump {
+				endpoint_config_changed: false,
+			})
+			.bypass_signal_from_workflow_I_KNOW_WHAT_IM_DOING()
+			.to_workflow::<crate::workflows::runner_pool::Workflow>()
+			.tag("namespace_id", input.namespace_id)
+			.tag("runner_name", &input.runner_name)
+			.graceful_not_found()
+			.send()
+			.await
+		{
+			tracing::warn!(
+				?err,
+				namespace_id = %input.namespace_id,
+				runner_name = %input.runner_name,
+				"failed to bump runner pool after envoy metadata refresh"
+			);
+		}
 	}
 
 	// Update actor names in DB if present
