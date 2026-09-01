@@ -388,6 +388,8 @@ jobs:
           build-args: |
             BUILD_FRONTEND=${{ steps.mode.outputs.build_frontend }}
             CARGO_BUILD_MODE=${{ steps.mode.outputs.cargo_build_mode }}
+          secrets: |
+            DEPOT_TOKEN=${{ secrets.DEPOT_TOKEN }}
       - name: Build & Push (rivetdev/engine:slim)
         uses: docker/build-push-action@v4
         with:
@@ -400,6 +402,8 @@ jobs:
           build-args: |
             BUILD_FRONTEND=${{ steps.mode.outputs.build_frontend }}
             CARGO_BUILD_MODE=${{ steps.mode.outputs.cargo_build_mode }}
+          secrets: |
+            DEPOT_TOKEN=${{ secrets.DEPOT_TOKEN }}
 
   # ---------------------------------------------------------------------------
   # publish — npm publish + R2 upload + Docker manifest + release tail
