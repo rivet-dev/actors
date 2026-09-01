@@ -95,6 +95,7 @@ impl<A: Actor> RuntimeEvent<A> {
 				args,
 				conn,
 				scheduled_fire,
+				invocation_telemetry: _,
 				reply,
 			} => Self::Action(ActionCall {
 				name,
@@ -1500,6 +1501,7 @@ mod tests {
 					args: Vec::new(),
 					conn: None,
 					scheduled_fire: None,
+					invocation_telemetry: None,
 					reply: reply_tx.into(),
 				})
 				.expect("queue action event");

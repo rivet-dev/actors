@@ -307,6 +307,7 @@ export declare class ActorContext {
   endOnStateChange(): void
   kv(): Kv
   sql(): JsNativeDatabase
+  sameActorInstance(other: ActorContext): boolean
   provisionActorRuntimeSocket(): Promise<JsActorRuntimeSocketEndpointInfo>
   schedule(): Schedule
   queue(): Queue

@@ -273,9 +273,14 @@ impl ActorContext {
 	#[napi]
 	pub fn sql(&self) -> JsNativeDatabase {
 		JsNativeDatabase::new(
-			self.inner.sql().clone(),
+			self.inner.invocation_sql(),
 			Some(self.inner.actor_id().to_owned()),
 		)
+	}
+
+	#[napi]
+	pub fn same_actor_instance(&self, other: &ActorContext) -> bool {
+		self.inner.is_same_instance(&other.inner)
 	}
 
 	#[napi]

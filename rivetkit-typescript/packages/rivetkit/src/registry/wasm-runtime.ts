@@ -535,6 +535,13 @@ export class WasmCoreRuntime implements CoreRuntime {
 		return callHandle(asWasmActorContext(ctx), "actorId");
 	}
 
+	runWithActorInvocationContext<T>(
+		_ctx: ActorContextHandle,
+		run: () => T,
+	): T {
+		return run();
+	}
+
 	actorName(ctx: ActorContextHandle): string {
 		return callHandle(asWasmActorContext(ctx), "name");
 	}
