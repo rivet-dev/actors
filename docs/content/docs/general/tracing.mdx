@@ -1,0 +1,188 @@
+---
+title: "OpenTelemetry"
+description: "Export traces from Rivet Actors, add application spans, and follow work across actors with ray IDs."
+skill: true
+---
+
+Rivet gives you automatic instrumentation of actor actions, HTTP handlers, actor-to-actor calls, SQLite operations, queues, and scheduled actions.
+
+This helps you investigate anything that looks slow, walk through complex actor-to-actor flows, and get end-to-end context into the life of your actor.
+
+<div style="overflow-x:auto">
+<svg viewBox="0 0 900 272" role="img" aria-label="RivetKit's automatic spans and your application spans, from @opentelemetry/api or @effect/opentelemetry, flow into one OTLP collector configured by OTEL_EXPORTER_OTLP_TRACES_ENDPOINT." style="display:block;width:100%;min-width:640px;max-width:900px;margin:2.5rem auto 0;font-family:system-ui,sans-serif" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="otel-arch-head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#2E4034"/></marker>
+  </defs>
+  <rect x="20" y="20" width="300" height="250" rx="10" fill="#faf8f3" stroke="#2E4034" stroke-width="1.4" stroke-dasharray="7 6"/>
+  <text x="40" y="44" font-size="11" font-family="ui-monospace,monospace" font-weight="600" letter-spacing="0.14em" fill="#2E4034">YOUR ACTOR PROCESS</text>
+  <g font-size="15" fill="#1b1916" text-anchor="middle">
+    <rect x="40" y="60" width="260" height="72" rx="8" fill="#fddcbb" stroke="#f0923b" stroke-width="2"/>
+    <text x="170" y="92" font-weight="500">RivetKit</text>
+    <text x="170" y="114" font-size="12" fill="#56524a">automatic actor spans</text>
+
+    <rect x="40" y="168" width="260" height="72" rx="8" fill="#c7e4fb" stroke="#3d9df3" stroke-width="2"/>
+    <text x="170" y="200" font-weight="500">Your code</text>
+    <text x="170" y="222" font-size="12" fill="#56524a">your application spans</text>
+
+    <g fill="none" stroke="#2E4034" stroke-width="1.6" stroke-linecap="round">
+      <path d="M300 96 H330 Q360 96 360 126 V152"/>
+      <path d="M300 204 H330 Q360 204 360 174 V172"/>
+      <path d="M360 156 H630" marker-end="url(#otel-arch-head)"/>
+    </g>
+        <text x="494" y="142" font-size="12.5" font-family="ui-monospace,monospace" fill="#1b1916">OTEL_EXPORTER_OTLP_TRACES_ENDPOINT</text>
+
+    <rect x="644" y="108" width="216" height="96" rx="8" fill="#ffffff" stroke="#1b1916" stroke-width="1.4"/>
+    <text x="752" y="150" font-weight="500">OTLP collector</text>
+    <text x="752" y="174" font-size="12" fill="#56524a">Jaeger, Tempo, Honeycomb</text>
+  </g>
+</svg>
+</div>
+
+## Quickstart
+
+Set an OTLP exporter within the process that runs your actors, next to `RIVET_ENDPOINT`, and redeploy:
+
+```bash
+OTEL_SERVICE_NAME=my-rad-app
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://collector:4318/v1/traces
+OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
+```
+
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` acts as a feature flag; setting it enables tracing. See [Configure the exporter](#configure-the-exporter) for more options.
+
+You should now see spans named `{actor}/{action}` in your observability platform under `OTEL_SERVICE_NAME`.
+
+## What gets traced
+
+Each span shows how long an operation took and whether it failed. RivetKit records:
+
+- Actions and HTTP handlers, with the operations they perform shown underneath
+- Calls through `c.client()`, including time spent routing, waking the other actor, and retrying
+- SQLite operations, without recording SQL text, bindings, or results
+- Queue sends and receipts, with a link from each receipt to its sender
+- Scheduled actions, in a new trace linked to the work that scheduled them
+
+The full list of span names and attributes lives in [`telemetry.rs`](https://github.com/rivet-dev/rivet/blob/main/rivetkit-rust/packages/rivetkit-core/src/telemetry.rs), and the SQLite operations in [`sqlite/mod.rs`](https://github.com/rivet-dev/rivet/blob/main/rivetkit-rust/packages/rivetkit-core/src/actor/sqlite/mod.rs).
+
+## Add application spans
+
+You can trace your own actor code with `@opentelemetry/api`. Your spans will nest with RivetKit spans in the same trace.
+
+Here's a quick guide on how to set this up:
+
+<Steps>
+<Step title="Install the API and SDK">
+
+```bash
+npm install @opentelemetry/api @opentelemetry/sdk-node
+```
+
+</Step>
+<Step title="Start the SDK">
+
+Start the SDK before your RivetKit registry:
+
+<CodeSnippet file="examples/docs/general-tracing/sdk.ts" />
+
+</Step>
+<Step title="Trace your code">
+
+Wrap the code you want to measure in `startActiveSpan()`:
+
+<CodeSnippet file="examples/docs/general-tracing/application-span.ts" />
+
+</Step>
+</Steps>
+
+Calling `query` produces this trace:
+
+```
+counter/query
+└── counter.query             application span
+    └── rivet.sqlite.execute  traced by RivetKit
+```
+
+<Note>
+Use a fixed span name, such as `generate_response`. Avoid building the name from changing values, like `generate_response_${requestId}`. Put those values in span attributes instead.
+</Note>
+
+## Follow work across actors with ray IDs
+
+A ray ID follows a request across actor calls and scheduled work. Rivet supplies one automatically, or you can provide your own.
+
+Each blue box shows an actor running an action. RivetKit records each execution as a **span**, with its duration and outcome.
+
+<div style="overflow-x:auto">
+<svg viewBox="0 0 1040 370" role="img" aria-label="A caller sends a request to Rivet, which assigns a ray ID or keeps the one the caller sent. Rivet forwards it to the slackThread actor, which calls summarizer through c.client() and schedules postDigest for later. Every span and log line along the way carries the same ray ID." style="display:block;width:100%;min-width:0;max-width:1040px;margin:2.5rem auto;font-family:system-ui,sans-serif" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="otel-ray-head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#2E4034"/></marker>
+  </defs>
+  <rect x="420" y="50" width="600" height="272" rx="10" fill="#faf8f3" stroke="#2E4034" stroke-width="1.4" stroke-dasharray="7 6"/>
+  <text x="440" y="74" font-size="14" font-family="ui-monospace,monospace" font-weight="600" letter-spacing="0.14em" fill="#2E4034">ONE RAY ID</text>
+  <g font-size="15" fill="#1b1916" text-anchor="middle" transform="translate(40 20)">
+    <rect x="20" y="70" width="120" height="64" rx="8" fill="#ffffff" stroke="#1b1916" stroke-width="1.4"/>
+    <text x="80" y="107" font-weight="500">Caller</text>
+
+    <path d="M140 102 H388" fill="none" stroke="#2E4034" stroke-width="1.6" stroke-linecap="round" marker-end="url(#otel-ray-head)"/>
+    <text x="265" y="94" font-size="15" font-family="ui-monospace,monospace">x-rivet-ray-id</text>
+    <text x="265" y="124" font-size="14" fill="#56524a">optional</text>
+
+    <rect x="400" y="70" width="120" height="64" rx="8" fill="#fddcbb" stroke="#f0923b" stroke-width="2"/>
+    <text x="460" y="107" font-weight="500">Rivet</text>
+
+    <path d="M520 102 H564" fill="none" stroke="#2E4034" stroke-width="1.6" stroke-linecap="round" marker-end="url(#otel-ray-head)"/>
+
+    <rect x="572" y="70" width="190" height="64" rx="8" fill="#c7e4fb" stroke="#3d9df3" stroke-width="2"/>
+    <text x="667" y="98" font-size="16" font-weight="500">Action: appMention</text>
+    <text x="667" y="118" font-size="14" font-family="ui-monospace,monospace" fill="#56524a">Actor: slackThread</text>
+
+    <path d="M762 102 H784" fill="none" stroke="#2E4034" stroke-width="1.6" stroke-linecap="round" marker-end="url(#otel-ray-head)"/>
+    <text x="771" y="60" font-size="15" font-family="ui-monospace,monospace">c.client()</text>
+
+    <rect x="792" y="70" width="170" height="64" rx="8" fill="#c7e4fb" stroke="#3d9df3" stroke-width="2"/>
+    <text x="877" y="98" font-size="16" font-weight="500">Action: summarize</text>
+    <text x="877" y="118" font-size="14" font-family="ui-monospace,monospace" fill="#56524a">Actor: summarizer</text>
+
+    <path d="M667 134 V206" fill="none" stroke="#2E4034" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="7 6" marker-end="url(#otel-ray-head)"/>
+    <text x="684" y="176" text-anchor="start" font-size="15" font-family="ui-monospace,monospace">c.schedule.after(60s)</text>
+
+    <rect x="572" y="218" width="190" height="64" rx="8" fill="#c7e4fb" stroke="#3d9df3" stroke-width="2"/>
+    <text x="667" y="246" font-size="16" font-weight="500">Action: postDigest</text>
+    <text x="667" y="266" font-size="14" font-family="ui-monospace,monospace" fill="#56524a">Actor: slackThread</text>
+
+    <text x="20" y="262" font-size="17" fill="#56524a" text-anchor="start">Same ray ID across this work</text>
+    <text x="20" y="288" font-size="17" font-family="ui-monospace,monospace" text-anchor="start">ray ID: my-rivet-ray-id</text>
+  </g>
+</svg>
+</div>
+
+- Search for `rivet.ray.id` in traces or `rayId` in [actor logs](/actors/docs/general/logging) to find related work.
+- To use your own ID, set `rivet.ray.id` in [OpenTelemetry baggage](https://opentelemetry.io/docs/concepts/signals/baggage/) for client calls, or send `x-rivet-ray-id` on raw HTTP requests.
+
+<Note>
+A ray ID must be 1–128 characters long and may contain only letters, digits, hyphens (`-`), and underscores (`_`). Invalid values are ignored. Use ray IDs to find related traces, not to authenticate requests.
+</Note>
+
+## Configure the exporter
+
+| Variable | Purpose |
+| --- | --- |
+| `OTEL_SERVICE_NAME` | Service name reported with spans |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Trace collector endpoint |
+| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | `http/protobuf`, `http/json`, or `grpc` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Headers sent with every export, such as auth |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | Sampling |
+| `OTEL_SDK_DISABLED=true` | Turn telemetry off |
+
+For more settings, see the [OTLP exporter configuration](https://opentelemetry.io/docs/languages/sdk-configuration/otlp-exporter/) and [SDK configuration](https://opentelemetry.io/docs/languages/sdk-configuration/general/).
+
+RivetKit sends spans in the background. Actor requests continue if the collector is slow or unavailable. Spans can be lost when exports fail or the buffer fills; export failures and dropped spans are reported in warnings.
+
+## Known limitations
+
+- WebSocket handlers, lifecycle hooks, connection callbacks, KV operations, and actor state operations do not have dedicated spans
+- Actions called over `.connect()` start a new trace instead of joining the caller's trace
+- Effect spans are not traced. Use `@effect/opentelemetry`
+- RivetKit does not add `rivet.ray.id` to your application spans
+- The Wasm runtime is not traced
+- A hard process exit can lose spans still waiting in the export queue
