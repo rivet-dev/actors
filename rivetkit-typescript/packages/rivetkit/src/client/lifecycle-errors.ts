@@ -156,6 +156,18 @@ function classifyActorError(
 		);
 	}
 
+	if (error.group === "client" && error.code === "get_params_failed") {
+		return buildLifecycleBoundaryInfo(
+			"reconnect_only",
+			"actor_error",
+			error.message,
+			{
+				group: error.group,
+				code: error.code,
+			},
+		);
+	}
+
 	return undefined;
 }
 
