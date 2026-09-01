@@ -7,6 +7,7 @@ pub mod doctor;
 #[cfg(feature = "test-faults")]
 pub mod fault;
 pub mod gc;
+pub mod history_snapshot;
 pub mod inspect;
 pub mod metrics;
 #[cfg(debug_assertions)]

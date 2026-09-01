@@ -100,6 +100,111 @@ where
 	Ok(())
 }
 
+pub use depot::history_snapshot::{BranchHistorySnapshot, branch_history_snapshot};
+
+pub async fn database_branch_id(
+	udb: &universaldb::Database,
+	bucket_id: Id,
+	database_id: &str,
+) -> Result<depot::types::DatabaseBranchId> {
+	let database_id = database_id.to_string();
+	udb.txn("test_depotcommon_branch_id", move |tx| {
+		let database_id = database_id.clone();
+		async move {
+			depot::conveyer::branch::resolve_database_branch(
+				&tx,
+				depot::types::BucketId::from_gas_id(bucket_id),
+				&database_id,
+				universaldb::utils::IsolationLevel::Serializable,
+			)
+			.await?
+			.context("database branch should exist")
+		}
+	})
+	.await
+}
+
+pub async fn history(
+	udb: &universaldb::Database,
+	branch_id: depot::types::DatabaseBranchId,
+) -> Result<BranchHistorySnapshot> {
+	branch_history_snapshot(udb, branch_id).await
+}
+
+/// Asserts the exact set of txids that still own DELTA chunk rows. Always
+/// exact-set equality so partial deletes and over-deletes both fail loudly.
+pub fn assert_delta_txids(
+	snapshot: &BranchHistorySnapshot,
+	expected: impl IntoIterator<Item = u64>,
+	context: &str,
+) {
+	let expected = expected
+		.into_iter()
+		.collect::<std::collections::BTreeSet<_>>();
+	assert_eq!(
+		snapshot.delta_txids, expected,
+		"[{context}] surviving DELTA txids did not match"
+	);
+}
+
+pub fn assert_commit_txids(
+	snapshot: &BranchHistorySnapshot,
+	expected: impl IntoIterator<Item = u64>,
+	context: &str,
+) {
+	let expected = expected
+		.into_iter()
+		.collect::<std::collections::BTreeSet<_>>();
+	assert_eq!(
+		snapshot.commit_txids(),
+		expected,
+		"[{context}] surviving COMMITS txids did not match"
+	);
+}
+
+pub fn assert_vtx_txids(
+	snapshot: &BranchHistorySnapshot,
+	expected: impl IntoIterator<Item = u64>,
+	context: &str,
+) {
+	let expected = expected
+		.into_iter()
+		.collect::<std::collections::BTreeSet<_>>();
+	assert_eq!(
+		snapshot.vtx_txids(),
+		expected,
+		"[{context}] surviving VTX txids did not match"
+	);
+}
+
+pub fn assert_pidx(
+	snapshot: &BranchHistorySnapshot,
+	expected: impl IntoIterator<Item = (u32, u64)>,
+	context: &str,
+) {
+	let expected = expected
+		.into_iter()
+		.collect::<std::collections::BTreeMap<_, _>>();
+	assert_eq!(
+		snapshot.pidx, expected,
+		"[{context}] surviving PIDX rows did not match"
+	);
+}
+
+pub fn assert_shard_versions(
+	snapshot: &BranchHistorySnapshot,
+	expected: impl IntoIterator<Item = (u32, Vec<u64>)>,
+	context: &str,
+) {
+	let expected = expected
+		.into_iter()
+		.collect::<std::collections::BTreeMap<_, _>>();
+	assert_eq!(
+		snapshot.shard_versions, expected,
+		"[{context}] surviving SHARD versions did not match"
+	);
+}
+
 pub async fn read_value(db: &universaldb::Database, key: Vec<u8>) -> Result<Option<Vec<u8>>> {
 	db.txn("test_depotcommon_mod", move |tx| {
 		let key = key.clone();
