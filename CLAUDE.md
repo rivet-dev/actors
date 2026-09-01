@@ -2,6 +2,8 @@
 
 Design constraints, invariants, and reference commands for the Rivet monorepo. For implementation details, wiring, and procedural gotchas, follow the links under [Reference Docs](#reference-docs).
 
+For all RivetKit work, use [https://rivet.dev/llms.txt](https://rivet.dev/llms.txt) as the current documentation index and reference.
+
 ## Terminology
 
 **Always spell the product name `agentOS`, never `AgentOS`; do not alter type identifiers such as `AgentOSActorConfig`.**

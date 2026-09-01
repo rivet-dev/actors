@@ -1,0 +1,30 @@
+<Project>
+  <PropertyGroup>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <IsPackable>false</IsPackable>
+    <Configurations>Debug;Release</Configurations>
+    <PublicSign Condition=" '$(OS)' != 'Windows_NT' ">true</PublicSign>
+    <SignAssembly>true</SignAssembly>
+    <AssemblyOriginatorKeyFile>$(MSBuildThisFileDirectory)\cecil.snk</AssemblyOriginatorKeyFile>
+    <DefineConstants Condition=" '$(TargetFramework)' == 'netstandard2.0' OR '$(TargetFramework)' == 'netcoreapp2.1' ">$(DefineConstants);NET_CORE</DefineConstants>
+    <RootNamespace></RootNamespace>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(TargetFramework)' == 'net40' ">
+    <DisableImplicitFrameworkReferences>true</DisableImplicitFrameworkReferences>
+  </PropertyGroup>
+  <ItemGroup Condition=" '$(TargetFramework)' == 'net40' ">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net40" Version="1.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="1.0.0" PrivateAssets="All" />
+  </ItemGroup>
+  <ItemGroup Condition=" '$(TargetFramework)' == 'net40' ">
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+  </ItemGroup>
+  <PropertyGroup>
+    <CecilOverrides Condition="'$(CecilOverrides)' == ''">$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildProjectDirectory), Mono.Cecil.overrides))\Mono.Cecil.overrides</CecilOverrides>
+  </PropertyGroup>
+  <Import Project="$(CecilOverrides)" Condition="Exists('$(CecilOverrides)')" />
+</Project>

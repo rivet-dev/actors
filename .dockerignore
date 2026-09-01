@@ -67,3 +67,11 @@ container-runner/examples/unity-demo/Logs/
 container-runner/examples/unity-demo/UserSettings/
 container-runner/examples/unity-demo/Builds/DemoMac/
 container-runner/examples/unity-demo/Builds/ServerMac/
+container-runner/examples/unity-webrtc-demo/Library/
+container-runner/examples/unity-webrtc-demo/Temp/
+container-runner/examples/unity-webrtc-demo/Obj/
+container-runner/examples/unity-webrtc-demo/Logs/
+container-runner/examples/unity-webrtc-demo/UserSettings/
+container-runner/examples/unity-webrtc-demo/Builds/DemoMac/
+container-runner/examples/unity-webrtc-demo/Builds/ServerMac/
+container-runner/examples/unity-webrtc-demo/Builds/WebGL/

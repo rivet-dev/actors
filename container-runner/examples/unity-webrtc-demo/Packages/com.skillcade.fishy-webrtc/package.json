@@ -1,0 +1,21 @@
+{
+  "name": "com.skillcade.fishy-webrtc",
+  "version": "1.0.2",
+  "displayName": "FishyWebRTC Transport",
+  "description": "WebRTC transport for FishNet networking. Enables WebGL clients to connect to dedicated servers via WebRTC DataChannels with HTTP signaling. Requires FishNet 4.6.19R or newer.",
+  "unity": "6000.2",
+  "dependencies": {
+    "com.unity.webrtc": "3.0.0-pre.7"
+  },
+  "keywords": [
+    "fishnet",
+    "webrtc",
+    "transport",
+    "webgl",
+    "networking"
+  ],
+  "author": {
+    "name": "Skillcade",
+    "url": "https://github.com/KGonzalezASC"
+  }
+}

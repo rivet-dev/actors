@@ -1,0 +1,9 @@
+<NUnitProject>
+  <Settings activeconfig="Debug" />
+  <Config name="Debug" runtimeFramework="v4.0.30319" domainUsage="Single">
+    <assembly path="./Test/bin/Debug/net40/Mono.Cecil.Tests.dll" />
+    <assembly path="./rocks/Test/bin/Debug/net40/Mono.Cecil.Rocks.Tests.dll" />
+    <assembly path="./symbols/mdb/Test/bin/Debug/net40/Mono.Cecil.Mdb.Tests.dll" />
+    <assembly path="./symbols/pdb/Test/bin/Debug/net40/Mono.Cecil.Pdb.Tests.dll" />
+  </Config>
+</NUnitProject>
