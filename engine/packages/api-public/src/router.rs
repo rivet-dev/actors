@@ -37,6 +37,7 @@ use crate::{
 		webhooks::list,
 		webhooks::upsert,
 		webhooks::delete,
+		webhooks::retry_delivery,
 		webhooks::events,
 		datacenters::list,
 		health::fanout,
@@ -95,6 +96,10 @@ pub async fn router(
 			.route(
 				"/webhooks/{webhook_name}",
 				axum::routing::delete(webhooks::delete),
+			)
+			.route(
+				"/webhooks/{webhook_name}/deliveries/{delivery_id}/retry",
+				axum::routing::post(webhooks::retry_delivery),
 			)
 			.route(
 				"/webhooks/{webhook_name}/events",

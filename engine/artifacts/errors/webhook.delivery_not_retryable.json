@@ -1,0 +1,5 @@
+{
+  "code": "delivery_not_retryable",
+  "group": "webhook",
+  "message": "Webhook delivery is not in a retryable state."
+}

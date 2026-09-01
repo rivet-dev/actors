@@ -8756,6 +8756,8 @@ dependencies = [
  "reqwest 0.12.22",
  "rivet-data",
  "rivet-error",
+ "rivet-outbound-guard",
+ "rivet-pools",
  "rivet-util",
  "serde",
  "serde_bare",

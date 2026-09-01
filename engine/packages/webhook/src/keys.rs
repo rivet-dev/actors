@@ -3,7 +3,7 @@ use gas::prelude::*;
 use universaldb::prelude::*;
 use vbare::OwnedVersionedData;
 
-use crate::types::WebhookConfig;
+use crate::types::{DeliveryRecord, WebhookConfig};
 
 fn serialize_config(value: WebhookConfig) -> Result<Vec<u8>> {
 	rivet_data::versioned::WebhookConfigData::wrap_latest(value.into())
@@ -12,6 +12,15 @@ fn serialize_config(value: WebhookConfig) -> Result<Vec<u8>> {
 
 fn deserialize_config(raw: &[u8]) -> Result<WebhookConfig> {
 	Ok(rivet_data::versioned::WebhookConfigData::deserialize_with_embedded_version(raw)?.into())
+}
+
+fn serialize_delivery(value: DeliveryRecord) -> Result<Vec<u8>> {
+	rivet_data::versioned::WebhookDeliveryData::wrap_latest(value.into())
+		.serialize_with_embedded_version(rivet_data::WEBHOOK_DELIVERY_VERSION)
+}
+
+fn deserialize_delivery(raw: &[u8]) -> Result<DeliveryRecord> {
+	Ok(rivet_data::versioned::WebhookDeliveryData::deserialize_with_embedded_version(raw)?.into())
 }
 
 // Durable, replicated copy proposed through epoxy. Slow to write and not meant to be read
@@ -134,5 +143,71 @@ impl TuplePack for DataSubspaceKey {
 	) -> std::io::Result<VersionstampOffset> {
 		let t = (WEBHOOK, CONFIG, DATA, self.namespace_id);
 		t.pack(w, tuple_depth)
+	}
+}
+
+// Local-only record of a single delivery (one triggered event, identified by delivery id, and
+// every attempt made to deliver it), written by the webhook workflow. Not replicated through
+// epoxy: unlike config, a delivery only ever matters to the datacenter that ran it, since the
+// workflow that owns a delivery lives in exactly one datacenter.
+#[derive(Debug)]
+pub struct DeliveryKey {
+	pub namespace_id: Id,
+	pub name: String,
+	pub delivery_id: String,
+}
+
+impl DeliveryKey {
+	pub fn new(namespace_id: Id, name: String, delivery_id: String) -> Self {
+		DeliveryKey {
+			namespace_id,
+			name,
+			delivery_id,
+		}
+	}
+}
+
+impl FormalKey for DeliveryKey {
+	type Value = DeliveryRecord;
+
+	fn deserialize(&self, raw: &[u8]) -> Result<Self::Value> {
+		deserialize_delivery(raw)
+	}
+
+	fn serialize(&self, value: Self::Value) -> Result<Vec<u8>> {
+		serialize_delivery(value)
+	}
+}
+
+impl TuplePack for DeliveryKey {
+	fn pack<W: std::io::Write>(
+		&self,
+		w: &mut W,
+		tuple_depth: TupleDepth,
+	) -> std::io::Result<VersionstampOffset> {
+		let t = (
+			WEBHOOK,
+			DELIVERY,
+			DATA,
+			self.namespace_id,
+			&self.name,
+			&self.delivery_id,
+		);
+		t.pack(w, tuple_depth)
+	}
+}
+
+impl<'de> TupleUnpack<'de> for DeliveryKey {
+	fn unpack(input: &[u8], tuple_depth: TupleDepth) -> PackResult<(&[u8], Self)> {
+		let (input, (_, _, _, namespace_id, name, delivery_id)) =
+			<(usize, usize, usize, Id, String, String)>::unpack(input, tuple_depth)?;
+
+		let v = DeliveryKey {
+			namespace_id,
+			name,
+			delivery_id,
+		};
+
+		Ok((input, v))
 	}
 }

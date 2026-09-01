@@ -243,6 +243,78 @@ async fn delete_inner(ctx: ApiCtx, path: DeletePath, query: DeleteQuery) -> Resu
 	Ok(DeleteResponse {})
 }
 
+// MARK: Retry delivery
+
+#[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RetryDeliveryPath {
+	pub webhook_name: String,
+	pub delivery_id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub struct RetryDeliveryQuery {
+	pub namespace: String,
+}
+
+#[derive(Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+#[schema(as = WebhooksRetryDeliveryResponse)]
+pub struct RetryDeliveryResponse {}
+
+#[utoipa::path(
+	post,
+	operation_id = "webhooks_retry_delivery",
+	path = "/webhooks/{webhook_name}/deliveries/{delivery_id}/retry",
+	params(
+		("webhook_name" = String, Path),
+		("delivery_id" = String, Path),
+		RetryDeliveryQuery,
+	),
+	responses(
+		(status = 200, body = RetryDeliveryResponse),
+	),
+	security(("bearer_auth" = [])),
+)]
+#[tracing::instrument(skip_all)]
+pub async fn retry_delivery(
+	Extension(ctx): Extension<ApiCtx>,
+	Path(path): Path<RetryDeliveryPath>,
+	Query(query): Query<RetryDeliveryQuery>,
+) -> Response {
+	match retry_delivery_inner(ctx, path, query).await {
+		Ok(response) => Json(response).into_response(),
+		Err(err) => ApiError::from(err).into_response(),
+	}
+}
+
+#[tracing::instrument(skip_all)]
+async fn retry_delivery_inner(
+	ctx: ApiCtx,
+	path: RetryDeliveryPath,
+	query: RetryDeliveryQuery,
+) -> Result<RetryDeliveryResponse> {
+	ctx.auth().await?;
+
+	let namespace = ctx
+		.op(namespace::ops::resolve_for_name_global::Input {
+			name: query.namespace.clone(),
+		})
+		.await?
+		.ok_or_else(|| namespace::errors::Namespace::NotFound.build())?;
+
+	ctx.op(webhook::ops::retry::Input {
+		namespace_id: namespace.namespace_id,
+		name: path.webhook_name.clone(),
+		delivery_id: path.delivery_id.clone(),
+	})
+	.await?;
+
+	Ok(RetryDeliveryResponse {})
+}
+
 // MARK: Events
 
 #[derive(Deserialize, Clone)]

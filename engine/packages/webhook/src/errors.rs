@@ -22,4 +22,24 @@ pub enum Webhook {
 		"Webhook delivery failed with status {status}."
 	)]
 	DeliveryFailed { status: u16 },
+	#[error(
+		"destination_blocked",
+		"Webhook destination is not allowed.",
+		"Webhook destination is not allowed: {reason}"
+	)]
+	DestinationBlocked { reason: String },
+	#[error("not_found", "Webhook not found.", "Webhook not found.")]
+	NotFound,
+	#[error(
+		"delivery_not_found",
+		"Webhook delivery not found.",
+		"Webhook delivery not found."
+	)]
+	DeliveryNotFound,
+	#[error(
+		"delivery_not_retryable",
+		"Webhook delivery is not in a retryable state.",
+		"Webhook delivery is not in a retryable state; only failed deliveries can be retried."
+	)]
+	DeliveryNotRetryable,
 }

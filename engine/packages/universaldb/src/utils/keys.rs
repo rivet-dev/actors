@@ -159,4 +159,5 @@ define_keys! {
 	(131, ENVOY_HASH_IDX, "envoy_hash_idx"),
 	(132, VIRTUAL_NODES, "virtual_nodes"),
 	(133, WEBHOOK, "webhook"),
+	(134, DELIVERY, "delivery"),
 }

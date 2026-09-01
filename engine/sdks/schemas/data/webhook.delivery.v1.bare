@@ -1,0 +1,12 @@
+type DeliveryStatus enum {
+	PENDING
+	SUCCEEDED
+	FAILED
+}
+
+type Data struct {
+	payload: str
+	status: DeliveryStatus
+	attemptCount: u32
+	lastError: optional<str>
+}

@@ -1,0 +1,5 @@
+{
+  "code": "destination_blocked",
+  "group": "webhook",
+  "message": "Webhook destination is not allowed."
+}
