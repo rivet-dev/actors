@@ -3,9 +3,6 @@ import type { ActorSpecifier } from "@/actor/errors";
 import {
 	HEADER_CONN_PARAMS,
 	HEADER_ENCODING,
-	HEADER_RIVET_RAY_ID,
-	HEADER_TRACEPARENT,
-	HEADER_TRACESTATE,
 } from "@/common/actor-router-consts";
 import { isRequestLike } from "@/common/fetch-like";
 import type * as protocol from "@/common/client-protocol";
@@ -25,7 +22,6 @@ import {
 } from "@/common/client-protocol-zod";
 import { AsyncMutex } from "@/common/database/shared";
 import type { Encoding, JsonCompatValue } from "@/common/encoding";
-import { actorInvocationTraceHeaders } from "@/common/otel-context";
 import { deconstructError } from "@/common/utils";
 import type { EngineControlClient } from "@/engine-client/driver";
 import type { CurrentActorInvocation } from "@/registry/runtime";
@@ -58,6 +54,7 @@ import { type ClientRaw, CREATE_ACTOR_CONN_PROXY } from "./client";
 import { ActorError, isSchedulingError } from "./errors";
 import { retryOnLifecycleBoundary } from "./lifecycle-errors";
 import { logger } from "./log";
+import { outboundTelemetryHeaders } from "./outbound-telemetry";
 import {
 	createQueueSender,
 	type QueueSendNoWaitOptions,
@@ -328,27 +325,14 @@ export class ActorHandleRaw {
 					name: opts.name,
 					encoding: this.#encoding,
 				});
-				const invocation = this.#currentActorInvocation?.();
 				const headers: Record<string, string> = {
 					[HEADER_ENCODING]: this.#encoding,
+					...outboundTelemetryHeaders(
+						this.#currentActorInvocation?.(),
+					),
 				};
 				if (this.#params !== undefined) {
 					headers[HEADER_CONN_PARAMS] = JSON.stringify(this.#params);
-				}
-				if (invocation) {
-					if (invocation.rayId) {
-						headers[HEADER_RIVET_RAY_ID] = invocation.rayId;
-					}
-					const traceHeaders = actorInvocationTraceHeaders(
-						invocation.span,
-					);
-					if (traceHeaders) {
-						headers[HEADER_TRACEPARENT] = traceHeaders.traceparent;
-						if (traceHeaders.tracestate) {
-							headers[HEADER_TRACESTATE] =
-								traceHeaders.tracestate;
-						}
-					}
 				}
 				const output = await sendHttpRequest<
 					protocol.HttpActionRequest,
@@ -701,6 +685,9 @@ export class ActorHandleRaw {
 				skipReadyWait,
 			},
 		);
+		const telemetryHeaders = outboundTelemetryHeaders(
+			this.#currentActorInvocation?.(),
+		);
 
 		for (let attempt = 0; attempt < maxAttempts; attempt++) {
 			let actorId: string | undefined;
@@ -719,6 +706,7 @@ export class ActorHandleRaw {
 					clonesInputBody ? input.clone() : input,
 					requestInit,
 					gatewayOptions,
+					telemetryHeaders,
 				);
 				const retry = await this.#shouldRetryRawFetchResponse(
 					response,
