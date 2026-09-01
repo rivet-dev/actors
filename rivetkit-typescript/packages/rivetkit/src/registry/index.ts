@@ -732,6 +732,7 @@ export class Registry<A extends RegistryActors> {
 	async #drain(config: RegistryConfig): Promise<void> {
 		const modeAPromise = this.#runtimeServeConfiguredPromise;
 		const modeBPromise = this.#runtimeServerlessPromise;
+		const runtimes = new Set<CoreRuntime>();
 
 		const gracePeriodMs =
 			config.shutdown?.gracePeriodMs ??
@@ -751,6 +752,7 @@ export class Registry<A extends RegistryActors> {
 					(async () => {
 						try {
 							const { runtime, registry } = await modeAPromise;
+							runtimes.add(runtime);
 							await runtime.shutdownRegistry(registry);
 						} catch (err) {
 							logger().warn(
@@ -766,6 +768,7 @@ export class Registry<A extends RegistryActors> {
 					(async () => {
 						try {
 							const { runtime, registry } = await modeBPromise;
+							runtimes.add(runtime);
 							await runtime.shutdownRegistry(registry);
 						} catch (err) {
 							logger().warn(
@@ -795,6 +798,9 @@ export class Registry<A extends RegistryActors> {
 				setTimeout(resolve, gracePeriodMs).unref?.(),
 			),
 		]);
+		await Promise.all(
+			[...runtimes].map((runtime) => runtime.shutdownTelemetry?.()),
+		);
 	}
 
 	async #actorStopThresholdMs(

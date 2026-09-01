@@ -9,6 +9,8 @@ pub(crate) mod moved_tests {
 	use std::time::{Duration, Instant};
 
 	use futures::{FutureExt, poll};
+
+	use crate::telemetry::IncomingInvocationContext;
 	use rivet_envoy_client::config::{
 		BoxFuture as EnvoyBoxFuture, EnvoyCallbacks, EnvoyConfig, HttpRequest, HttpResponse,
 		WebSocketHandler, WebSocketSender,
@@ -1927,6 +1929,7 @@ pub(crate) mod moved_tests {
 		task.handle_dispatch(DispatchCommand::Action {
 			name: "client-action".to_owned(),
 			args: Vec::new(),
+			incoming: IncomingInvocationContext::default(),
 			conn: client_conn,
 			reply: reply_tx,
 		})
@@ -2030,6 +2033,7 @@ pub(crate) mod moved_tests {
 		task.handle_dispatch(DispatchCommand::Action {
 			name: "slow-action".to_owned(),
 			args: Vec::new(),
+			incoming: IncomingInvocationContext::default(),
 			conn: client_conn,
 			reply: reply_tx,
 		})
@@ -3732,6 +3736,7 @@ pub(crate) mod moved_tests {
 			.send(DispatchCommand::Action {
 				name: "ping".to_owned(),
 				args: Vec::new(),
+				incoming: IncomingInvocationContext::default(),
 				conn: ConnHandle::new("conn-grace", Vec::new(), Vec::new(), false),
 				reply: action_tx,
 			})
@@ -3776,6 +3781,7 @@ pub(crate) mod moved_tests {
 		task.handle_dispatch(DispatchCommand::Action {
 			name: "ping".to_owned(),
 			args: Vec::new(),
+			incoming: IncomingInvocationContext::default(),
 			conn: ConnHandle::new("conn-finalize", Vec::new(), Vec::new(), false),
 			reply: reply_tx,
 		})
@@ -4533,6 +4539,7 @@ pub(crate) mod moved_tests {
 			.send(DispatchCommand::Action {
 				name: "ping".to_owned(),
 				args: Vec::new(),
+				incoming: IncomingInvocationContext::default(),
 				conn: ConnHandle::new("conn-log-flow", Vec::new(), Vec::new(), false),
 				reply: action_tx,
 			})
