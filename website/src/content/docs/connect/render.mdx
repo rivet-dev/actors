@@ -1,0 +1,144 @@
+---
+title: "Deploying to Render"
+description: "Deploy your RivetKit app to Render."
+skill: true
+---
+
+## Steps
+
+<Steps>
+<Step title="Prerequisites">
+
+- [Render account](https://render.com)
+- Your RivetKit app
+  - If you don't have one, see the [Quickstart](/docs/actors/quickstart) page or our [Examples](https://github.com/rivet-dev/rivet/tree/main/examples)
+- A [self-hosted Rivet Engine](/docs/self-hosting) (e.g., [on Render](/docs/self-hosting/render))
+
+</Step>
+<Step title="Deploy to Render">
+
+### Option A: Deploy with Blueprint (Recommended)
+
+1. Create a `render.yaml` file in your project root:
+
+```yaml render.yaml
+services:
+  - type: web
+    name: my-rivetkit-app
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    plan: starter
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: RIVET_ENDPOINT
+        sync: false
+      - key: RIVET_TOKEN
+        sync: false
+```
+
+2. Push to GitHub and connect your repository to Render
+3. Render will automatically deploy using the Blueprint
+
+### Option B: Manual Deployment
+
+1. Go to [Render Dashboard](https://dashboard.render.com)
+2. Click **New** → **Web Service**
+3. Connect your GitHub repository
+4. Configure:
+   - **Build Command**: `npm install && npm run build`
+   - **Start Command**: `npm run start`
+5. Click **Create Web Service**
+
+</Step>
+<Step title="Set Environment Variables">
+
+In your Render service, go to **Environment** and add:
+
+- `RIVET_ENDPOINT`: Your Rivet Engine URL (e.g., `https://rivet-engine-xxxx.onrender.com`)
+- `RIVET_TOKEN`: Your Rivet Engine admin token
+
+<Note>
+Use a **hex-encoded token** (e.g., generated with `openssl rand -hex 32`). Base64 tokens contain characters (`/`, `=`) that cause WebSocket connection failures.
+</Note>
+
+</Step>
+<Step title="Configure Runner in Rivet Engine">
+
+Connect your RivetKit app to your Rivet Engine by configuring a runner:
+
+```bash
+curl -X PUT "https://your-rivet-engine.onrender.com/runner-configs/default?namespace=default" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "datacenters": {
+      "default": {
+        "serverless": {
+          "url": "https://your-rivetkit-app.onrender.com/api/rivet",
+          "max_runners": 10
+        }
+      }
+    }
+  }'
+```
+
+</Step>
+<Step title="Test Your Deployment">
+
+Create an actor and call an action:
+
+```bash
+# Create an actor
+curl -X POST "https://your-rivet-engine.onrender.com/actors?namespace=default" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "counter", "key": "test-1", "runner_name_selector": "default"}'
+
+# Call an action (replace ACTOR_ID with the returned actor_id)
+curl -X POST "https://your-rivet-engine.onrender.com/gateway/ACTOR_ID/action/getCount" \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"args": []}'
+```
+
+</Step>
+</Steps>
+
+## Troubleshooting
+
+<AccordionGroup>
+<Accordion title="502 Bad Gateway errors">
+
+**Cause:** Your Render service may have spun down due to inactivity (free/starter tier).
+
+**Solution:** Consider upgrading to a paid plan for always-on instances.
+
+</Accordion>
+<Accordion title="WebSocket connection fails with 'Invalid Sec-WebSocket-Protocol'">
+
+**Cause:** Your `RIVET_TOKEN` contains special characters (`/`, `=`) that are invalid in WebSocket protocol headers. This commonly happens with base64-encoded tokens.
+
+**Solution:** Use a hex-encoded token instead:
+
+```bash
+# Generate a URL-safe token
+openssl rand -hex 32
+```
+
+Update both your Rivet Engine's `RIVET__AUTH__ADMIN_TOKEN` and your app's `RIVET_TOKEN` with the hex token.
+
+</Accordion>
+<Accordion title="Build fails with 'vite: not found'">
+
+**Cause:** Build dependencies are in `devDependencies` but Render runs `npm install --production` by default.
+
+**Solution:** Move build tools (`vite`, `typescript`, etc.) to `dependencies` in your `package.json`, or set the environment variable:
+
+```
+NPM_CONFIG_PRODUCTION=false
+```
+
+</Accordion>
+</AccordionGroup>
