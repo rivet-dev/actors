@@ -161,6 +161,7 @@ program
 	.option("--version <version>", "Override version")
 	.option("--latest <bool>", "Override latest")
 	.option("--branch <name>", "Override branch name")
+	.option("--targets <list>", "Override target groups (comma-separated or 'all')")
 	.action(async (opts) => {
 		const overrides: Parameters<typeof resolveContext>[0] = {};
 		if (opts.trigger) overrides.trigger = opts.trigger as Trigger;
@@ -169,9 +170,10 @@ program
 			overrides.latest = opts.latest === "true";
 		}
 		if (opts.branch) overrides.branch = opts.branch;
+		if (opts.targets) overrides.targets = opts.targets;
 		const ctx = await resolveContext(overrides);
 		log.info(
-			`resolved: trigger=${ctx.trigger} version=${ctx.version} npm_tag=${ctx.npmTag} sha=${ctx.sha} latest=${ctx.latest}${ctx.branch !== undefined ? ` branch=${ctx.branch}` : ""}`,
+			`resolved: trigger=${ctx.trigger} version=${ctx.version} npm_tag=${ctx.npmTag} sha=${ctx.sha} latest=${ctx.latest} targets=${ctx.targets.join(",")}${ctx.branch !== undefined ? ` branch=${ctx.branch}` : ""}`,
 		);
 		writeContextToGithubOutput(ctx);
 	});
@@ -201,6 +203,7 @@ program
 			includeReleaseOnlyPackages: ctx.trigger === "release",
 			versionOnly: !!opts.versionOnly,
 			repository: opts.repository ?? process.env.GITHUB_REPOSITORY,
+			targets: ctx.targets,
 		});
 		await bumpCargoVersions(repoRoot, version, {
 			dryRun: !!opts.dryRun,
@@ -235,12 +238,14 @@ program
 			parallel: Number(opts.parallel),
 			retries: Number(opts.retries),
 			releaseMode,
+			targets: ctx.targets,
 		});
 		if (!releaseMode) {
 			await repairBranchPreviewLatestTags(repoRoot, {
 				tag,
 				version: ctx.version,
 				includeReleaseOnlyPackages: releaseMode,
+				targets: ctx.targets,
 			});
 		}
 	});

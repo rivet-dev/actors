@@ -13,6 +13,7 @@ import {
 	META_PACKAGES,
 	type Package,
 } from "./packages.js";
+import { scopedFamilies, type TargetGroup } from "./scope.js";
 
 const log = scoped("npm");
 
@@ -35,6 +36,11 @@ export interface PublishAllOptions {
 	releaseMode?: boolean;
 	/** Include release-only packages like Windows engine-cli artifacts. */
 	includeReleaseOnlyPackages?: boolean;
+	/**
+	 * Selected target groups. When set, only in-scope package families are
+	 * published. Omit for a full run.
+	 */
+	targets?: TargetGroup[];
 }
 
 export type PublishStatus =
@@ -218,7 +224,7 @@ async function publishOne(
 export async function repairBranchPreviewLatestTags(
 	repoRoot: string,
 	opts: Required<Pick<PublishAllOptions, "tag" | "version">> &
-		Pick<PublishAllOptions, "includeReleaseOnlyPackages">,
+		Pick<PublishAllOptions, "includeReleaseOnlyPackages" | "targets">,
 ): Promise<void> {
 	// npm trusted publishing only authenticates `npm publish`; commands such as
 	// `npm dist-tag add` still require a traditional token. Preserve the repair
@@ -232,6 +238,7 @@ export async function repairBranchPreviewLatestTags(
 	const previewPrefix = `0.0.0-${opts.tag}.`;
 	const packages = discoverPackages(repoRoot, {
 		includeReleaseOnly: opts.includeReleaseOnlyPackages,
+		families: opts.targets ? scopedFamilies(opts.targets) : undefined,
 	});
 
 	for (const pkg of packages) {
@@ -318,10 +325,12 @@ export async function publishAll(
 	const initialBackoffMs = opts.initialBackoffMs ?? 2000;
 	const tag = opts.tag;
 
+	const families = opts.targets ? scopedFamilies(opts.targets) : undefined;
 	const packages = discoverPackages(repoRoot, {
 		includeReleaseOnly: opts.includeReleaseOnlyPackages,
+		families,
 	});
-	assertDiscoverySanity(packages);
+	assertDiscoverySanity(packages, families);
 
 	log.info(
 		`publishing ${packages.length} packages | tag=${tag} | parallel=${parallel} | retries=${retries}`,

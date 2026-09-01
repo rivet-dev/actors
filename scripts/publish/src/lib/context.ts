@@ -2,6 +2,13 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { $ } from "execa";
+import {
+	ALL_GROUPS,
+	buildScope,
+	isAllGroups,
+	parseTargetGroups,
+	type TargetGroup,
+} from "./scope.js";
 
 /**
  * Publish context. Resolved once per workflow run by the `context-output` CI
@@ -23,6 +30,17 @@ export interface PublishContext {
 	/** Branch name. Only set when trigger === "branch". */
 	branch?: string;
 	repoRoot: string;
+	/**
+	 * Selected target groups. Narrowed by the `targets` input on preview
+	 * publishes; always every group on release so a cut is never partial.
+	 */
+	targets: TargetGroup[];
+	/** Space-separated native build targets in scope (matrix gate reads this). */
+	buildTargets: string;
+	/** Whether the `build-wasm` job runs. */
+	buildWasm: boolean;
+	/** Whether the `docker-images` job runs. */
+	buildDocker: boolean;
 }
 
 /** Override set accepted by the local release cutter. */
@@ -32,6 +50,7 @@ export interface ResolveOverrides {
 	latest?: boolean;
 	branch?: string;
 	sha?: string;
+	targets?: string;
 }
 
 function findRepoRoot(): string {
@@ -210,6 +229,23 @@ export async function resolveContext(
 
 	const npmTag = computeNpmTag(trigger, version, latest, branch);
 
+	// Resolve selective-publish scope. Releases always cover every group so a
+	// cut is never partial; only preview publishes may narrow scope.
+	const targetsInput =
+		overrides.targets ?? readInputFromEvent<string>("targets");
+	let targets: TargetGroup[];
+	if (trigger === "release") {
+		if (targetsInput && !isAllGroups(parseTargetGroups(targetsInput))) {
+			throw new Error(
+				`release publishes must build every target; refusing partial targets="${targetsInput}"`,
+			);
+		}
+		targets = [...ALL_GROUPS];
+	} else {
+		targets = parseTargetGroups(targetsInput);
+	}
+	const scope = buildScope(targets);
+
 	return {
 		trigger,
 		version,
@@ -218,6 +254,10 @@ export async function resolveContext(
 		latest,
 		branch,
 		repoRoot,
+		targets,
+		buildTargets: scope.buildTargets.join(" "),
+		buildWasm: scope.buildWasm,
+		buildDocker: scope.buildDocker,
 	};
 }
 
@@ -231,6 +271,10 @@ export function writeContextToGithubOutput(ctx: PublishContext): void {
 		console.log(`npm_tag=${ctx.npmTag}`);
 		console.log(`sha=${ctx.sha}`);
 		console.log(`latest=${ctx.latest}`);
+		console.log(`targets=${ctx.targets.join(",")}`);
+		console.log(`build_targets=${ctx.buildTargets}`);
+		console.log(`build_wasm=${ctx.buildWasm}`);
+		console.log(`build_docker=${ctx.buildDocker}`);
 		if (ctx.branch !== undefined) console.log(`branch=${ctx.branch}`);
 		return;
 	}
@@ -240,6 +284,10 @@ export function writeContextToGithubOutput(ctx: PublishContext): void {
 		`npm_tag=${ctx.npmTag}`,
 		`sha=${ctx.sha}`,
 		`latest=${ctx.latest}`,
+		`targets=${ctx.targets.join(",")}`,
+		`build_targets=${ctx.buildTargets}`,
+		`build_wasm=${ctx.buildWasm}`,
+		`build_docker=${ctx.buildDocker}`,
 	];
 	if (ctx.branch !== undefined) lines.push(`branch=${ctx.branch}`);
 	// Append (do not overwrite) in case other steps also wrote to GITHUB_OUTPUT.

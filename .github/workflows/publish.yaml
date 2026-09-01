@@ -13,6 +13,14 @@
 #                                       (npm_tag becomes `rc` if version contains `-rc.`, or
 #                                        `next` if `latest=false`)
 #
+# Selective preview builds: the `targets` input (all | rivetkit | container-runner
+# | engine | cli) narrows a preview to one target family so unrelated builds are
+# skipped. The `context` job resolves it into `build_targets` / `build_wasm` /
+# `build_docker` outputs that gate the matrix and jobs. Skipped npm families have
+# their inbound dependency (rivetkit-family → @rivetkit/engine-cli) repinned to the
+# latest published version so previews still install. Releases always build every
+# target; a partial `targets` on a release is rejected.
+#
 # See ~/.agents/specs/publish-flow-unification.md for the design.
 # ============================================================================
 
@@ -30,6 +38,17 @@ on:
         required: true
         type: boolean
         default: true
+      targets:
+        description: "Preview only: which targets to build/publish. Releases always build everything."
+        required: false
+        type: choice
+        default: all
+        options:
+          - all
+          - rivetkit
+          - container-runner
+          - engine
+          - cli
 
 env:
   # Depot project ID (rivet-dev/rivet-engine).
@@ -48,6 +67,10 @@ jobs:
       npm_tag: ${{ steps.ctx.outputs.npm_tag }}
       sha: ${{ steps.ctx.outputs.sha }}
       latest: ${{ steps.ctx.outputs.latest }}
+      targets: ${{ steps.ctx.outputs.targets }}
+      build_targets: ${{ steps.ctx.outputs.build_targets }}
+      build_wasm: ${{ steps.ctx.outputs.build_wasm }}
+      build_docker: ${{ steps.ctx.outputs.build_docker }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -218,14 +241,20 @@ jobs:
       id-token: write # required for depot OIDC trust
       packages: read
     steps:
-      - name: Skip release-only targets on non-release triggers
+      - name: Skip release-only and out-of-scope targets
         id: gate
         run: |
+          skip=false
+          # Release-only targets (e.g. Windows) only build on release triggers.
           if [ "${{ matrix.release_only }}" = "true" ] && [ "${{ needs.context.outputs.trigger }}" != "release" ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
+            skip=true
           fi
+          # Selective preview: skip build targets not in the resolved scope.
+          case " ${{ needs.context.outputs.build_targets }} " in
+            *" ${{ matrix.build_target }} "*) : ;;
+            *) skip=true ;;
+          esac
+          echo "skip=$skip" >> $GITHUB_OUTPUT
       - uses: actions/checkout@v4
         if: steps.gate.outputs.skip != 'true'
         with:
@@ -276,6 +305,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-wasm:
     needs: [context]
+    if: needs.context.outputs.build_wasm == 'true'
     name: "Build rivetkit-wasm"
     runs-on: depot-ubuntu-24.04-8
     permissions:
@@ -314,6 +344,7 @@ jobs:
   # ---------------------------------------------------------------------------
   docker-images:
     needs: [context]
+    if: needs.context.outputs.build_docker == 'true'
     name: "Docker ${{ matrix.arch_suffix }}"
     strategy:
       fail-fast: false
@@ -376,11 +407,13 @@ jobs:
   publish:
     needs: [context, build, build-wasm, docker-images]
     name: "Publish"
+    # build-wasm / docker-images are skipped (not 'success') when their target
+    # is out of scope for a selective preview; treat skipped as acceptable.
     if: |
       !cancelled() &&
       needs.build.result == 'success' &&
-      needs.build-wasm.result == 'success' &&
-      needs.docker-images.result == 'success'
+      (needs.build-wasm.result == 'success' || needs.build-wasm.result == 'skipped') &&
+      (needs.docker-images.result == 'success' || needs.docker-images.result == 'skipped')
     # npm trusted publishing currently requires a GitHub-hosted runner.
     runs-on: ubuntu-24.04
     permissions:
@@ -409,35 +442,43 @@ jobs:
 
       # ---- download + place native + engine artifacts ----
       - name: Download native artifacts
+        if: contains(needs.context.outputs.targets, 'rivetkit')
         uses: actions/download-artifact@v4
         with:
           path: native-artifacts
           pattern: native-*
           merge-multiple: true
+      # Engine binaries are also needed by the `cli` group (bundled into CLI
+      # platform packages), so key this off build_targets, not the group.
       - name: Download engine artifacts
+        if: contains(needs.context.outputs.build_targets, 'engine')
         uses: actions/download-artifact@v4
         with:
           path: engine-artifacts
           pattern: engine-*
           merge-multiple: true
       - name: Download CLI artifacts
+        if: contains(needs.context.outputs.targets, 'cli')
         uses: actions/download-artifact@v4
         with:
           path: cli-artifacts
           pattern: cli-*
           merge-multiple: true
       - name: Download container runner artifacts
+        if: contains(needs.context.outputs.targets, 'container-runner')
         uses: actions/download-artifact@v4
         with:
           path: container-runner-artifacts
           pattern: container-runner-*
           merge-multiple: true
       - name: Download wasm package artifact
+        if: needs.context.outputs.build_wasm == 'true'
         uses: actions/download-artifact@v4
         with:
           name: wasm-package
           path: rivetkit-typescript/packages/rivetkit-wasm/pkg
       - name: Place native binaries in platform packages
+        if: contains(needs.context.outputs.targets, 'rivetkit')
         run: |
           NATIVE_DIR=rivetkit-typescript/packages/rivetkit-napi
           for f in native-artifacts/*.node; do
@@ -556,6 +597,7 @@ jobs:
 
       # ---- build TypeScript packages (turbo dep graph picks up native) ----
       - name: Build TypeScript packages
+        if: contains(needs.context.outputs.targets, 'rivetkit')
         env:
           SKIP_WASM_BUILD: "1"
         run: |
@@ -581,6 +623,7 @@ jobs:
             ${{ needs.context.outputs.trigger == 'release' && '--release-mode' || '' }}
 
       - name: Generate engine checksum manifest
+        if: contains(needs.context.outputs.targets, 'engine')
         run: |
           (
             cd engine-artifacts
@@ -588,12 +631,14 @@ jobs:
           )
 
       - name: Upload engine binaries to R2
+        if: contains(needs.context.outputs.targets, 'engine')
         env:
           R2_RELEASES_ACCESS_KEY_ID: ${{ secrets.R2_RELEASES_ACCESS_KEY_ID }}
           R2_RELEASES_SECRET_ACCESS_KEY: ${{ secrets.R2_RELEASES_SECRET_ACCESS_KEY }}
         run: pnpm --filter=publish exec tsx src/ci/bin.ts upload-r2 --source "$GITHUB_WORKSPACE/engine-artifacts" --sha ${{ needs.context.outputs.sha }}
 
       - name: Upload container runner binaries to R2
+        if: contains(needs.context.outputs.targets, 'container-runner')
         env:
           R2_RELEASES_ACCESS_KEY_ID: ${{ secrets.R2_RELEASES_ACCESS_KEY_ID }}
           R2_RELEASES_SECRET_ACCESS_KEY: ${{ secrets.R2_RELEASES_SECRET_ACCESS_KEY }}
@@ -636,6 +681,7 @@ jobs:
             --allow-dirty
 
       - name: Create Docker multi-arch manifests
+        if: needs.context.outputs.build_docker == 'true'
         run: pnpm --filter=publish exec tsx src/ci/bin.ts docker-manifest --sha ${{ needs.context.outputs.sha }}
 
       # ---- release-only tail ----

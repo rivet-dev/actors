@@ -26,6 +26,11 @@ import {
 	discoverPackages,
 	type Package,
 } from "./packages.js";
+import {
+	packageFamily,
+	scopedFamilies,
+	type TargetGroup,
+} from "./scope.js";
 
 const log = scoped("version");
 
@@ -87,6 +92,13 @@ export interface BumpOptions {
 	versionOnly?: boolean;
 	/** GitHub repository slug recorded in publish-time package metadata. */
 	repository?: string;
+	/**
+	 * Selected target groups. When set, only in-scope package families are
+	 * bumped, and dependencies on out-of-scope families are pinned to their
+	 * latest already-published version instead of the (never-built) new
+	 * version. Omit for a full run. Ignored in `versionOnly` mode.
+	 */
+	targets?: TargetGroup[];
 }
 
 export function githubRepositoryUrl(repository: string): string {
@@ -128,12 +140,31 @@ export async function bumpPackageJsons(
 	version: string,
 	opts: BumpOptions = {},
 ): Promise<number> {
+	const families = opts.targets ? scopedFamilies(opts.targets) : undefined;
 	const packages = discoverPackages(repoRoot, {
 		includeReleaseOnly: opts.includeReleaseOnlyPackages,
+		families,
 	});
 	const packageNames = new Set(packages.map((p) => p.name));
 	const metaPlatformMap = buildMetaPlatformMap(packages);
 	const versionOnly = opts.versionOnly ?? false;
+
+	// Cache `npm view <pkg> version` lookups for out-of-scope dependencies so a
+	// dep referenced by several packages is only resolved once.
+	const latestCache = new Map<string, string>();
+	const resolveLatestPublished = async (dep: string): Promise<string> => {
+		const cached = latestCache.get(dep);
+		if (cached) return cached;
+		const { stdout } = await $`npm view ${dep} version`;
+		const latest = stdout.trim();
+		if (!latest) {
+			throw new Error(
+				`could not resolve latest published version for out-of-scope dependency ${dep}`,
+			);
+		}
+		latestCache.set(dep, latest);
+		return latest;
+	};
 
 	let updated = 0;
 	for (const pkg of packages) {
@@ -172,6 +203,19 @@ export async function bumpPackageJsons(
 						dep.startsWith("@rivetkit/") ||
 						dep === "rivetkit";
 					if (!isOurPkg) continue;
+					// A dependency on a family that is out of scope this run was
+					// never rebuilt or republished at `version`. Pin it to the
+					// latest already-published version so the package still
+					// installs (e.g. a rivetkit-only preview keeps a working
+					// reference to the last published @rivetkit/engine-cli).
+					if (families && !families.has(packageFamily(dep))) {
+						const latest = await resolveLatestPublished(dep);
+						deps[dep] = latest;
+						log.info(
+							`pinning out-of-scope dep ${pkg.name} -> ${dep}@${latest}`,
+						);
+						continue;
+					}
 					deps[dep] = version;
 				}
 			}

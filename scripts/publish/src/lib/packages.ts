@@ -18,6 +18,7 @@
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { type PackageFamily, packageFamily } from "./scope.js";
 
 export interface Package {
 	name: string;
@@ -29,6 +30,11 @@ export interface Package {
 
 export interface DiscoverPackagesOptions {
 	includeReleaseOnly?: boolean;
+	/**
+	 * When set, only packages whose family is in this set are returned. Used by
+	 * selective preview publishes. Omit (or pass every family) for a full run.
+	 */
+	families?: Set<PackageFamily>;
 }
 
 /**
@@ -108,6 +114,7 @@ export function discoverPackages(
 	opts: DiscoverPackagesOptions = {},
 ): Package[] {
 	const includeReleaseOnly = opts.includeReleaseOnly ?? true;
+	const families = opts.families;
 	const packages: Package[] = [];
 	const seen = new Set<string>();
 
@@ -118,6 +125,7 @@ export function discoverPackages(
 		if (!pkg.name) return;
 		if (!isPublishable(pkg)) return;
 		if (!includeReleaseOnly && RELEASE_ONLY_PACKAGES.has(pkg.name)) return;
+		if (families && !families.has(packageFamily(pkg.name))) return;
 		if (seen.has(pkg.name)) return;
 		seen.add(pkg.name);
 		packages.push({
@@ -210,24 +218,28 @@ export function buildMetaPlatformMap(
  * CI if discovery silently regressed. Called at the top of subcommands that
  * touch the full set.
  */
-export function assertDiscoverySanity(packages: Package[]): void {
+export function assertDiscoverySanity(
+	packages: Package[],
+	families?: Set<PackageFamily>,
+): void {
+	const inScope = (family: PackageFamily) => !families || families.has(family);
 	const byName = new Set(packages.map((p) => p.name));
-	const required = [
-		"rivetkit",
-		"@rivetkit/react",
-		"@rivetkit/rivetkit-napi",
-		"@rivetkit/engine-cli",
-		"@rivetkit/cli",
-	];
+	const required: string[] = [];
+	if (inScope("rivetkit")) {
+		required.push("rivetkit", "@rivetkit/react", "@rivetkit/rivetkit-napi");
+	}
+	if (inScope("engine")) required.push("@rivetkit/engine-cli");
+	if (inScope("cli")) required.push("@rivetkit/cli");
 	const missing = required.filter((r) => !byName.has(r));
 	if (missing.length > 0) {
 		throw new Error(
 			`package discovery missing required packages: ${missing.join(", ")}`,
 		);
 	}
-	// Each meta must have at least one platform package.
+	// Each in-scope meta must have at least one platform package.
 	const metaMap = buildMetaPlatformMap(packages);
 	for (const { meta } of META_PACKAGES) {
+		if (!inScope(packageFamily(meta))) continue;
 		const plats = metaMap.get(meta) ?? [];
 		if (plats.length === 0) {
 			throw new Error(
