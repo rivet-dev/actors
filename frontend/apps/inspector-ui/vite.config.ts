@@ -31,6 +31,7 @@ export default defineConfig({
 	envDir: path.resolve(__dirname, "../.."),
 	plugins: [react(), tsconfigPaths()],
 	define: {
+		__MCP_APP__: JSON.stringify(false),
 		__APP_TYPE__: JSON.stringify("inspector"),
 		__APP_BUILD_ID__: JSON.stringify(
 			`${new Date().toISOString()}@${crypto.randomUUID()}`,

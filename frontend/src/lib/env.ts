@@ -28,12 +28,18 @@ export const cloudEnvSchema = commonEnvSchema.merge(
 	z.object({
 		// Cloud API endpoint - direct URL without transformation, used for cloud-specific operations
 		VITE_APP_CLOUD_API_URL: z.string().url(),
+		// Hosted MCP endpoint. Unset on Rivet Cloud; self-hosted deployments
+		// point this at their own MCP service.
+		VITE_APP_MCP_URL: z.string().url().optional(),
 		VITE_APP_SENTRY_TUNNEL: z.string().optional(),
 		VITE_APP_TURNSTILE_SITE_KEY: z.string().optional(),
 	}),
 );
 
 export const cloudEnv = () => cloudEnvSchema.parse(import.meta.env);
+
+export const getMcpUrl = () =>
+	cloudEnv().VITE_APP_MCP_URL ?? "https://mcp.rivet.dev/mcp";
 
 export const getRivetRunUrl = (engineNsName: string) => {
 	return cloudEnv().VITE_DEPLOYMENT_TYPE === "production"
