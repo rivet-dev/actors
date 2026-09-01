@@ -291,9 +291,10 @@ describe.sequential("native NAPI runtime integration", () => {
 
 		const handle = await waitForActorReady(
 			() =>
-				client.integrationActor.create([
-					`napi-runtime-${crypto.randomUUID()}`,
-				]),
+				client.integrationActor.create(
+					[`napi-runtime-${crypto.randomUUID()}`],
+					{ params: { userId: "native-integration-test" } },
+				),
 			30_000,
 		);
 		const actorId = await handle.resolve();
@@ -384,7 +385,7 @@ describe.sequential("native NAPI runtime integration", () => {
 			},
 		});
 		await expect(handle.throwUntypedError()).rejects.toMatchObject({
-			group: "core",
+			group: "rivetkit",
 			code: "internal_error",
 			message: "An internal error occurred",
 		});
