@@ -1,0 +1,32 @@
+---
+author: nicholas-kissel
+published: "2026-02-05"
+category: changelog
+keywords: ["weekly-update", "namespace", "archive", "opencode", "sandbox-agent", "github-preview", "gigacode"]
+title: "Rivet Weekly Changelog 2026-06"
+description: "Namespace & project archiving, OpenCode support for Sandbox Agent, ARM builds, embedded UI, and GitHub preview CI improvements."
+---
+
+## Rivet Cloud
+
+### Namespace & Project Archive
+Projects and namespaces can now be archived directly from the dashboard. Archived resources are hidden from the default view but can be restored at any time.
+## Sandbox Agent
+
+### OpenCode Support
+Sandbox Agent now supports [OpenCode](https://opencode.ai) as an adapter, expanding the range of AI coding assistants that can be orchestrated through the universal agent API.
+
+### Gigacode Launch for Sandbox Agent SDK
+Gigacode allows you to use OpenCode UI with any coding agent, built into Sandbox Agent SDK. This isn't a fork of Opencode.
+
+
+### ARM Builds
+Native ARM64 Docker images are now published for Sandbox Agent, enabling efficient deployment on Apple Silicon Macs, AWS Graviton, and other ARM-based infrastructure without emulation overhead.
+
+### Embedded UI
+The Sandbox Agent UI is now bundled directly into the agent binary. No separate frontend deployment required—just run the agent and access the inspector UI at the configured port.
+
+## CI/CD
+
+### GitHub Preview CI
+Improved GitHub Actions workflow for preview deployments, enabling faster iteration on pull requests with automatic preview environments.
