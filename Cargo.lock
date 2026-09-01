@@ -3977,6 +3977,7 @@ dependencies = [
  "utoipa",
  "uuid",
  "vbare",
+ "webhook",
  "xxhash-rust",
 ]
 

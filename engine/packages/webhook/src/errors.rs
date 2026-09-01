@@ -42,4 +42,10 @@ pub enum Webhook {
 		"Webhook delivery is not in a retryable state; only failed deliveries can be retried."
 	)]
 	DeliveryNotRetryable,
+	#[error(
+		"event_type_not_allowed",
+		"Event type cannot be subscribed to by a webhook.",
+		"Event type {event_type} cannot be subscribed to by a webhook because it is too high-throughput."
+	)]
+	EventTypeNotAllowed { event_type: String },
 }

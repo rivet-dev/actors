@@ -12,14 +12,54 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::ctx::ApiCtx;
 
-// Config for a single webhook, keyed by an arbitrary name within a namespace. Fields are
-// provisional pending the CloudEvents-shaped trigger payload design (see webhook spec).
+// Config for a single webhook, keyed by an arbitrary name within a namespace. `subscriptions`
+// names the event types to deliver; only webhook-safe types are accepted (see
+// `webhook::types::WebhookEventType`).
 #[derive(Debug, Deserialize, Serialize, Clone, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WebhookConfig {
 	pub url: String,
 	#[serde(default)]
 	pub headers: HashMap<String, String>,
+	#[serde(default)]
+	pub subscriptions: Vec<WebhookEventType>,
+}
+
+// Mirrors `webhook::types::WebhookEventType` for the public API. Only webhook-safe variants are
+// exposed; high-throughput event types are not subscribable and so have no API representation.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, ToSchema)]
+pub enum WebhookEventType {
+	#[serde(rename = "runner_pool.error")]
+	RunnerPoolError,
+	#[serde(rename = "runner_pool.healthy")]
+	RunnerPoolHealthy,
+}
+
+impl From<WebhookEventType> for webhook::types::WebhookEventType {
+	fn from(value: WebhookEventType) -> Self {
+		match value {
+			WebhookEventType::RunnerPoolError => webhook::types::WebhookEventType::RunnerPoolError,
+			WebhookEventType::RunnerPoolHealthy => {
+				webhook::types::WebhookEventType::RunnerPoolHealthy
+			}
+		}
+	}
+}
+
+impl WebhookEventType {
+	// `None` for event types that have no API representation because they cannot be subscribed
+	// to. Upsert validation rejects those, so a stored config should never contain one.
+	fn from_internal(value: webhook::types::WebhookEventType) -> Option<Self> {
+		match value {
+			webhook::types::WebhookEventType::RunnerPoolError => {
+				Some(WebhookEventType::RunnerPoolError)
+			}
+			webhook::types::WebhookEventType::RunnerPoolHealthy => {
+				Some(WebhookEventType::RunnerPoolHealthy)
+			}
+			webhook::types::WebhookEventType::ActorHttpRequest => None,
+		}
+	}
 }
 
 // MARK: List
@@ -83,6 +123,12 @@ async fn list_inner(ctx: ApiCtx, query: ListQuery) -> Result<ListResponse> {
 					WebhookConfig {
 						url: w.config.url,
 						headers: w.config.headers,
+						subscriptions: w
+							.config
+							.subscriptions
+							.into_iter()
+							.filter_map(WebhookEventType::from_internal)
+							.collect(),
 					},
 				)
 			})
@@ -167,6 +213,7 @@ async fn upsert_inner(
 		config: webhook::types::WebhookConfig {
 			url: body.0.url,
 			headers: body.0.headers,
+			subscriptions: body.0.subscriptions.into_iter().map(Into::into).collect(),
 		},
 	})
 	.await?;
@@ -332,13 +379,17 @@ pub struct EventsQuery {
 	pub cursor: Option<String>,
 }
 
-// Placeholder shape for one delivery attempt in a webhook's event history.
+// One delivery in a webhook's event history. `id` is the delivery id, which is also the
+// CloudEvents `id` sent to the destination and what the retry endpoint takes.
 #[derive(Debug, Deserialize, Serialize, Clone, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WebhookEvent {
 	pub id: String,
 	pub create_ts: i64,
 	pub status: String,
+	pub event_type: String,
+	pub attempt_count: u32,
+	pub last_error: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, ToSchema)]
@@ -436,6 +487,9 @@ async fn events_inner(ctx: ApiCtx, path: EventsPath, query: EventsQuery) -> Resu
 					webhook::types::DeliveryStatus::Succeeded => "succeeded".to_string(),
 					webhook::types::DeliveryStatus::Failed => "failed".to_string(),
 				},
+				event_type: d.record.event_type.as_str().to_string(),
+				attempt_count: d.record.attempt_count,
+				last_error: d.record.last_error,
 			})
 			.collect(),
 		pagination: Pagination { cursor },

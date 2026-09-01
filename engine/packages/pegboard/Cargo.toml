@@ -53,6 +53,7 @@ url.workspace = true
 utoipa.workspace = true
 uuid.workspace = true
 vbare.workspace = true
+webhook.workspace = true
 
 [dev-dependencies]
 portpicker.workspace = true

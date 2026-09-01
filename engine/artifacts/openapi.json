@@ -2546,6 +2546,12 @@
               "type": "string"
             }
           },
+          "subscriptions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebhookEventType"
+            }
+          },
           "url": {
             "type": "string"
           }
@@ -2557,21 +2563,44 @@
         "required": [
           "id",
           "create_ts",
-          "status"
+          "status",
+          "event_type",
+          "attempt_count"
         ],
         "properties": {
+          "attempt_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
           "create_ts": {
             "type": "integer",
             "format": "int64"
           },
+          "event_type": {
+            "type": "string"
+          },
           "id": {
             "type": "string"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "status": {
             "type": "string"
           }
         },
         "additionalProperties": false
+      },
+      "WebhookEventType": {
+        "type": "string",
+        "enum": [
+          "runner_pool.error",
+          "runner_pool.healthy"
+        ]
       },
       "WebhooksDeleteResponse": {
         "type": "object",

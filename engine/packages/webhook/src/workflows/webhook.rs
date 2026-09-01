@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{
 	errors, keys,
-	types::{DeliveryRecord, DeliveryStatus, WebhookConfig},
+	types::{DeliveryRecord, DeliveryStatus, WebhookConfig, WebhookEventType},
 };
 
 /// Topic used to correlate `webhook::ops::upsert` (which waits for the outcome) with the
@@ -37,6 +37,7 @@ pub struct DeliverInput {
 	pub name: String,
 	pub config: WebhookConfig,
 	pub payload: String,
+	pub event_type: WebhookEventType,
 }
 
 // The maximum number of delivery attempts for a single triggered event before giving up.
@@ -76,7 +77,7 @@ pub async fn deliver(
 		id: input.delivery_id.clone(),
 		source: &format!("rivet:webhook:{}:{}", input.namespace_id, input.name),
 		specversion: "1.0",
-		kind: "dev.rivet.webhook.trigger",
+		kind: input.event_type.as_cloudevents_type(),
 		time: chrono::Utc::now().to_rfc3339(),
 		data: &serde_json::from_str(&input.payload)?,
 	};
@@ -121,6 +122,7 @@ pub struct RecordDeliveryInput {
 	pub status: DeliveryStatus,
 	pub attempt_count: u32,
 	pub last_error: Option<String>,
+	pub event_type: WebhookEventType,
 }
 
 // Writes the current state of a delivery to the local UDB mirror so it can be looked up later by
@@ -139,6 +141,7 @@ pub async fn record_delivery(ctx: &ActivityCtx, input: &RecordDeliveryInput) -> 
 	let status = input.status;
 	let attempt_count = input.attempt_count;
 	let last_error = input.last_error.clone();
+	let event_type = input.event_type;
 	let now = ctx.ts();
 
 	ctx.udb()?
@@ -164,6 +167,7 @@ pub async fn record_delivery(ctx: &ActivityCtx, input: &RecordDeliveryInput) -> 
 						attempt_count,
 						last_error,
 						created_at,
+						event_type,
 					},
 				)?;
 				Ok(())
@@ -248,6 +252,17 @@ pub async fn webhook(ctx: &mut WorkflowCtx, input: &Input) -> Result<()> {
 					}
 				}
 				Main::Trigger(sig) => {
+					// The workflow owns the config, so it is the authority on what this webhook is
+					// subscribed to. Producers filter by subscription before signaling, but the
+					// config can change between that read and this signal arriving.
+					if !config.subscriptions.contains(&sig.event_type) {
+						tracing::debug!(
+							event_type = sig.event_type.as_str(),
+							"dropping trigger for unsubscribed event type"
+						);
+						return Ok(Loop::Continue);
+					}
+
 					let delivery_id = Uuid::new_v4().to_string();
 
 					let outcome = deliver_with_retries(
@@ -257,6 +272,7 @@ pub async fn webhook(ctx: &mut WorkflowCtx, input: &Input) -> Result<()> {
 						delivery_id,
 						config.clone(),
 						sig.payload,
+						sig.event_type,
 					)
 					.await?;
 
@@ -297,6 +313,7 @@ pub async fn webhook(ctx: &mut WorkflowCtx, input: &Input) -> Result<()> {
 						sig.delivery_id,
 						config.clone(),
 						record.payload,
+						record.event_type,
 					)
 					.await?;
 
@@ -386,6 +403,7 @@ async fn deliver_with_retries(
 	delivery_id: String,
 	config: WebhookConfig,
 	payload: String,
+	event_type: WebhookEventType,
 ) -> Result<DeliveryOutcome> {
 	ctx.activity(RecordDeliveryInput {
 		namespace_id,
@@ -395,6 +413,7 @@ async fn deliver_with_retries(
 		status: DeliveryStatus::Pending,
 		attempt_count: 0,
 		last_error: None,
+		event_type,
 	})
 	.await?;
 
@@ -408,6 +427,7 @@ async fn deliver_with_retries(
 				name: name.clone(),
 				config: config.clone(),
 				payload: payload.clone(),
+				event_type,
 			})
 			.await?;
 
@@ -421,6 +441,7 @@ async fn deliver_with_retries(
 					status: DeliveryStatus::Succeeded,
 					attempt_count: attempt + 1,
 					last_error: None,
+					event_type,
 				})
 				.await?;
 
@@ -453,6 +474,7 @@ async fn deliver_with_retries(
 					status: DeliveryStatus::Failed,
 					attempt_count: attempt + 1,
 					last_error: Some(error.build().to_string()),
+					event_type,
 				})
 				.await?;
 
@@ -497,6 +519,16 @@ pub async fn validate(
 		return Ok(Err(errors::Webhook::Invalid {
 			reason: format!("invalid url: {reason}"),
 		}));
+	}
+
+	// Enforce the webhook-safe event type allowlist. High-throughput types are still ingested for
+	// analytics; they just cannot be a webhook trigger (see the webhook spec).
+	for event_type in &input.config.subscriptions {
+		if !event_type.is_webhook_safe() {
+			return Ok(Err(errors::Webhook::EventTypeNotAllowed {
+				event_type: event_type.as_str().to_string(),
+			}));
+		}
 	}
 
 	if input.config.headers.len() > 16 {
@@ -624,6 +656,7 @@ pub async fn upsert_config(
 
 #[signal("webhook_trigger")]
 pub struct Trigger {
+	pub event_type: WebhookEventType,
 	// TODO: proper CloudEvents-shaped payload; deferred pending the design task in the spec.
 	pub payload: String,
 }
