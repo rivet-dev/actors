@@ -14,9 +14,10 @@ pub mod websocket;
 
 use std::sync::Once;
 
+use napi_derive::napi;
 use rivet_error::RivetError as RivetTransportError;
 use rivetkit_core::error::public_error_status_code;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{Layer as _, layer::SubscriberExt, util::SubscriberInitExt};
 
 static INIT_TRACING: Once = Once::new();
 pub(crate) const BRIDGE_RIVET_ERROR_PREFIX: &str = "__RIVET_ERROR_JSON__:";
@@ -115,32 +116,50 @@ pub(crate) fn init_tracing(log_level: Option<&str>) {
 			.or_else(|| std::env::var("RUST_LOG").ok())
 			.unwrap_or_else(|| "warn".to_string());
 
+		let log_filter = format!("{filter},rivetkit::telemetry=off");
 		let log_format = LogFormat::from_env();
+		let (otel_layer, otel_error) = match rivetkit_core::telemetry::export::layer() {
+			Ok(layer) => (layer, None),
+			Err(error) => (None, Some(error)),
+		};
 
-		tracing_subscriber::registry()
-			.with(tracing_subscriber::EnvFilter::new(&filter))
-			.with(match log_format {
-				LogFormat::Logfmt => Some(
-					tracing_logfmt::builder()
-						.with_span_name(env_flag("RUST_LOG_SPAN_NAME"))
-						.with_span_path(env_flag("RUST_LOG_SPAN_PATH"))
-						.with_target(env_flag("RUST_LOG_TARGET") || env_flag("RIVET_LOG_TARGET"))
-						.with_location(env_flag("RUST_LOG_LOCATION"))
-						.with_module_path(env_flag("RUST_LOG_MODULE_PATH"))
-						.with_ansi_color(env_flag("RUST_LOG_ANSI_COLOR"))
-						.layer(),
-				),
-				LogFormat::Gcp => None,
-			})
-			.with(match log_format {
-				LogFormat::Logfmt => None,
-				LogFormat::Gcp => Some(
-					tracing_stackdriver::layer()
-						.with_source_location(env_flag("RUST_LOG_LOCATION")),
-				),
-			})
-			.init();
+		// One filter per layer and no Option layers. Either of those makes
+		// tracing-subscriber create every span in the process even when no
+		// layer consumes it.
+		let log_layer = match log_format {
+			LogFormat::Logfmt => tracing_logfmt::builder()
+				.with_span_name(env_flag("RUST_LOG_SPAN_NAME"))
+				.with_span_path(env_flag("RUST_LOG_SPAN_PATH"))
+				.with_target(env_flag("RUST_LOG_TARGET") || env_flag("RIVET_LOG_TARGET"))
+				.with_location(env_flag("RUST_LOG_LOCATION"))
+				.with_module_path(env_flag("RUST_LOG_MODULE_PATH"))
+				.with_ansi_color(env_flag("RUST_LOG_ANSI_COLOR"))
+				.layer()
+				.boxed(),
+			LogFormat::Gcp => tracing_stackdriver::layer()
+				.with_source_location(env_flag("RUST_LOG_LOCATION"))
+				.boxed(),
+		}
+		.with_filter(tracing_subscriber::EnvFilter::new(&log_filter));
+
+		let base = tracing_subscriber::registry().with(log_layer);
+		match otel_layer {
+			Some(otel_layer) => base.with(otel_layer).init(),
+			None => base.init(),
+		}
+
+		if let Some(error) = otel_error {
+			tracing::warn!(
+				?error,
+				"OpenTelemetry trace export could not be initialized"
+			);
+		}
 	});
+}
+
+#[napi]
+pub async fn shutdown_telemetry() {
+	rivetkit_core::telemetry::export::shutdown_best_effort().await;
 }
 
 fn env_flag(name: &str) -> bool {

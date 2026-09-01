@@ -3,6 +3,7 @@ use super::dispatch::*;
 use super::inspector::encode_json_as_cbor;
 use super::*;
 use crate::error::ProtocolError;
+use crate::telemetry::IncomingInvocationContext;
 use crate::time::timeout;
 use tracing::Instrument;
 
@@ -372,6 +373,7 @@ impl RegistryDispatcher {
 										conn.clone(),
 										request.name.clone(),
 										request.args.into_vec(),
+										IncomingInvocationContext::default(),
 									)
 									.await
 									{

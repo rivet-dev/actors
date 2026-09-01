@@ -20,6 +20,7 @@ pub mod serverless;
 pub mod serverless_http;
 #[cfg(feature = "native-runtime")]
 mod services_process;
+pub mod telemetry;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(not(target_arch = "wasm32"))]

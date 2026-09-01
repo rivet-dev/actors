@@ -452,6 +452,7 @@ export interface CoreRuntime {
 	): Promise<void>;
 	waitRegistryReady(registry: RegistryHandle): Promise<void>;
 	shutdownRegistry(registry: RegistryHandle): Promise<void>;
+	shutdownTelemetry?(): Promise<void>;
 	registryActorStopThresholdMs?(
 		registry: RegistryHandle,
 	): Promise<number | undefined>;
