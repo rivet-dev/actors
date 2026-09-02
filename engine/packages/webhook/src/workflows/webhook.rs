@@ -679,9 +679,10 @@ pub struct UpsertConfigInput {
 // Writes the webhook config to epoxy (the durable, replicated copy) and mirrors it into local
 // UDB (what `list` reads, since epoxy is slow and not meant for frequent/scan-style reads).
 //
-// `expect_one_of` is always `vec![None]` because epoxy v2 does not implement value-based
-// compare-and-swap: it accepts only that value and then performs an unconditional set. Writes to
-// a webhook config are therefore last-write-wins across datacenters.
+// `expect_one_of` is always `vec![None]` because epoxy v2 does not implement value-conditional
+// compare-and-swap; it accepts only that value. Concurrency is still detected, just at a
+// different granularity: consensus decides one value per round, and a proposal that loses the
+// round comes back as `ExpectedValueDoesNotMatch`, surfaced here as `Conflict`.
 #[activity(UpsertConfig)]
 pub async fn upsert_config(
 	ctx: &ActivityCtx,
@@ -715,7 +716,9 @@ pub async fn upsert_config(
 		ProposalResult::Committed => {}
 		ProposalResult::ConsensusFailed { reason } => match reason {
 			epoxy::ops::propose::ConsensusFailedReason::ExpectedValueDoesNotMatch { .. } => {
-				bail!("epoxy propose failed: unexpected value mismatch for an unconditional set");
+				// Another proposer's value won this round, so this config was not the one
+				// committed. The caller should re-read and retry.
+				return Ok(Err(errors::Webhook::Conflict));
 			}
 			epoxy::ops::propose::ConsensusFailedReason::PreparePhaseConsensusFailed => {
 				bail!("epoxy propose failed: prepare phase consensus failed");

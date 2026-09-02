@@ -3,7 +3,7 @@ use epoxy::ops::propose::{
 };
 use gas::prelude::*;
 
-use crate::{keys, workflows};
+use crate::{errors, keys, workflows};
 
 #[derive(Debug)]
 pub struct Input {
@@ -16,9 +16,10 @@ pub struct Input {
 // tolerates the workflow already being gone (e.g. a repeat delete), which also makes a repeat
 // delete a no-op rather than an error.
 //
-// `expect_one_of` is always `vec![None]` because epoxy v2 does not implement value-based
-// compare-and-swap: it accepts only that value and then performs an unconditional set. Writes to
-// a webhook config are therefore last-write-wins across datacenters.
+// `expect_one_of` is always `vec![None]` because epoxy v2 does not implement value-conditional
+// compare-and-swap; it accepts only that value. Concurrency is still detected, just at a
+// different granularity: consensus decides one value per round, and a proposal that loses the
+// round comes back as `ExpectedValueDoesNotMatch`, surfaced here as `Conflict`.
 #[operation]
 pub async fn webhook_config_delete(ctx: &OperationCtx, input: &Input) -> Result<()> {
 	let namespace_id = input.namespace_id;
@@ -47,7 +48,8 @@ pub async fn webhook_config_delete(ctx: &OperationCtx, input: &Input) -> Result<
 		ProposalResult::Committed => {}
 		ProposalResult::ConsensusFailed { reason } => match reason {
 			ConsensusFailedReason::ExpectedValueDoesNotMatch { .. } => {
-				bail!("epoxy propose failed: unexpected value mismatch for an unconditional set");
+				// Another proposer's value won this round, so the delete did not take effect.
+				return Err(errors::Webhook::Conflict.build());
 			}
 			ConsensusFailedReason::PreparePhaseConsensusFailed => {
 				bail!("epoxy propose failed: prepare phase consensus failed");
