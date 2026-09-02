@@ -1,3 +1,170 @@
+export type OnboardingTarget =
+	| "actor"
+	| "agent-os"
+	| "workflows"
+	| "dynamic-apps";
+
+const onboardingTargetCopy: Record<
+	OnboardingTarget,
+	{
+		promptObject: string;
+		quickstartDescription: string;
+		quickstartUrl: string;
+	}
+> = {
+	actor: {
+		promptObject: "your first Rivet Actor",
+		quickstartDescription:
+			"Build a Rivet Actor project by hand, step by step.",
+		quickstartUrl: "https://rivet.dev/actors/docs/quickstart/backend/",
+	},
+	"agent-os": {
+		promptObject: "an agentOS project",
+		quickstartDescription: "Set up agentOS by hand, step by step.",
+		quickstartUrl: "https://rivet.dev/agentos/",
+	},
+	workflows: {
+		promptObject: "your first durable workflow",
+		quickstartDescription:
+			"Build a durable workflow project by hand, step by step.",
+		quickstartUrl: "https://rivet.dev/workflows/docs/quickstart/",
+	},
+	"dynamic-apps": {
+		promptObject: "a Dynamic Apps host and sample app",
+		quickstartDescription:
+			"Build a Dynamic Apps host and deploy a sample app by hand.",
+		quickstartUrl: "https://rivet.dev/dynamic-apps/docs/quickstart/",
+	},
+};
+
+export function getOnboardingTargetCopy(target: OnboardingTarget) {
+	return onboardingTargetCopy[target];
+}
+
+type ComputePromptOptions = {
+	cloudToken: string;
+	publishableToken: string;
+	namespace: string;
+	apiUrl: string;
+	cloudApiUrl: string;
+	rivetRunUrl: string;
+	target?: OnboardingTarget;
+};
+
+function getDynamicAppsComputeAddendum({
+	cloudToken,
+	namespace,
+	rivetRunUrl,
+}: Pick<ComputePromptOptions, "cloudToken" | "namespace" | "rivetRunUrl">) {
+	return `# Dynamic Apps Compute Deployment Steps
+
+## Step 1: Follow the Dynamic Apps host architecture
+
+Read the Dynamic Apps quickstart and deployment guidance before changing the project:
+
+- https://rivet.dev/dynamic-apps/docs/quickstart/
+- https://rivet.dev/dynamic-apps/docs/deploy/
+- https://rivet.dev/dynamic-apps/docs/connect/
+
+The host is a normal Hono server. Mount the private Rivet callback with \`appsRouter.fetch\`, route deployed applications under \`/apps\`, and call \`deployApp()\` only from trusted server-side code. Generated applications default-export a Fetch handler; they must not call \`serve()\`, \`listen()\`, or \`registry.start()\`.
+
+## Step 2: Create a production Dockerfile
+
+If the project does not already have a Dockerfile, add one that installs dependencies, builds the host, exposes port 3000, and starts the Hono server. Adjust the package manager, build output, and entrypoint to match the project:
+
+\`\`\`dockerfile
+FROM node:24-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build --if-present
+
+EXPOSE 3000
+
+CMD ["node", "dist/server.js"]
+\`\`\`
+
+If the project does not already have a \`.dockerignore\`, create one that excludes \`node_modules/\`, \`dist/\`, \`.env\`, and \`.git/\`.
+
+## Step 3: Deploy the Dynamic Apps host
+
+Deploy to the \`${namespace}\` namespace and pass the Cloud API token to the running host. \`deployApp()\` needs \`RIVET_CLOUD_TOKEN\` to create and manage the isolated namespace for each generated app:
+
+\`\`\`bash
+npx @rivetkit/cli deploy --token "${cloudToken}" --namespace ${namespace} --env PORT=3000 --env RIVET_CLOUD_TOKEN="${cloudToken}"
+\`\`\`
+
+Keep the token server-side. Do not expose it to generated app code or browser bundles.
+
+## Step 4: Verify the host and a deployed app
+
+1. Confirm the host is live at \`${rivetRunUrl}\`.
+2. Deploy a small generated app with \`deployApp({ appId: "onboarding", files })\`.
+3. Open \`${rivetRunUrl}apps/onboarding/\` and verify the app responds successfully. Preserve the trailing slash.
+4. If deployment fails, run \`npx @rivetkit/cli logs\` and fix the host before retrying.
+
+Report the host URL, app URL, commands run, and any remaining setup the user must complete.`;
+}
+
+function getWorkflowsComputeAddendum({
+	cloudToken,
+	namespace,
+	rivetRunUrl,
+}: Pick<ComputePromptOptions, "cloudToken" | "namespace" | "rivetRunUrl">) {
+	return `# Rivet Workflows Compute Deployment Steps
+
+## Step 1: Preserve the Workflows application
+
+Read the Workflows quickstart before changing the project: https://rivet.dev/workflows/docs/quickstart/
+
+Keep the project's \`@rivet-dev/workflows\` workflow definitions, \`setup({ use: { ... } })\` registry, stable \`ctx.step(...)\` names, and existing workflow host entrypoint. External side effects and nondeterministic work must stay inside named steps so retries remain durable. Do not rewrite the project as a generic Rivet Actor example.
+
+## Step 2: Create a production Dockerfile
+
+\`npx @rivetkit/cli deploy\` builds the project from a \`Dockerfile\`. If the project does not already have one, add one that installs dependencies, builds the application, exposes port 3000, and starts the project's existing workflow host. Adjust the package manager, build output, and entrypoint to match the project:
+
+\`\`\`dockerfile
+FROM node:24-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build --if-present
+
+EXPOSE 3000
+
+CMD ["node", "dist/index.js"]
+\`\`\`
+
+If the project does not already have a \`.dockerignore\`, create one that excludes \`node_modules/\`, \`dist/\`, \`.env\`, and \`.git/\`.
+
+## Step 3: Deploy the workflow host
+
+Deploy to the \`${namespace}\` namespace:
+
+\`\`\`bash
+npx @rivetkit/cli deploy --token "${cloudToken}" --namespace ${namespace} --env PORT=3000
+\`\`\`
+
+The CLI caches the Cloud API token in \`~/.rivet/credentials\`, so later deploy and logs commands can omit \`--token\`. Keep the token out of source files and browser bundles.
+
+## Step 4: Verify the workflow end-to-end
+
+1. Confirm the workflow host is live with \`curl ${rivetRunUrl}api/rivet/health\` (expects a 200).
+2. Point the project's existing typed \`rivetkit/client\` client at \`${rivetRunUrl}api/rivet\`, then use \`getOrCreate\` with a workflow key.
+3. Invoke the workflow's real action or queue and confirm its expected state or named step result. Do not replace this with a generic actor creation check.
+4. If deployment or execution fails, run \`npx @rivetkit/cli logs\` and consult https://rivet.dev/workflows/docs/failure-and-recovery/ before retrying.
+
+Report the workflow host URL, command used, action or queue invoked, observed result, and any remaining setup the user must complete.`;
+}
+
 export function getComputeAddendum({
 	cloudToken,
 	publishableToken,
@@ -5,15 +172,26 @@ export function getComputeAddendum({
 	apiUrl,
 	cloudApiUrl,
 	rivetRunUrl,
-}: {
-	cloudToken: string;
-	publishableToken: string;
-	namespace: string;
-	apiUrl: string;
-	cloudApiUrl: string;
-	rivetRunUrl: string;
-}) {
+	target = "actor",
+}: ComputePromptOptions) {
+	if (target === "dynamic-apps") {
+		return getDynamicAppsComputeAddendum({
+			cloudToken,
+			namespace,
+			rivetRunUrl,
+		});
+	}
+
+	if (target === "workflows") {
+		return getWorkflowsComputeAddendum({
+			cloudToken,
+			namespace,
+			rivetRunUrl,
+		});
+	}
+
 	return `# Compute Deployment Steps
+
 ## Step 1: Load the RivetKit docs
 
 Read https://rivet.dev/llms.txt to understand how RivetKit works (actors, state, events, actions, connections, clients).
@@ -152,6 +330,7 @@ export function getAgentInstructionsPrompt({
 	providerDocUrl,
 	namespace,
 	cliDeploy,
+	target = "actor",
 }: {
 	providerStr: string;
 	publishableToken: string;
@@ -163,6 +342,7 @@ export function getAgentInstructionsPrompt({
 	// Whether this deploy uses `@rivetkit/cli deploy` (Rivet Compute only). Only
 	// then does the `--namespace` flag apply; other providers deploy differently.
 	cliDeploy?: boolean;
+	target?: OnboardingTarget;
 }) {
 	const poolLine =
 		runnerName !== "default" ? `\n  RIVET_POOL=${runnerName}` : "";
@@ -172,6 +352,9 @@ export function getAgentInstructionsPrompt({
 					? `, and pass \`--namespace ${namespace}\` with the deploy command`
 					: ""
 			}. Do not deploy to or modify any other namespace (for example the default \`production\` namespace).\n\n`
+		: "";
+	const dynamicAppsNamespaceNote = namespace
+		? `> **Host deployment:** Deploy the Dynamic Apps host itself to the \`${namespace}\` namespace. \`deployApp()\` is expected to create a separate isolated namespace for each generated app.\n\n`
 		: "";
 	const docLine = providerDocUrl
 		? `Review the deploy guide for ${providerStr}: ${providerDocUrl}`
@@ -198,6 +381,76 @@ ${deployEnv}
 	const integrateVerify = serverless
 		? `Verify with \`/api/rivet/metadata\` and the inspector API (https://rivet.dev/docs/actors/debugging).`
 		: `Verify the runner appears under Runners in the Rivet dashboard, then drive actors via the inspector API (https://rivet.dev/docs/actors/debugging).`;
+
+	if (target === "workflows") {
+		return `# Rivet Workflows Setup & Deploy
+
+${namespaceNote}Read the Workflows quickstart before changing the project: https://rivet.dev/workflows/docs/quickstart/
+
+Use \`@rivet-dev/workflows\` for durable, replayable multi-step operations. Keep external side effects inside named \`ctx.step(...)\` calls, use stable and unique step names, and model long-running work with workflow loops and queues where appropriate.
+
+## Step 1: Understand the project
+
+Determine whether the user wants a new workflow project or wants to add a workflow to the existing application. Inspect the current package manager, runtime, entrypoint, and deployment setup before editing.
+
+## Step 2: Build the workflow
+
+- Install \`@rivet-dev/workflows\` with the project's package manager.
+- Define the workflow with \`workflow(...)\` and export a registry with \`setup({ use: { ... } })\`.
+- Put retryable side effects in \`ctx.step("stable-step-name", ...)\` calls.
+- Expose only the actions, queues, and state needed by the caller.
+- Use \`rivetkit/client\` to create a typed client and exercise the workflow.
+- Follow the current quickstart instead of substituting a generic Rivet Actor implementation.
+
+## Step 3: Verify locally
+
+Run the project, start one workflow instance, and verify its steps complete in order. Confirm the resulting state or action response, and exercise a queue when the workflow uses one. Report the commands run and the observed result.
+
+## Step 4: Deploy
+
+${deploySteps}
+
+After deployment, run the same workflow operation against the deployed environment and confirm the expected state. For troubleshooting, use https://rivet.dev/actors/docs/troubleshooting/ and include the workflow name, failed step name, runtime, and package version in the report.`;
+	}
+
+	if (target === "dynamic-apps") {
+		return `# Dynamic Apps Setup & Deploy
+
+${dynamicAppsNamespaceNote}Read the current Dynamic Apps documentation before changing the project:
+
+- Quickstart: https://rivet.dev/dynamic-apps/docs/quickstart/
+- App deployment: https://rivet.dev/dynamic-apps/docs/deploy/
+- Rivet connection: https://rivet.dev/dynamic-apps/docs/connect/
+
+## Step 1: Understand the host
+
+Determine whether the user wants a new Dynamic Apps host or wants to integrate Dynamic Apps into the existing server. Inspect the package manager, runtime, HTTP framework, authentication, and existing routes first.
+
+## Step 2: Build the host
+
+- Use Node.js 22 or newer.
+- Install \`@rivet-dev/dynamic-apps\`, \`@hono/node-server\`, and \`hono\`.
+- Create a Hono host that mounts the private Rivet callback with \`server.all("/api/rivet/*", (c) => appsRouter.fetch(c.req.raw))\`.
+- Mount deployed applications with \`server.route("/apps", appsRouter)\` and serve the host on port 3000.
+- Keep authentication and trusted control-plane routes in the host, outside generated application code.
+
+Generated applications default-export a Fetch handler. They do not own an HTTP listener and must not call \`serve()\`, \`listen()\`, or \`registry.start()\`.
+
+## Step 3: Generate and deploy an app
+
+Use the supported Dynamic Apps skills when generating the file tree, then call \`deployApp({ appId, files })\` from trusted server-side code. For Rivet Cloud, keep \`RIVET_CLOUD_TOKEN\` server-side so \`deployApp()\` can create each app's isolated namespace.
+
+Run the host, deploy a small app, and open \`http://localhost:3000/apps/<appId>/\`. Preserve the trailing slash and verify the generated app responds successfully. Do not replace this check with raw Rivet Actor creation or inspector calls.
+
+## Step 4: Deploy the host to ${providerStr}
+
+1. ${docLine}
+2. Deploy the Hono host as an HTTP service on port 3000, preserving both \`/api/rivet/*\` and \`/apps/*\` routes.
+3. Set \`RIVET_CLOUD_TOKEN\` as a server-side secret when \`deployApp()\` will provision Rivet Cloud namespaces. For self-hosting, use the host's existing Rivet admin configuration instead.
+4. Deploy a test app and verify it at the public \`/apps/<appId>/\` URL.
+
+Report the host URL, deployed app URL, commands run, and any remaining secret or DNS configuration. Never expose management tokens to generated apps or browser code.`;
+	}
 
 	return `# RivetKit Setup & Deploy
 

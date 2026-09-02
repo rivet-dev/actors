@@ -10,6 +10,7 @@ import {
 import {
 	getAgentInstructionsPrompt,
 	getComputeAddendum,
+	type OnboardingTarget,
 } from "@/content/agent-prompts";
 import { cloudEnv, getRivetRunUrl } from "@/lib/env";
 import { usePublishableToken } from "@/queries/accessors";
@@ -40,11 +41,13 @@ export function useAgentInstructionsCode({
 	runnerName = "default",
 	endpoint,
 	mode,
+	target = "actor",
 }: {
 	provider?: Provider;
 	runnerName?: string;
 	endpoint?: string;
 	mode?: "serverless" | "serverful";
+	target?: OnboardingTarget;
 } = {}) {
 	const providerDetails = provider
 		? deployOptions.find((p) => p.name === provider)
@@ -75,14 +78,18 @@ export function useAgentInstructionsCode({
 		// The `--namespace` deploy flag only applies to Rivet Compute's
 		// `@rivetkit/cli deploy` flow.
 		cliDeploy: provider === "rivet",
+		target,
 	});
 }
 
 // Builds the Rivet Compute copy-prompt (generic instructions + compute addendum)
 // and exposes the cloud token and namespace so callers can also render a manual
 // `@rivetkit/cli deploy` command.
-export function useComputeInstructionsCode() {
-	const agentInstructions = useAgentInstructionsCode({ provider: "rivet" });
+export function useComputeInstructionsCode(target: OnboardingTarget = "actor") {
+	const agentInstructions = useAgentInstructionsCode({
+		provider: "rivet",
+		target,
+	});
 	const dataProvider = useCloudNamespaceDataProvider();
 	const { data: cloudToken } = useSuspenseQuery(
 		dataProvider.createApiTokenQueryOptions({ name: "Onboarding" }),
@@ -97,6 +104,7 @@ export function useComputeInstructionsCode() {
 		apiUrl: cloudEnv().VITE_APP_API_URL,
 		cloudApiUrl: cloudEnv().VITE_APP_CLOUD_API_URL,
 		rivetRunUrl: getRivetRunUrl(namespace),
+		target,
 	});
 
 	return {
@@ -143,7 +151,7 @@ export function AgentPromptBanner({
 						: "Copied to clipboard",
 				);
 			}}
-			className="relative w-full flex items-center justify-between gap-4 rounded-lg px-4 py-4 border border-primary group cursor-pointer text-left"
+			className="relative w-full flex flex-col items-stretch justify-between gap-4 rounded-lg px-4 py-4 border border-primary group cursor-pointer text-left sm:flex-row sm:items-center"
 		>
 			<Badge className="absolute -top-2.5 left-4 z-10 bg-background">
 				Recommended
@@ -158,7 +166,11 @@ export function AgentPromptBanner({
 					</p>
 				) : null}
 			</div>
-			<Button asChild variant="outline" className="shrink-0">
+			<Button
+				asChild
+				variant="outline"
+				className="w-full shrink-0 sm:w-auto"
+			>
 				<div>
 					<Icon icon={faCopy} className="me-2 text-primary" />
 					Copy prompt

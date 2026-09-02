@@ -297,20 +297,19 @@ function Content<const Steps extends Step[]>({
 			: {}),
 	});
 
+	// Step visibility can depend on form values. Keep the visibility provider
+	// subscribed to the live form state so sequential changes (including
+	// dirty-to-dirty changes) update progress and the visible step sequence.
+	const liveValues = (useWatch({ control: form.control }) ?? {}) as Record<
+		string,
+		unknown
+	>;
+
 	const ref = useRef<z.infer<JoinStepSchemas<Steps>> | null>({});
 	const formRef = useRef<HTMLFormElement>(null);
 
-	const getValues = () => {
-		const allLive = form.getValues() as Record<string, unknown>;
-		const dirtyFields = form.formState.dirtyFields as Record<
-			string,
-			unknown
-		>;
-		const live = Object.fromEntries(
-			Object.entries(allLive).filter(([k]) => k in dirtyFields),
-		);
-		return { ...ref.current, ...live } as Record<string, unknown>;
-	};
+	const getValues = () =>
+		({ ...ref.current, ...liveValues }) as Record<string, unknown>;
 
 	const isLastVisible = (currentId: string) =>
 		getNextVisibleStepId(allSteps as Step[], currentId, getValues()) ===

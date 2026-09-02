@@ -1,5 +1,4 @@
 import {
-	faActors,
 	faArrowRight,
 	faCheck,
 	faChevronDown,
@@ -33,10 +32,15 @@ import {
 	useCloudNamespaceDataProvider,
 	useEngineCompatDataProvider,
 } from "@/components/actors";
+import {
+	getOnboardingTargetCopy,
+	type OnboardingTarget,
+} from "@/content/agent-prompts";
 import { defineStepper } from "@/components/ui/stepper";
 import { deriveProviderFromMetadata } from "@/lib/data";
 import { engineEnv } from "@/lib/env";
 import { features } from "@/lib/features";
+import { publicUrl } from "@/lib/utils";
 import { queryClient } from "@/queries/global";
 import { cn } from "../components/lib/utils";
 import { Badge } from "../components/ui/badge";
@@ -88,13 +92,15 @@ const stepper = defineStepper(
 			values.template === "agent-os"
 				? "What are you building?"
 				: "Run locally",
-		description: "Get your first Rivet Actor running on your machine.",
+		description: "Choose a product and get it running on your machine.",
 		next: "Continue",
 		// `template` is carried in the step schema so the stepper accumulates it
 		// into its running values. The agentOS steps below gate on it via
 		// isVisible, so it must survive navigation past this step.
 		schema: z.object({
-			template: z.enum(["actor", "agent-os"]).optional(),
+			template: z
+				.enum(["actor", "agent-os", "workflows", "dynamic-apps"])
+				.optional(),
 		}),
 		group: "local",
 	},
@@ -236,7 +242,7 @@ export function GettingStarted({
 			: defaultRuntimeModeForProvider(defaultProvider)) as
 			| "serverless"
 			| "serverful",
-		template: "actor" as "actor" | "agent-os",
+		template: "actor" as OnboardingTarget,
 		agent: DEFAULT_AGENT,
 		packages: DEFAULT_PACKAGES,
 		sandbox: { enabled: false, provider: DEFAULT_SANDBOX_PROVIDER } as {
@@ -555,8 +561,13 @@ function RivetDeploy() {
 	const { data: cloudToken } = useSuspenseQuery(
 		dataProvider.createApiTokenQueryOptions({ name: "Onboarding" }),
 	);
-	const deployCommand = `npx @rivetkit/cli deploy --token ${cloudToken ?? "<RIVET_CLOUD_TOKEN>"}`;
-	const isAgentOs = useWatch({ name: "template" }) === "agent-os";
+	const target = useOnboardingTarget();
+	const token = cloudToken ?? "<RIVET_CLOUD_TOKEN>";
+	const deployCommand =
+		target === "dynamic-apps"
+			? `npx @rivetkit/cli deploy --token "${token}" --namespace ${dataProvider.engineNamespace} --env PORT=3000 --env RIVET_CLOUD_TOKEN="${token}"`
+			: `npx @rivetkit/cli deploy --token "${token}"`;
+	const isAgentOs = target === "agent-os";
 	return (
 		<div className="flex flex-col gap-6">
 			{isAgentOs ? <AgentOsKeyNotice /> : null}
@@ -565,8 +576,11 @@ function RivetDeploy() {
 			<div>
 				<p className="text-sm text-muted-foreground mb-3">
 					Run this from your project root. The CLI builds and pushes
-					your image and provisions Rivet Compute. The token is saved
-					to{" "}
+					your image and provisions Rivet Compute.
+					{target === "dynamic-apps"
+						? " The Cloud API token is also passed to the Dynamic Apps host so it can provision an isolated namespace for each app."
+						: ""}{" "}
+					The token is saved to{" "}
 					<code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">
 						~/.rivet/credentials
 					</code>{" "}
@@ -697,37 +711,15 @@ function AgentOsKeyNotice() {
 	);
 }
 
-// agentOS brand mark (rounded square + "OS") drawn in currentColor so it adapts
-// to the theme, unlike the white-only marketing SVG.
-function AgentOsLogo({ className }: { className?: string }) {
+function ProductMark({ fileName }: { fileName: string }) {
 	return (
-		<svg
-			viewBox="0 0 32 32"
-			fill="none"
-			className={className}
+		<img
+			src={publicUrl(`images/brand/${fileName}`)}
+			alt=""
 			aria-hidden="true"
-		>
-			<rect
-				x="2.75"
-				y="2.75"
-				width="26.5"
-				height="26.5"
-				rx="8"
-				stroke="currentColor"
-				strokeWidth="2.5"
-			/>
-			<text
-				x="16"
-				y="20.5"
-				textAnchor="middle"
-				fontSize="11"
-				fontWeight="700"
-				fontFamily="inherit"
-				fill="currentColor"
-			>
-				OS
-			</text>
-		</svg>
+			className="size-8"
+			draggable={false}
+		/>
 	);
 }
 
@@ -749,17 +741,16 @@ function BuildTargetCard({
 	return (
 		<button
 			type="button"
+			aria-pressed={isSelected}
 			onClick={onSelect}
 			className={cn(
-				"flex items-start gap-3 rounded-lg border px-4 py-3 text-left transition-colors cursor-pointer",
+				"flex items-start gap-3 rounded-lg border px-4 py-3 text-left transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
 				isSelected
 					? "border-primary bg-primary/5"
 					: "border-border hover:border-muted-foreground/50",
 			)}
 		>
-			<span className="text-muted-foreground mt-0.5 shrink-0">
-				{icon}
-			</span>
+			<span className="mt-0.5 shrink-0">{icon}</span>
 			<div className="min-w-0">
 				<div className="flex items-center gap-2">
 					<p className="text-sm font-medium">{label}</p>
@@ -778,9 +769,8 @@ function BuildTargetCard({
 	);
 }
 
-// "What are you building?" selector shown atop the first step when the agentOS
-// feature flag is on. Picking agentOS reveals the agent/software/sandbox/handoff
-// steps (gated by `template === "agent-os"` via the stepper's isVisible).
+// "What are you building?" selector shown atop the first step. The common
+// products are available in every flavor; only the agentOS card is gated.
 function BuildTargetSelector() {
 	const { control, setValue } = useFormContext();
 	return (
@@ -790,12 +780,16 @@ function BuildTargetSelector() {
 			render={({ field }) => (
 				<div>
 					<p className="font-medium mb-2">What are you building?</p>
-					<div className="grid grid-cols-2 gap-2">
+					<div
+						role="group"
+						aria-label="What are you building?"
+						className="grid grid-cols-1 gap-2 sm:grid-cols-2"
+					>
 						<BuildTargetCard
-							icon={<Icon icon={faActors} className="!size-5" />}
+							icon={<ProductMark fileName="actors-mark.svg" />}
 							label="Rivet Actors"
-							description="Realtime, state, and multiplayer for any app"
-							isSelected={field.value !== "agent-os"}
+							description="The primitive for agent orchestration, real-time, and per-tenant databases"
+							isSelected={field.value === "actor"}
 							onSelect={() =>
 								setValue("template", "actor", {
 									shouldDirty: true,
@@ -804,14 +798,47 @@ function BuildTargetSelector() {
 								})
 							}
 						/>
+						{features.agentOs ? (
+							<BuildTargetCard
+								icon={
+									<ProductMark fileName="agentos-mark.svg" />
+								}
+								label="agentOS"
+								badge="Beta"
+								description="Hand every agent a computer of its own"
+								isSelected={field.value === "agent-os"}
+								onSelect={() =>
+									setValue("template", "agent-os", {
+										shouldDirty: true,
+										shouldTouch: true,
+										shouldValidate: true,
+									})
+								}
+							/>
+						) : null}
 						<BuildTargetCard
-							icon={<AgentOsLogo className="size-5" />}
-							label="agentOS"
-							badge="Beta"
-							description="An open-source OS for agents. Runs in-process with ~6 ms cold starts."
-							isSelected={field.value === "agent-os"}
+							icon={<ProductMark fileName="workflows-mark.svg" />}
+							label="Workflows"
+							description="Write multi-step operations that survive restarts"
+							isSelected={field.value === "workflows"}
 							onSelect={() =>
-								setValue("template", "agent-os", {
+								setValue("template", "workflows", {
+									shouldDirty: true,
+									shouldTouch: true,
+									shouldValidate: true,
+								})
+							}
+						/>
+						<BuildTargetCard
+							icon={
+								<ProductMark fileName="dynamic-apps-mark.svg" />
+							}
+							label="Dynamic Apps"
+							badge="Preview"
+							description="Deploy AI-generated apps for your users"
+							isSelected={field.value === "dynamic-apps"}
+							onSelect={() =>
+								setValue("template", "dynamic-apps", {
 									shouldDirty: true,
 									shouldTouch: true,
 									shouldValidate: true,
@@ -825,32 +852,44 @@ function BuildTargetSelector() {
 	);
 }
 
+function useOnboardingTarget(): OnboardingTarget {
+	return (
+		(useWatch({ name: "template" }) as OnboardingTarget | undefined) ??
+		"actor"
+	);
+}
+
 function RunLocallyStep() {
-	const isAgentOs = useWatch({ name: "template" }) === "agent-os";
+	const target = useOnboardingTarget();
+	const isAgentOs = target === "agent-os";
+	const copy = getOnboardingTargetCopy(target);
 	return (
 		<div className="flex flex-col gap-6">
-			{features.agentOs ? <BuildTargetSelector /> : null}
+			<BuildTargetSelector />
 			{isAgentOs ? null : (
 				<>
 					{features.compute ? (
-						<RunLocallyComputeBanner />
+						<RunLocallyComputeBanner target={target} />
 					) : (
-						<RunLocallyGenericBanner />
+						<RunLocallyGenericBanner target={target} />
 					)}
 					<OrDivider label="or do it yourself" />
-					<div className="w-full flex items-center justify-between gap-4 rounded-lg px-4 py-4 border border-border">
+					<div className="w-full flex flex-col items-stretch justify-between gap-4 rounded-lg px-4 py-4 border border-border sm:flex-row sm:items-center">
 						<div className="min-w-0">
 							<p className="font-medium mb-1">
 								Follow the quickstart guide
 							</p>
 							<p className="text-sm text-muted-foreground">
-								Build a Rivet Actor project by hand, step by
-								step.
+								{copy.quickstartDescription}
 							</p>
 						</div>
-						<Button variant="outline" asChild className="shrink-0">
+						<Button
+							variant="outline"
+							asChild
+							className="w-full shrink-0 sm:w-auto"
+						>
 							<a
-								href="https://rivet.dev/docs/actors/quickstart/"
+								href={copy.quickstartUrl}
 								target="_blank"
 								rel="noopener noreferrer"
 							>
@@ -939,25 +978,25 @@ function AgentOsHandoff() {
 // Compute is the default deploy target, so the run-locally prompt ships the
 // compute deployment addendum alongside the onboarding instructions. Copying it
 // gives the agent everything it needs to scaffold, run, and deploy in one paste.
-function RunLocallyComputeBanner() {
-	const { code } = useComputeInstructionsCode();
+function RunLocallyComputeBanner({ target }: { target: OnboardingTarget }) {
+	const { code } = useComputeInstructionsCode(target);
 	return (
 		<AgentPromptBanner
 			code={code}
 			containsSecret
 			title="Use your coding agent"
-			description="Copy a prompt that scaffolds, runs, and deploys your first Actor for you."
+			description={`Copy a prompt that scaffolds, runs, and deploys ${getOnboardingTargetCopy(target).promptObject} for you.`}
 		/>
 	);
 }
 
-function RunLocallyGenericBanner() {
-	const code = useAgentInstructionsCode();
+function RunLocallyGenericBanner({ target }: { target: OnboardingTarget }) {
+	const code = useAgentInstructionsCode({ target });
 	return (
 		<AgentPromptBanner
 			code={code}
 			title="Use your coding agent"
-			description="Copy a prompt that scaffolds and runs your first Actor for you."
+			description={`Copy a prompt that scaffolds and runs ${getOnboardingTargetCopy(target).promptObject} for you.`}
 		/>
 	);
 }
@@ -971,22 +1010,40 @@ function StepNumber({ n }: { n: number }) {
 }
 
 function CopyAgentInstructionsButton({ provider }: { provider?: Provider }) {
+	const target = useOnboardingTarget();
 	// The compute prompt reads cloud-namespace data; only available with compute.
 	if (provider === "rivet" && features.compute) {
-		return <ComputeCopyAgentInstructionsButton />;
+		return <ComputeCopyAgentInstructionsButton target={target} />;
 	}
-	return <GenericCopyAgentInstructionsButton provider={provider} />;
+	return (
+		<GenericCopyAgentInstructionsButton
+			provider={provider}
+			target={target}
+		/>
+	);
 }
 
-function ComputeCopyAgentInstructionsButton() {
-	const { code } = useComputeInstructionsCode();
-	return <AgentPromptBanner code={code} containsSecret />;
+function ComputeCopyAgentInstructionsButton({
+	target,
+}: {
+	target: OnboardingTarget;
+}) {
+	const { code } = useComputeInstructionsCode(target);
+	return (
+		<AgentPromptBanner
+			code={code}
+			containsSecret
+			description={`Have your coding agent deploy ${getOnboardingTargetCopy(target).promptObject} to Rivet Compute.`}
+		/>
+	);
 }
 
 function GenericCopyAgentInstructionsButton({
 	provider,
+	target,
 }: {
 	provider?: Provider;
+	target: OnboardingTarget;
 }) {
 	const endpoint = useEndpoint();
 	const runnerName = useWatch({ name: "runnerName" }) as string;
@@ -999,12 +1056,13 @@ function GenericCopyAgentInstructionsButton({
 		runnerName,
 		endpoint,
 		mode,
+		target,
 	});
 	return (
 		<AgentPromptBanner
 			code={code}
 			containsSecret
-			description={`Have your coding agent complete these steps to deploy to ${platformTitle(provider)}.`}
+			description={`Have your coding agent deploy ${getOnboardingTargetCopy(target).promptObject} to ${platformTitle(provider)}.`}
 		/>
 	);
 }
