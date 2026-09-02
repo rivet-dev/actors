@@ -87,11 +87,26 @@ describe("Registry constructor", () => {
 		expect(config.endpoint).toBe("http://127.0.0.1:7654");
 		expect(config.publicEndpoint).toBe("http://127.0.0.1:7654");
 
-		const serveConfig = await buildServeConfig(config);
+		const serveConfig = await buildServeConfig(config, "napi");
 
 		expect(serveConfig.endpoint).toBe("http://127.0.0.1:7654");
 		expect(serveConfig.engineHost).toBe("127.0.0.1");
 		expect(serveConfig.enginePort).toBe(7654);
+		expect(serveConfig.engineBinaryPath).toBe("/tmp/rivet-engine");
+	});
+
+	test("does not pass the native engine binary path to the wasm runtime", async () => {
+		const config = RegistryConfigSchema.parse({
+			use: {
+				test: testActor,
+			},
+			startEngine: false,
+			endpoint: "http://127.0.0.1:7654",
+		});
+
+		const serveConfig = await buildServeConfig(config, "wasm");
+
+		expect(serveConfig.engineBinaryPath).toBeUndefined();
 	});
 
 	test("uses the configured local engine port without an explicit spawn flag", () => {
