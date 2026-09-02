@@ -29,7 +29,7 @@ const stepper = defineStepper(
 		id: "step-1",
 		title: "Configure",
 		assist: false,
-		schema: ConnectServerlessForm.configurationSchema,
+		schema: ConnectServerlessForm.configurationStepSchema,
 	},
 	{
 		id: "step-2",
@@ -178,12 +178,13 @@ export const buildServerlessConfig = async (
 							headers,
 							maxRunners: 0,
 							slotsPerRunner: 1,
-							drainGracePeriod: values.drainGracePeriod,
+							drainGracePeriod: values.drainGracePeriod ?? 0,
 						}
 					: {
 							url: endpoint,
 							requestLifespan: values.requestLifespan,
 							headers,
+							drainGracePeriod: values.drainGracePeriod ?? 0,
 							maxRunners: values.maxRunners ?? 100_000,
 							slotsPerRunner: values.slotsPerRunner ?? 1,
 							runnersMargin: values.runnerMargin ?? 0,

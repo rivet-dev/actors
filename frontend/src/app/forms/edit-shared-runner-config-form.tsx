@@ -84,7 +84,12 @@ export const baseFormSchema = z.object({
 });
 
 export function validateRuntimeModeFields(
-	data: { mode?: RuntimeMode; url?: string },
+	data: {
+		mode?: RuntimeMode;
+		url?: string;
+		requestLifespan?: number;
+		drainGracePeriod?: number;
+	},
 	ctx: z.RefinementCtx,
 	pathPrefix: (string | number)[] = [],
 ) {
@@ -94,6 +99,24 @@ export function validateRuntimeModeFields(
 				path: [...pathPrefix, "url"],
 				code: z.ZodIssueCode.custom,
 				message: "Please enter a valid URL.",
+			});
+		}
+		if (
+			data.drainGracePeriod !== undefined &&
+			data.requestLifespan !== undefined &&
+			data.drainGracePeriod >= data.requestLifespan
+		) {
+			const message =
+				"Drain grace period must be less than the request lifespan.";
+			ctx.addIssue({
+				path: [...pathPrefix, "drainGracePeriod"],
+				code: z.ZodIssueCode.custom,
+				message,
+			});
+			ctx.addIssue({
+				path: [...pathPrefix, "requestLifespan"],
+				code: z.ZodIssueCode.custom,
+				message,
 			});
 		}
 	}

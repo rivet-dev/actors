@@ -46,6 +46,34 @@ export const configurationSchema = z.object({
 	runnerMargin: z.coerce.number().min(0).optional(),
 });
 
+export function validateDrainGracePeriod(
+	data: { requestLifespan?: number; drainGracePeriod?: number },
+	ctx: z.RefinementCtx,
+) {
+	if (
+		data.drainGracePeriod !== undefined &&
+		data.requestLifespan !== undefined &&
+		data.drainGracePeriod >= data.requestLifespan
+	) {
+		const message =
+			"Drain grace period must be less than the request lifespan.";
+		ctx.addIssue({
+			path: ["drainGracePeriod"],
+			code: z.ZodIssueCode.custom,
+			message,
+		});
+		ctx.addIssue({
+			path: ["requestLifespan"],
+			code: z.ZodIssueCode.custom,
+			message,
+		});
+	}
+}
+
+export const configurationStepSchema = configurationSchema.superRefine(
+	validateDrainGracePeriod,
+);
+
 export const deploymentSchema = z.object({
 	success: z.boolean().refine((val) => val, "Connection failed"),
 	endpoint: endpointSchema,
@@ -57,7 +85,7 @@ export const stepper = defineStepper(
 		title: "Configure",
 		assist: false,
 		next: "Next",
-		schema: configurationSchema,
+		schema: configurationStepSchema,
 	},
 	{
 		id: "step-2",

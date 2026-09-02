@@ -273,12 +273,13 @@ function SharedSettingsForm({
 						(existing as { metadata?: unknown }).metadata ??
 						sharedFallback;
 					if (mode === "serverless") {
+						const requestLifespan = values.requestLifespan ?? 300;
+						const drainGracePeriod = values.drainGracePeriod ?? 0;
 						const serverless: Rivet.RunnerConfigServerless =
 							isNewConfig
 								? {
 										url: values.url ?? "",
-										requestLifespan:
-											values.requestLifespan ?? 300,
+										requestLifespan,
 										headers: Object.fromEntries(
 											values.headers || [],
 										),
@@ -286,16 +287,15 @@ function SharedSettingsForm({
 										slotsPerRunner: 1,
 										maxConcurrentActors:
 											values.maxConcurrentActors,
-										drainGracePeriod:
-											values.drainGracePeriod,
+										drainGracePeriod,
 									}
 								: {
 										url: values.url ?? "",
-										requestLifespan:
-											values.requestLifespan ?? 300,
+										requestLifespan,
 										headers: Object.fromEntries(
 											values.headers || [],
 										),
+										drainGracePeriod,
 										maxRunners:
 											values.maxRunners ?? 100_000,
 										minRunners: values.minRunners ?? 0,
@@ -346,6 +346,7 @@ function SharedSettingsForm({
 				mode: detectedMode,
 				url: currentServerless.url,
 				requestLifespan: currentServerless.requestLifespan,
+				drainGracePeriod: currentServerless.drainGracePeriod,
 				headers: Object.entries(currentServerless.headers || {}).map(
 					([key, value]) => [key, value],
 				),
@@ -357,12 +358,8 @@ function SharedSettingsForm({
 				),
 				...(isNewConfig
 					? {
-							// eslint-disable-next-line @typescript-eslint/no-explicit-any
-							maxConcurrentActors: (currentServerless as any)
-								.maxConcurrentActors,
-							// eslint-disable-next-line @typescript-eslint/no-explicit-any
-							drainGracePeriod: (currentServerless as any)
-								.drainGracePeriod,
+							maxConcurrentActors:
+								currentServerless.maxConcurrentActors,
 							autoUpgrade:
 								currentDcConfig?.drainOnVersionUpgrade ?? false,
 						}
@@ -490,23 +487,24 @@ function DatacenterSettingsForm({
 						dcConfig;
 					if (mode === "serverless" || !mode) {
 						const isNew = dcHasProtocolVersion(existing);
+						const requestLifespan = rest.requestLifespan ?? 300;
+						const drainGracePeriod = rest.drainGracePeriod ?? 0;
 						const serverless: Rivet.RunnerConfigServerless = isNew
 							? {
 									url: rest.url ?? "",
-									requestLifespan:
-										rest.requestLifespan ?? 300,
+									requestLifespan,
 									headers: Object.fromEntries(headers || []),
 									maxRunners: 0,
 									slotsPerRunner: 1,
 									maxConcurrentActors:
 										rest.maxConcurrentActors,
-									drainGracePeriod: rest.drainGracePeriod,
+									drainGracePeriod,
 								}
 							: {
 									url: rest.url ?? "",
-									requestLifespan:
-										rest.requestLifespan ?? 300,
+									requestLifespan,
 									headers: Object.fromEntries(headers || []),
+									drainGracePeriod,
 									maxRunners: rest.maxRunners ?? 100_000,
 									minRunners: rest.minRunners ?? 0,
 									runnersMargin: rest.runnersMargin ?? 0,
