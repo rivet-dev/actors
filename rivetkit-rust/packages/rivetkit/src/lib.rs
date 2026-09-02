@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod action;
 pub mod actor;
 pub mod context;

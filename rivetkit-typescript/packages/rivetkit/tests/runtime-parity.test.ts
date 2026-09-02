@@ -449,6 +449,27 @@ async function invokePromotedStatus(
 
 describe("CoreRuntime NAPI and wasm parity", () => {
 	test.each([
+		"napi",
+		"wasm",
+	] as const)("%s forwards the configured action limit", (kind) => {
+		const runtimeCase = createRuntimeCase(kind);
+		const definition = actor({
+			options: { maxActions: 256 },
+			actions: { ping: () => "pong" },
+		});
+		const factory = buildNativeFactory(
+			runtimeCase.runtime,
+			registryConfig(definition),
+			definition,
+		) as unknown as FakeActorFactory;
+
+		expect(factory.config).toMatchObject({
+			maxActions: 256,
+			actions: [{ name: "ping" }],
+		});
+	});
+
+	test.each([
 		["napi", 42n, 42],
 		["wasm", 42n, 42],
 		["napi", 2n ** 53n + 1n, 2n ** 53n + 1n],

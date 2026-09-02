@@ -56,6 +56,12 @@ These limits affect actions that do not use `.connect()` and [low-level HTTP req
 | Max response body size | — | 20 MiB | Maximum size of HTTP response bodies. |
 | Request timeout | 60 seconds | — | Maximum time for an `onRequest` handler to complete. Defaults to `actionTimeout`; configure with `actionTimeout`. |
 
+### Actions
+
+| Name | Soft Limit | Hard Limit | Description |
+|------|------------|------------|-------------|
+| Max actions per actor | 128 | None | Maximum number of action handlers defined on one actor. Nested action groups count each leaf handler. Configurable via `maxActions`. |
+
 ### Networking
 
 | Name | Soft Limit | Hard Limit | Description |

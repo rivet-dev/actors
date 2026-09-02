@@ -18,6 +18,14 @@ describe("ActorOptionsSchema", () => {
 				.enableActorRuntimeSocket,
 		).toBe(true);
 	});
+
+	test("defaults the action limit to 128 and accepts overrides", () => {
+		expect(ActorOptionsSchema.parse({}).maxActions).toBe(128);
+		expect(ActorOptionsSchema.parse({ maxActions: 256 }).maxActions).toBe(
+			256,
+		);
+		expect(() => ActorOptionsSchema.parse({ maxActions: -1 })).toThrow();
+	});
 });
 
 describe("defineRunHandler", () => {

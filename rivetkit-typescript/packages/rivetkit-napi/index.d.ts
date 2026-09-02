@@ -119,6 +119,7 @@ export interface JsActorConfig {
   sleepGracePeriodMs?: number
   connectionLivenessTimeoutMs?: number
   connectionLivenessIntervalMs?: number
+  maxActions?: number
   maxQueueSize?: number
   maxSchedules?: number
   maxQueueMessageSize?: number

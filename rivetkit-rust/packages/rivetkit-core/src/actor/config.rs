@@ -17,6 +17,7 @@ const DEFAULT_SLEEP_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_SLEEP_GRACE_PERIOD: Duration = Duration::from_secs(15);
 const DEFAULT_CONNECTION_LIVENESS_TIMEOUT: Duration = Duration::from_millis(2500);
 const DEFAULT_CONNECTION_LIVENESS_INTERVAL: Duration = Duration::from_secs(5);
+pub const DEFAULT_MAX_ACTIONS: u32 = 128;
 const DEFAULT_MAX_QUEUE_SIZE: u32 = 1000;
 pub const DEFAULT_MAX_SCHEDULES: u32 = 1_000;
 const DEFAULT_MAX_QUEUE_MESSAGE_SIZE: u32 = 65_536;
@@ -171,6 +172,7 @@ pub struct ActorConfig {
 	pub sleep_grace_period_overridden: bool,
 	pub connection_liveness_timeout: Duration,
 	pub connection_liveness_interval: Duration,
+	pub max_actions: u32,
 	pub max_queue_size: u32,
 	pub max_schedules: u32,
 	pub max_queue_message_size: u32,
@@ -206,6 +208,7 @@ pub struct ActorConfigInput {
 	pub sleep_grace_period_ms: Option<u32>,
 	pub connection_liveness_timeout_ms: Option<u32>,
 	pub connection_liveness_interval_ms: Option<u32>,
+	pub max_actions: Option<u32>,
 	pub max_queue_size: Option<u32>,
 	pub max_schedules: Option<u32>,
 	pub max_queue_message_size: Option<u32>,
@@ -271,6 +274,9 @@ impl ActorConfig {
 		if let Some(value) = config.connection_liveness_interval_ms {
 			actor_config.connection_liveness_interval = duration_ms(value);
 		}
+		if let Some(value) = config.max_actions {
+			actor_config.max_actions = value;
+		}
 		if let Some(value) = config.max_queue_size {
 			actor_config.max_queue_size = value;
 		}
@@ -311,6 +317,12 @@ impl ActorConfig {
 	/// config so the actor never starts with garbage state.
 	pub fn validate(&self) -> anyhow::Result<()> {
 		crate::inspector::validate_inspector_tabs(&self.inspector_tabs)?;
+		anyhow::ensure!(
+			self.actions.len() <= self.max_actions as usize,
+			"actor defines {} actions, but maxActions is {}",
+			self.actions.len(),
+			self.max_actions,
+		);
 		anyhow::ensure!(
 			self.sqlite_profiling.baseline_sample_rate.is_finite()
 				&& (0.0..=1.0).contains(&self.sqlite_profiling.baseline_sample_rate),
@@ -357,6 +369,7 @@ impl Default for ActorConfig {
 			sleep_grace_period_overridden: false,
 			connection_liveness_timeout: DEFAULT_CONNECTION_LIVENESS_TIMEOUT,
 			connection_liveness_interval: DEFAULT_CONNECTION_LIVENESS_INTERVAL,
+			max_actions: DEFAULT_MAX_ACTIONS,
 			max_queue_size: DEFAULT_MAX_QUEUE_SIZE,
 			max_schedules: DEFAULT_MAX_SCHEDULES,
 			max_queue_message_size: DEFAULT_MAX_QUEUE_MESSAGE_SIZE,

@@ -11,6 +11,7 @@ use rivetkit_core::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+	action::ActionSet,
 	actor::Actor,
 	start::{Start, run_actor, wrap_start},
 };
@@ -213,11 +214,20 @@ where
 
 fn actor_config<A: Actor>(mut config: ActorConfig) -> ActorConfig {
 	config.has_database |= A::HAS_DATABASE;
+	config.actions = <A::Actions as ActionSet<A>>::entries()
+		.into_iter()
+		.map(|entry| rivetkit_core::ActionDefinition {
+			name: entry.name.to_owned(),
+		})
+		.collect();
 	// Internal storage (state, KV, queue) always uses SQLite, so without local
 	// SQLite compiled in every actor must route it through the engine.
 	if !cfg!(feature = "sqlite-local") {
 		config.remote_sqlite = true;
 	}
+	config
+		.validate()
+		.unwrap_or_else(|error| panic!("invalid actor config: {error:#}"));
 	config
 }
 

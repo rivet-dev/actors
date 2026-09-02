@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{actor::Actor, context::Ctx};
 
-pub const TUPLE_ARITY_MAX: usize = 16;
+pub const TUPLE_ARITY_MAX: usize = 128;
 pub(crate) type BoxActionFuture = Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send>>;
 
 pub trait Action: serde::Serialize + DeserializeOwned + Send + Sync + 'static {
@@ -155,26 +155,33 @@ macro_rules! impl_action_set {
 	};
 }
 
-impl_action_set!(A0);
-impl_action_set!(A0, A1);
-impl_action_set!(A0, A1, A2);
-impl_action_set!(A0, A1, A2, A3);
-impl_action_set!(A0, A1, A2, A3, A4);
-impl_action_set!(A0, A1, A2, A3, A4, A5);
-impl_action_set!(A0, A1, A2, A3, A4, A5, A6);
-impl_action_set!(A0, A1, A2, A3, A4, A5, A6, A7);
-impl_action_set!(A0, A1, A2, A3, A4, A5, A6, A7, A8);
-impl_action_set!(A0, A1, A2, A3, A4, A5, A6, A7, A8, A9);
-impl_action_set!(A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10);
-impl_action_set!(A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11);
-impl_action_set!(A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12);
-impl_action_set!(A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13);
-impl_action_set!(
-	A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14
-);
-impl_action_set!(
-	A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15
-);
+macro_rules! impl_action_sets {
+	(@accum [$($action:ident),*]) => {};
+	(@accum [$($action:ident),*] $next:ident $(, $rest:ident)*) => {
+		impl_action_set!($($action,)* $next);
+		impl_action_sets!(@accum [$($action,)* $next] $($rest),*);
+	};
+	($first:ident $(, $rest:ident)*) => {
+		impl_action_sets!(@accum [] $first $(, $rest)*);
+	};
+}
+
+macro_rules! with_action_type_params {
+	($callback:ident) => {
+		$callback!(
+			A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15, A16, A17, A18,
+			A19, A20, A21, A22, A23, A24, A25, A26, A27, A28, A29, A30, A31, A32, A33, A34, A35,
+			A36, A37, A38, A39, A40, A41, A42, A43, A44, A45, A46, A47, A48, A49, A50, A51, A52,
+			A53, A54, A55, A56, A57, A58, A59, A60, A61, A62, A63, A64, A65, A66, A67, A68, A69,
+			A70, A71, A72, A73, A74, A75, A76, A77, A78, A79, A80, A81, A82, A83, A84, A85, A86,
+			A87, A88, A89, A90, A91, A92, A93, A94, A95, A96, A97, A98, A99, A100, A101, A102,
+			A103, A104, A105, A106, A107, A108, A109, A110, A111, A112, A113, A114, A115, A116,
+			A117, A118, A119, A120, A121, A122, A123, A124, A125, A126, A127
+		);
+	};
+}
+
+with_action_type_params!(impl_action_sets);
 
 fn encode_cbor<T: Serialize>(value: &T, label: &str) -> Result<Vec<u8>> {
 	let mut encoded = Vec::new();
@@ -293,24 +300,17 @@ mod tests {
 			["first"]
 		);
 
-		type MaxActions = (
-			First,
-			First,
-			First,
-			First,
-			First,
-			First,
-			First,
-			First,
-			First,
-			First,
-			First,
-			First,
-			First,
-			First,
-			First,
-			First,
-		);
+		macro_rules! replace_with_first {
+			($_action:ident) => {
+				First
+			};
+		}
+		macro_rules! max_actions_type {
+			($($action:ident),+) => {
+				type MaxActions = ($(replace_with_first!($action),)+);
+			};
+		}
+		with_action_type_params!(max_actions_type);
 		let entries = <MaxActions as ActionSet<TestActor>>::entries();
 
 		assert_eq!(entries.len(), super::TUPLE_ARITY_MAX);

@@ -19,6 +19,8 @@ use serde::{
 
 use crate::{action, actor::Actor, context::ConnCtx, persist};
 
+const EVENT_SET_TUPLE_ARITY_MAX: usize = 16;
+
 pub trait Event: Serialize + DeserializeOwned + Send + Sync + 'static {
 	const NAME: &'static str;
 }
@@ -2051,7 +2053,7 @@ mod tests {
 		);
 		let entries = <MaxEvents as EventSet>::entries();
 
-		assert_eq!(entries.len(), action::TUPLE_ARITY_MAX);
+		assert_eq!(entries.len(), EVENT_SET_TUPLE_ARITY_MAX);
 		assert!(entries.iter().all(|entry| entry.name == "first"));
 	}
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- RivetKit actors now support up to 128 action handlers by default. Configure a different limit with `options.maxActions`.
+
 - `rivetkit` no longer exposes `ctx.sql` on actor contexts. Migrate raw SQLite calls to `ctx.db` from `rivetkit/db`, and keep Drizzle setup on the `rivetkit/db/drizzle` subpath.
 
   Migration example:

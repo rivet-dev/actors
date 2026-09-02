@@ -63,7 +63,7 @@
       "description": "Called for raw WebSocket connections to /actors/{name}/websocket/* endpoints."
     },
     "actions": {
-      "description": "Map of action name to handler function. Defaults to an empty object.",
+      "description": "Tree of action names or nested groups to handler functions. Nested paths use dot-separated low-level action names. Defaults to an empty object.",
       "type": "object",
       "propertyNames": {
         "type": "string"
@@ -71,7 +71,7 @@
       "additionalProperties": {}
     },
     "actionInputSchemas": {
-      "description": "Optional schema map for validating action argument tuples in native runtimes.",
+      "description": "Optional schemas for validating action argument tuples in native runtimes. May mirror nested action groups or use dot-separated low-level action names.",
       "type": "object",
       "propertyNames": {
         "type": "string"
@@ -108,6 +108,12 @@
         "icon": {
           "description": "Icon for the actor in the Inspector UI. Can be an emoji (e.g., '🚀') or FontAwesome icon name (e.g., 'rocket').",
           "type": "string"
+        },
+        "maxActions": {
+          "description": "Maximum number of action handlers that may be defined on this actor. Default: 128",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "enableActorRuntimeSocket": {
           "description": "Enables the experimental Actor Runtime Socket for this actor. Default: false",
@@ -172,6 +178,12 @@
         "maxQueueSize": {
           "description": "Maximum number of queue messages before rejecting new messages. Default: 1000",
           "type": "number"
+        },
+        "maxSchedules": {
+          "description": "Maximum pending one-shot and recurring schedules before rejecting new schedules. Default: 1000",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "maxQueueMessageSize": {
           "description": "Maximum size of each queue message in bytes. Default: 65536",
