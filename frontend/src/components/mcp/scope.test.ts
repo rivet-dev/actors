@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hostedUrl, type Scope } from "./mcp-scope";
+import { hostedUrl, type Scope } from "./scope";
 
 const BASE = "https://mcp.rivet.dev/mcp";
 const TARGET = {

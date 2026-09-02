@@ -329,10 +329,14 @@ function Content<const Steps extends Step[]>({
 			return onSubmit?.({ values: ref.current, form, stepper });
 		}
 		await onPartialSubmit?.({ values: ref.current, form, stepper });
+		// `liveValues` is the previous render's useWatch snapshot, so it still
+		// holds the pre-submit value for anything just changed. Let the
+		// accumulated values win here or a step gated on a field submitted by
+		// this step resolves its visibility against the stale choice.
 		const nextId = getNextVisibleStepId(
 			allSteps as Step[],
 			stepper.current.id,
-			getValues(),
+			{ ...getValues(), ...ref.current },
 		);
 		if (nextId) stepper.goTo(nextId as Parameters<typeof stepper.goTo>[0]);
 		form.reset(undefined, {

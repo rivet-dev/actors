@@ -1,18 +1,26 @@
 import { faCopy, Icon } from "@rivet-gg/icons";
 import { deployOptions, type Provider } from "@rivetkit/shared-data";
 import { useSuspenseQuery } from "@tanstack/react-query";
+import { useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { Badge, Button, CodeFrame, CodePreview } from "@/components";
+import { Badge, Button, CodeFrame, CodePreview, getConfig } from "@/components";
 import {
 	useCloudNamespaceDataProvider,
 	useEngineCompatDataProvider,
 } from "@/components/actors";
 import {
+	hostedMcpCommand,
+	localMcpCommand,
+} from "@/components/mcp/client-tabs";
+import { type HostedTarget, hostedUrl } from "@/components/mcp/scope";
+import {
 	getAgentInstructionsPrompt,
 	getComputeAddendum,
+	type McpSetup,
 	type OnboardingTarget,
 } from "@/content/agent-prompts";
-import { cloudEnv, getRivetRunUrl } from "@/lib/env";
+import { cloudEnv, getMcpUrl, getRivetRunUrl } from "@/lib/env";
+import { features } from "@/lib/features";
 import { usePublishableToken } from "@/queries/accessors";
 import { useRivetDsn } from "./env-variables";
 
@@ -65,6 +73,7 @@ export function useAgentInstructionsCode({
 		(mode ?? defaultRuntimeModeForProvider(provider)) === "serverless";
 	const publishableToken = useRivetDsn({ kind: "publishable", endpoint });
 	const secretToken = useRivetDsn({ kind: "secret", endpoint });
+	const mcp = useMcpSetup();
 	const namespace = useEngineCompatDataProvider().engineNamespace;
 
 	return getAgentInstructionsPrompt({
@@ -79,7 +88,45 @@ export function useAgentInstructionsCode({
 		// `@rivetkit/cli deploy` flow.
 		cliDeploy: provider === "rivet",
 		target,
+		mcp,
 	});
+}
+
+// The MCP setup the copy-prompt should instruct the agent to perform. The hosted
+// connection needs the user to approve an OAuth window, so the agent has to hand
+// that step back; the local stdio server it can wire up itself.
+function useMcpSetup(): McpSetup | undefined {
+	const params = useParams({ strict: false }) as Partial<HostedTarget>;
+	const dataProvider = useEngineCompatDataProvider();
+
+	if (!features.mcp) return undefined;
+
+	if (features.platform) {
+		if (!params.organization || !params.project || !params.namespace) {
+			return undefined;
+		}
+		const url = hostedUrl(
+			getMcpUrl(),
+			{
+				organization: params.organization,
+				project: params.project,
+				namespace: params.namespace,
+			},
+			"namespace",
+		);
+		return {
+			command: hostedMcpCommand(url),
+			requiresUserApproval: true,
+		};
+	}
+
+	return {
+		command: localMcpCommand(
+			getConfig().apiUrl,
+			dataProvider.engineNamespace,
+		),
+		requiresUserApproval: false,
+	};
 }
 
 // Builds the Rivet Compute copy-prompt (generic instructions + compute addendum)
@@ -96,6 +143,7 @@ export function useComputeInstructionsCode(target: OnboardingTarget = "actor") {
 	);
 	const publishableRawToken = usePublishableToken();
 	const namespace = dataProvider.engineNamespace;
+	const mcp = useMcpSetup();
 
 	const computeAddendum = getComputeAddendum({
 		cloudToken,
@@ -105,6 +153,7 @@ export function useComputeInstructionsCode(target: OnboardingTarget = "actor") {
 		cloudApiUrl: cloudEnv().VITE_APP_CLOUD_API_URL,
 		rivetRunUrl: getRivetRunUrl(namespace),
 		target,
+		mcp,
 	});
 
 	return {

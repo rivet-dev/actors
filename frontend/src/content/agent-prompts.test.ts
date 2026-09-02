@@ -27,7 +27,7 @@ const computePromptOptions = {
 
 describe("onboarding product prompts", () => {
 	it.each([
-		["actor", "https://rivet.dev/actors/docs/quickstart/backend/"],
+		["actor", "https://rivet.dev/docs/actors/quickstart/backend"],
 		["workflows", "https://rivet.dev/workflows/docs/quickstart/"],
 		["dynamic-apps", "https://rivet.dev/dynamic-apps/docs/quickstart/"],
 	] as const)("selects the %s quickstart", (target, expectedUrl) => {
@@ -128,5 +128,74 @@ describe("onboarding product prompts", () => {
 		expect(prompt).not.toContain("/actors?namespace=");
 		expect(prompt).not.toContain("/gateway/<ACTOR_ID>/health");
 		expect(prompt).not.toContain("Verify actors work end-to-end");
+	});
+	it.each([
+		"actor",
+		"workflows",
+		"dynamic-apps",
+	] as const)("includes the MCP connection section for %s when MCP is available", (target) => {
+		const prompt = getComputeAddendum({
+			...computePromptOptions,
+			target,
+			mcp: {
+				command:
+					'claude mcp add --transport http rivet "https://mcp.rivet.dev/mcp?organization=acme"',
+				requiresUserApproval: true,
+			},
+		});
+
+		expect(prompt).toContain("## Connect the Rivet MCP server");
+		expect(prompt).toContain(
+			'claude mcp add --transport http rivet "https://mcp.rivet.dev/mcp?organization=acme"',
+		);
+		expect(prompt).toContain("Ask the user to run this");
+	});
+
+	it("tells the agent to run the local MCP server itself", () => {
+		const prompt = getComputeAddendum({
+			...computePromptOptions,
+			mcp: {
+				command: "claude mcp add rivet -- npx -y @rivet-dev/mcp",
+				requiresUserApproval: false,
+			},
+		});
+
+		expect(prompt).toContain("Run this in the project root");
+		expect(prompt).not.toContain("Ask the user to run this");
+	});
+
+	// Mirrors how `useComputeInstructionsCode` concatenates the two prompts.
+	const composeComputePrompt = (
+		target: "actor" | "workflows" | "dynamic-apps",
+	) =>
+		`${getAgentInstructionsPrompt({ ...agentPromptOptions, target })}\n\n---\n\n${getComputeAddendum({ ...computePromptOptions, target })}`;
+
+	it.each([
+		"actor",
+		"workflows",
+		"dynamic-apps",
+	] as const)("defers to the Compute addendum for the %s deploy step", (target) => {
+		const prompt = composeComputePrompt(target);
+
+		expect(prompt).toContain("Compute Deployment Steps");
+		expect(prompt).toContain(
+			"Follow that section instead of deploying by hand",
+		);
+		expect(prompt).not.toContain("Deploy the Hono host as an HTTP service");
+		expect(prompt).not.toContain("paste their deployment's public URL");
+	});
+
+	it.each([
+		"actor",
+		"workflows",
+		"dynamic-apps",
+	] as const)("omits the MCP connection section for %s when MCP is unavailable", (target) => {
+		const prompt = getComputeAddendum({
+			...computePromptOptions,
+			target,
+		});
+
+		expect(prompt).not.toContain("Connect the Rivet MCP server");
+		expect(prompt).not.toContain("claude mcp add");
 	});
 });
