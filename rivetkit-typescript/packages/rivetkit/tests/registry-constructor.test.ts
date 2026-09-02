@@ -108,6 +108,24 @@ describe("Registry constructor", () => {
 		expect(config.publicEndpoint).toBe("http://127.0.0.1:7655");
 	});
 
+	test("does not override the bind address for an explicit engine endpoint", async () => {
+		const config = RegistryConfigSchema.parse({
+			use: {
+				test: testActor,
+			},
+			startEngine: false,
+			endpoint: "http://127.0.0.1:7656",
+		});
+
+		const serveConfig = await buildServeConfig(config);
+
+		expect(new URL(serveConfig.endpoint).origin).toBe(
+			"http://127.0.0.1:7656",
+		);
+		expect(serveConfig.engineHost).toBeUndefined();
+		expect(serveConfig.enginePort).toBeUndefined();
+	});
+
 	test("keeps endpoint separate from spawned local engine config", () => {
 		const result = RegistryConfigSchema.safeParse({
 			use: {

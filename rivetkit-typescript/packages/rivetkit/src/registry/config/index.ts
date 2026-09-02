@@ -225,7 +225,7 @@ export const RegistryConfigSchema = z
 		engineHost: z
 			.string()
 			.optional()
-			.default(() => getRivetRunEngineHost() ?? ENGINE_HOST),
+			.transform((value) => value ?? getRivetRunEngineHost()),
 		/**
 		 * @experimental
 		 *
@@ -237,7 +237,7 @@ export const RegistryConfigSchema = z
 			.min(1)
 			.max(65_535)
 			.optional()
-			.default(() => getRivetRunEnginePort() ?? ENGINE_PORT),
+			.transform((value) => value ?? getRivetRunEnginePort()),
 		/** @experimental */
 		engineVersion: z
 			.string()
@@ -347,8 +347,8 @@ export const RegistryConfigSchema = z
 
 		// Flatten the endpoint and apply defaults for namespace/token.
 		const localEngineEndpoint = buildEngineEndpoint(
-			config.engineHost,
-			config.enginePort,
+			config.engineHost ?? ENGINE_HOST,
+			config.enginePort ?? ENGINE_PORT,
 		);
 		const endpoint = config.startEngine
 			? localEngineEndpoint
