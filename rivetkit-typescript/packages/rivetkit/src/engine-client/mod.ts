@@ -182,28 +182,59 @@ export class RemoteEngineControlClient implements EngineControlClient {
 			key,
 		});
 
-		const { actor, created } = await getOrCreateActor(this.#config, {
-			datacenter: region,
-			name,
-			key: serializeActorKey(key),
-			runner_name_selector: poolName ?? this.#config.poolName,
-			input: actorInput
-				? uint8ArrayToBase64(
-						encodeCborCompat(actorInput as JsonCompatValue),
-					)
-				: undefined,
-			crash_policy: crashPolicy ?? "sleep",
-		});
+		try {
+			const { actor, created } = await getOrCreateActor(this.#config, {
+				datacenter: region,
+				name,
+				key: serializeActorKey(key),
+				runner_name_selector: poolName ?? this.#config.poolName,
+				input: actorInput
+					? uint8ArrayToBase64(
+							encodeCborCompat(actorInput as JsonCompatValue),
+						)
+					: undefined,
+				crash_policy: crashPolicy ?? "sleep",
+			});
 
-		logger().info({
-			msg: "getOrCreateWithKey: actor ready",
-			actorId: actor.actor_id,
-			name,
-			key,
-			created,
-		});
+			logger().info({
+				msg: "getOrCreateWithKey: actor ready",
+				actorId: actor.actor_id,
+				name,
+				key,
+				created,
+			});
 
-		return apiActorToOutput(actor);
+			return apiActorToOutput(actor);
+		} catch (error) {
+			// The key is reserved in a different datacenter, which means the
+			// actor already exists there. get-by-key forwards to the reserved
+			// datacenter, so retry as a get to resolve the existing actor.
+			if (
+				error instanceof EngineApiError &&
+				error.group === "actor" &&
+				error.code === "key_reserved_in_different_datacenter"
+			) {
+				logger().warn({
+					msg: "getOrCreateWithKey: key reserved in different datacenter, retrying as get",
+					name,
+					key,
+				});
+
+				const response = await getActorByKey(this.#config, name, key);
+				const existing = response.actors[0];
+				if (!existing) throw error;
+
+				logger().info({
+					msg: "getOrCreateWithKey: resolved existing actor via get",
+					actorId: existing.actor_id,
+					name,
+					key,
+				});
+
+				return apiActorToOutput(existing);
+			}
+			throw error;
+		}
 	}
 
 	async createActor({
