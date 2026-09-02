@@ -2,10 +2,8 @@ use epoxy::ops::propose::{
 	CheckAndSetCommand, Command, CommandKind, ConsensusFailedReason, Proposal, ProposalResult,
 };
 use gas::prelude::*;
-use universaldb::prelude::FormalKey;
-use universaldb::utils::IsolationLevel::*;
 
-use crate::{errors, keys, workflows};
+use crate::{keys, workflows};
 
 #[derive(Debug)]
 pub struct Input {
@@ -15,32 +13,18 @@ pub struct Input {
 
 // Proposes the epoxy clear (setting the value to `None` is how a key is deleted through epoxy),
 // clears the local UDB mirror, then signals the webhook workflow to exit. `graceful_not_found`
-// tolerates the workflow already being gone (e.g. a repeat delete).
+// tolerates the workflow already being gone (e.g. a repeat delete), which also makes a repeat
+// delete a no-op rather than an error.
 //
-// The epoxy clear is a check-and-set against the local mirror's last-known value, same as
-// `upsert`'s write, so a concurrent update from another datacenter is detected instead of
-// silently deleted out from under it.
+// `expect_one_of` is always `vec![None]` because epoxy v2 does not implement value-based
+// compare-and-swap: it accepts only that value and then performs an unconditional set. Writes to
+// a webhook config are therefore last-write-wins across datacenters.
 #[operation]
 pub async fn webhook_config_delete(ctx: &OperationCtx, input: &Input) -> Result<()> {
 	let namespace_id = input.namespace_id;
 	let name = input.name.clone();
 
 	let global_key = keys::GlobalDataKey::new(namespace_id, name.clone());
-	let local_key = keys::DataKey::new(namespace_id, name.clone());
-
-	let existing = ctx
-		.udb()?
-		.txn("webhook_config_delete_read", |tx| {
-			let local_key = keys::DataKey::new(namespace_id, name.clone());
-			async move {
-				let tx = tx.with_subspace(namespace::keys::subspace());
-				tx.read_opt(&local_key, Serializable).await
-			}
-		})
-		.await?;
-	let expect = existing
-		.map(|config| local_key.serialize(config))
-		.transpose()?;
 
 	let propose_res = ctx
 		.op(epoxy::ops::propose::Input {
@@ -48,7 +32,7 @@ pub async fn webhook_config_delete(ctx: &OperationCtx, input: &Input) -> Result<
 				commands: vec![Command {
 					kind: CommandKind::CheckAndSetCommand(CheckAndSetCommand {
 						key: namespace::keys::subspace().pack(&global_key),
-						expect_one_of: vec![expect],
+						expect_one_of: vec![None],
 						new_value: None,
 					}),
 				}],
@@ -63,7 +47,7 @@ pub async fn webhook_config_delete(ctx: &OperationCtx, input: &Input) -> Result<
 		ProposalResult::Committed => {}
 		ProposalResult::ConsensusFailed { reason } => match reason {
 			ConsensusFailedReason::ExpectedValueDoesNotMatch { .. } => {
-				return Err(errors::Webhook::Conflict.build());
+				bail!("epoxy propose failed: unexpected value mismatch for an unconditional set");
 			}
 			ConsensusFailedReason::PreparePhaseConsensusFailed => {
 				bail!("epoxy propose failed: prepare phase consensus failed");

@@ -19,4 +19,5 @@ type Data struct {
 	lastError: optional<str>
 	createdAt: i64
 	eventType: WebhookEventType
+	subject: optional<str>
 }

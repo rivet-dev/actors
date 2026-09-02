@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::{
 	errors, keys,
-	types::{DeliveryRecord, DeliveryStatus, WebhookConfig, WebhookEventType},
+	types::{DeliveryRecord, DeliveryStatus, WebhookConfig, WebhookEvent, WebhookEventType},
 };
 
 /// Topic used to correlate `webhook::ops::upsert` (which waits for the outcome) with the
@@ -27,6 +27,9 @@ struct CloudEvent<'a> {
 	#[serde(rename = "type")]
 	kind: &'static str,
 	time: String,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	subject: Option<&'a str>,
+	datacontenttype: &'static str,
 	data: &'a serde_json::Value,
 }
 
@@ -36,12 +39,32 @@ pub struct DeliverInput {
 	pub namespace_id: Id,
 	pub name: String,
 	pub config: WebhookConfig,
-	pub payload: String,
+	pub data: serde_json::Value,
 	pub event_type: WebhookEventType,
+	pub subject: Option<String>,
+	/// When the delivery was first triggered, in epoch milliseconds. Used for the CloudEvents
+	/// `time` attribute, which is the time of the occurrence and so must stay fixed across
+	/// retries of the same delivery.
+	pub created_at: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeliverOutput {
+	/// `None` when the destination accepted the delivery.
+	pub error: Option<errors::Webhook>,
+	/// Delay the destination asked for via `Retry-After`, in milliseconds. Only ever set
+	/// alongside a retryable failure.
+	pub retry_after_ms: Option<u64>,
 }
 
 // The maximum number of delivery attempts for a single triggered event before giving up.
 const MAX_DELIVERY_ATTEMPTS: u32 = 5;
+
+// Bounds on a destination-supplied `Retry-After`. The lower bound stops a `Retry-After: 0` from
+// turning the retry loop into a hot loop; the upper bound matches the backoff cap so a
+// misbehaving destination cannot park a delivery for an unbounded stretch.
+const MIN_RETRY_AFTER: Duration = Duration::from_secs(1);
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
 
 // Retries are for transient failures: 429 (rate limited) and 5xx (receiver-side error). Any
 // other 4xx means the request itself is wrong and retrying with the same payload won't help.
@@ -58,28 +81,62 @@ fn delivery_backoff(attempt: u32) -> Duration {
 	Duration::from_secs(5u64.saturating_mul(1u64 << attempt.min(6)).min(300))
 }
 
+// How long to wait before the next attempt. A destination that told us how long to wait wins over
+// our own backoff, since receivers such as Discord and Slack rate limit on `Retry-After` and
+// ignoring it just earns more 429s.
+fn next_delivery_delay(retry_after_ms: Option<u64>, attempt: u32) -> Duration {
+	match retry_after_ms {
+		Some(ms) => Duration::from_millis(ms).clamp(MIN_RETRY_AFTER, MAX_RETRY_AFTER),
+		None => delivery_backoff(attempt),
+	}
+}
+
+// `Retry-After` is either delta-seconds or an HTTP-date (RFC 9110). An HTTP-date in the past
+// yields a zero delay, which the caller clamps.
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+	let raw = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+
+	if let Ok(seconds) = raw.trim().parse::<u64>() {
+		return Some(seconds.saturating_mul(1_000));
+	}
+
+	let deadline = chrono::DateTime::parse_from_rfc2822(raw.trim()).ok()?;
+	let delta = deadline.timestamp_millis() - chrono::Utc::now().timestamp_millis();
+
+	Some(delta.max(0) as u64)
+}
+
 #[activity(Deliver)]
-pub async fn deliver(
-	ctx: &ActivityCtx,
-	input: &DeliverInput,
-) -> Result<std::result::Result<(), errors::Webhook>> {
+pub async fn deliver(ctx: &ActivityCtx, input: &DeliverInput) -> Result<DeliverOutput> {
 	let parsed_url =
 		url::Url::parse(&input.config.url).context("stored webhook url is not parseable")?;
 
 	let policy = rivet_pools::reqwest::outbound_policy(ctx.config()).await?;
 	if let Err(reason) = policy.check_url(&parsed_url) {
-		return Ok(Err(errors::Webhook::DestinationBlocked {
-			reason: reason.to_string(),
-		}));
+		return Ok(DeliverOutput {
+			error: Some(errors::Webhook::DestinationBlocked {
+				reason: reason.to_string(),
+			}),
+			retry_after_ms: None,
+		});
 	}
+
+	// The occurrence time, not the transmission time, so every attempt at one delivery carries
+	// the same value. Receivers dedupe on `id` plus `source` and would otherwise see the same
+	// event reported as having happened at several different times.
+	let occurred_at = chrono::DateTime::from_timestamp_millis(input.created_at)
+		.context("delivery created_at is not a valid timestamp")?
+		.to_rfc3339();
 
 	let event = CloudEvent {
 		id: input.delivery_id.clone(),
 		source: &format!("rivet:webhook:{}:{}", input.namespace_id, input.name),
 		specversion: "1.0",
 		kind: input.event_type.as_cloudevents_type(),
-		time: chrono::Utc::now().to_rfc3339(),
-		data: &serde_json::from_str(&input.payload)?,
+		time: occurred_at,
+		subject: input.subject.as_deref(),
+		datacontenttype: "application/json",
+		data: &input.data,
 	};
 
 	let client = rivet_pools::reqwest::guarded_client(ctx.config()).await?;
@@ -93,19 +150,30 @@ pub async fn deliver(
 	}
 
 	match req.send().await {
-		Ok(res) if res.status().is_success() => Ok(Ok(())),
-		Ok(res) => Ok(Err(errors::Webhook::DeliveryFailed {
-			status: res.status().as_u16(),
-		})),
+		Ok(res) if res.status().is_success() => Ok(DeliverOutput {
+			error: None,
+			retry_after_ms: None,
+		}),
+		Ok(res) => {
+			let status = res.status().as_u16();
+
+			Ok(DeliverOutput {
+				error: Some(errors::Webhook::DeliveryFailed { status }),
+				retry_after_ms: parse_retry_after(res.headers()),
+			})
+		}
 		Err(err) => {
 			let err = anyhow::Error::from(err);
 
 			// A hostname that only resolves to a disallowed address is rejected by the
 			// resolver at connect time, which the pre-flight check above cannot see.
 			if let Some(reason) = rivet_outbound_guard::block_reason(&err) {
-				return Ok(Err(errors::Webhook::DestinationBlocked {
-					reason: reason.to_string(),
-				}));
+				return Ok(DeliverOutput {
+					error: Some(errors::Webhook::DestinationBlocked {
+						reason: reason.to_string(),
+					}),
+					retry_after_ms: None,
+				});
 			}
 
 			bail!("webhook delivery request failed: {err}");
@@ -123,6 +191,7 @@ pub struct RecordDeliveryInput {
 	pub attempt_count: u32,
 	pub last_error: Option<String>,
 	pub event_type: WebhookEventType,
+	pub subject: Option<String>,
 }
 
 // Writes the current state of a delivery to the local UDB mirror so it can be looked up later by
@@ -132,8 +201,11 @@ pub struct RecordDeliveryInput {
 // Preserves `created_at` from any existing record for this delivery id instead of taking it from
 // the caller, so a `Retry` (which re-enters this same activity) doesn't reset when the delivery
 // was first triggered. Stamps a fresh `created_at` only the first time a delivery id is recorded.
+//
+// Returns the `created_at` the record now carries, which the caller needs for the CloudEvents
+// `time` attribute.
 #[activity(RecordDelivery)]
-pub async fn record_delivery(ctx: &ActivityCtx, input: &RecordDeliveryInput) -> Result<()> {
+pub async fn record_delivery(ctx: &ActivityCtx, input: &RecordDeliveryInput) -> Result<i64> {
 	let namespace_id = input.namespace_id;
 	let name = input.name.clone();
 	let delivery_id = input.delivery_id.clone();
@@ -142,6 +214,7 @@ pub async fn record_delivery(ctx: &ActivityCtx, input: &RecordDeliveryInput) -> 
 	let attempt_count = input.attempt_count;
 	let last_error = input.last_error.clone();
 	let event_type = input.event_type;
+	let subject = input.subject.clone();
 	let now = ctx.ts();
 
 	ctx.udb()?
@@ -150,6 +223,7 @@ pub async fn record_delivery(ctx: &ActivityCtx, input: &RecordDeliveryInput) -> 
 			let delivery_id = delivery_id.clone();
 			let payload = payload.clone();
 			let last_error = last_error.clone();
+			let subject = subject.clone();
 			async move {
 				let tx = tx.with_subspace(namespace::keys::subspace());
 				let key = keys::DeliveryKey::new(namespace_id, name, delivery_id);
@@ -168,13 +242,13 @@ pub async fn record_delivery(ctx: &ActivityCtx, input: &RecordDeliveryInput) -> 
 						last_error,
 						created_at,
 						event_type,
+						subject,
 					},
 				)?;
-				Ok(())
+				Ok(created_at)
 			}
 		})
-		.await?;
-	Ok(())
+		.await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,9 +329,9 @@ pub async fn webhook(ctx: &mut WorkflowCtx, input: &Input) -> Result<()> {
 					// The workflow owns the config, so it is the authority on what this webhook is
 					// subscribed to. Producers filter by subscription before signaling, but the
 					// config can change between that read and this signal arriving.
-					if !config.subscriptions.contains(&sig.event_type) {
+					if !config.subscriptions.contains(&sig.event.event_type) {
 						tracing::debug!(
-							event_type = sig.event_type.as_str(),
+							event_type = sig.event.event_type.as_str(),
 							"dropping trigger for unsubscribed event type"
 						);
 						return Ok(Loop::Continue);
@@ -271,8 +345,7 @@ pub async fn webhook(ctx: &mut WorkflowCtx, input: &Input) -> Result<()> {
 						name.clone(),
 						delivery_id,
 						config.clone(),
-						sig.payload,
-						sig.event_type,
+						sig.event,
 					)
 					.await?;
 
@@ -306,14 +379,29 @@ pub async fn webhook(ctx: &mut WorkflowCtx, input: &Input) -> Result<()> {
 						return Ok(Loop::Continue);
 					}
 
+					let data = match serde_json::from_str(&record.payload) {
+						Ok(data) => data,
+						Err(err) => {
+							tracing::warn!(
+								delivery_id = %sig.delivery_id,
+								?err,
+								"stored delivery payload is not valid json"
+							);
+							return Ok(Loop::Continue);
+						}
+					};
+
 					let outcome = deliver_with_retries(
 						ctx,
 						namespace_id,
 						name.clone(),
 						sig.delivery_id,
 						config.clone(),
-						record.payload,
-						record.event_type,
+						WebhookEvent {
+							event_type: record.event_type,
+							subject: record.subject,
+							data,
+						},
 					)
 					.await?;
 
@@ -402,20 +490,31 @@ async fn deliver_with_retries(
 	name: String,
 	delivery_id: String,
 	config: WebhookConfig,
-	payload: String,
-	event_type: WebhookEventType,
+	event: WebhookEvent,
 ) -> Result<DeliveryOutcome> {
-	ctx.activity(RecordDeliveryInput {
-		namespace_id,
-		name: name.clone(),
-		delivery_id: delivery_id.clone(),
-		payload: payload.clone(),
-		status: DeliveryStatus::Pending,
-		attempt_count: 0,
-		last_error: None,
+	let WebhookEvent {
 		event_type,
-	})
-	.await?;
+		subject,
+		data,
+	} = event;
+
+	// Stored as JSON text, matching the `payload: str` field in the delivery schema.
+	let payload = serde_json::to_string(&data).context("event data is not serializable")?;
+	// Also yields the delivery's `created_at`, which the CloudEvents envelope needs. On a manual
+	// `Retry` this is the original trigger time, preserved by the activity.
+	let created_at = ctx
+		.activity(RecordDeliveryInput {
+			namespace_id,
+			name: name.clone(),
+			delivery_id: delivery_id.clone(),
+			payload: payload.clone(),
+			status: DeliveryStatus::Pending,
+			attempt_count: 0,
+			last_error: None,
+			event_type,
+			subject: subject.clone(),
+		})
+		.await?;
 
 	let mut attempt = 0;
 
@@ -426,13 +525,15 @@ async fn deliver_with_retries(
 				namespace_id,
 				name: name.clone(),
 				config: config.clone(),
-				payload: payload.clone(),
+				data: data.clone(),
 				event_type,
+				subject: subject.clone(),
+				created_at,
 			})
 			.await?;
 
-		match deliver_res {
-			Ok(()) => {
+		match deliver_res.error {
+			None => {
 				ctx.activity(RecordDeliveryInput {
 					namespace_id,
 					name: name.clone(),
@@ -442,28 +543,32 @@ async fn deliver_with_retries(
 					attempt_count: attempt + 1,
 					last_error: None,
 					event_type,
+					subject,
 				})
 				.await?;
 
 				return Ok(DeliveryOutcome::Done);
 			}
-			Err(errors::Webhook::DeliveryFailed { status })
+			Some(errors::Webhook::DeliveryFailed { status })
 				if is_retryable_status(status) && attempt + 1 < MAX_DELIVERY_ATTEMPTS =>
 			{
 				attempt += 1;
 
-				// Race the backoff wait against `Destroy` so a delete mid-retry stops delivery
+				// Race the wait against `Destroy` so a delete mid-retry stops delivery
 				// immediately instead of waiting out the full retry sequence before the workflow
 				// notices.
 				let destroy_sig = ctx
-					.listen_with_timeout::<Destroy>(delivery_backoff(attempt))
+					.listen_with_timeout::<Destroy>(next_delivery_delay(
+						deliver_res.retry_after_ms,
+						attempt,
+					))
 					.await?;
 
 				if destroy_sig.is_some() {
 					return Ok(DeliveryOutcome::Destroyed);
 				}
 			}
-			Err(error) => {
+			Some(error) => {
 				tracing::warn!(?error, attempt, "webhook delivery failed permanently");
 
 				ctx.activity(RecordDeliveryInput {
@@ -475,6 +580,7 @@ async fn deliver_with_retries(
 					attempt_count: attempt + 1,
 					last_error: Some(error.build().to_string()),
 					event_type,
+					subject,
 				})
 				.await?;
 
@@ -572,7 +678,10 @@ pub struct UpsertConfigInput {
 
 // Writes the webhook config to epoxy (the durable, replicated copy) and mirrors it into local
 // UDB (what `list` reads, since epoxy is slow and not meant for frequent/scan-style reads).
-// The epoxy write is a check-and-set against the local mirror's last-known value.
+//
+// `expect_one_of` is always `vec![None]` because epoxy v2 does not implement value-based
+// compare-and-swap: it accepts only that value and then performs an unconditional set. Writes to
+// a webhook config are therefore last-write-wins across datacenters.
 #[activity(UpsertConfig)]
 pub async fn upsert_config(
 	ctx: &ActivityCtx,
@@ -582,21 +691,6 @@ pub async fn upsert_config(
 	let name = input.name.clone();
 
 	let global_key = keys::GlobalDataKey::new(namespace_id, name.clone());
-	let local_key = keys::DataKey::new(namespace_id, name.clone());
-
-	let existing = ctx
-		.udb()?
-		.txn("webhook_upsert_config_read", |tx| {
-			let local_key = keys::DataKey::new(namespace_id, name.clone());
-			async move {
-				let tx = tx.with_subspace(namespace::keys::subspace());
-				tx.read_opt(&local_key, Serializable).await
-			}
-		})
-		.await?;
-	let expect = existing
-		.map(|config| local_key.serialize(config))
-		.transpose()?;
 
 	let propose_res = ctx
 		.op(epoxy::ops::propose::Input {
@@ -605,7 +699,7 @@ pub async fn upsert_config(
 					kind: epoxy::ops::propose::CommandKind::CheckAndSetCommand(
 						epoxy::ops::propose::CheckAndSetCommand {
 							key: namespace::keys::subspace().pack(&global_key),
-							expect_one_of: vec![expect],
+							expect_one_of: vec![None],
 							new_value: Some(global_key.serialize(input.config.clone())?),
 						},
 					),
@@ -621,7 +715,7 @@ pub async fn upsert_config(
 		ProposalResult::Committed => {}
 		ProposalResult::ConsensusFailed { reason } => match reason {
 			epoxy::ops::propose::ConsensusFailedReason::ExpectedValueDoesNotMatch { .. } => {
-				return Ok(Err(errors::Webhook::Conflict));
+				bail!("epoxy propose failed: unexpected value mismatch for an unconditional set");
 			}
 			epoxy::ops::propose::ConsensusFailedReason::PreparePhaseConsensusFailed => {
 				bail!("epoxy propose failed: prepare phase consensus failed");
@@ -656,9 +750,7 @@ pub async fn upsert_config(
 
 #[signal("webhook_trigger")]
 pub struct Trigger {
-	pub event_type: WebhookEventType,
-	// TODO: proper CloudEvents-shaped payload; deferred pending the design task in the spec.
-	pub payload: String,
+	pub event: WebhookEvent,
 }
 
 #[signal("webhook_update")]

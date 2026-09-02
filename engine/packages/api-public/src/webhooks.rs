@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use axum::response::{IntoResponse, Response};
 use rivet_api_builder::{
 	ApiError,
+	errors::ApiBadRequest,
 	extract::{Extension, Json, Path, Query},
 };
 use rivet_api_types::pagination::Pagination;
@@ -438,6 +439,20 @@ async fn events_inner(ctx: ApiCtx, path: EventsPath, query: EventsQuery) -> Resu
 		.await?
 		.ok_or_else(|| namespace::errors::Namespace::NotFound.build())?;
 
+	// Distinguish "this webhook has no history" from "this webhook does not exist", which would
+	// otherwise both be an empty list. Note this means a deleted webhook's history is no longer
+	// readable, since delete clears the config.
+	if ctx
+		.op(webhook::ops::get::Input {
+			namespace_id: namespace.namespace_id,
+			name: path.webhook_name.clone(),
+		})
+		.await?
+		.is_none()
+	{
+		return Err(webhook::errors::Webhook::NotFound.build());
+	}
+
 	let mut deliveries = ctx
 		.op(webhook::ops::list_deliveries::Input {
 			namespace_id: namespace.namespace_id,
@@ -460,7 +475,12 @@ async fn events_inner(ctx: ApiCtx, path: EventsPath, query: EventsQuery) -> Resu
 		let (created_at, delivery_id) = cursor
 			.split_once(':')
 			.and_then(|(ts, id)| ts.parse::<i64>().ok().map(|ts| (ts, id.to_string())))
-			.context("invalid cursor")?;
+			.ok_or_else(|| {
+				ApiBadRequest {
+					reason: "cursor must be formatted as `{create_ts}:{delivery_id}`".to_string(),
+				}
+				.build()
+			})?;
 
 		deliveries.retain(|d| {
 			(d.record.created_at, d.delivery_id.as_str()) < (created_at, delivery_id.as_str())

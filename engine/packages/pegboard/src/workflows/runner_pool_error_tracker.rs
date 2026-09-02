@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use gas::prelude::*;
 use rivet_types::actor::RunnerPoolError;
-use webhook::types::WebhookEventType;
+use webhook::types::{WebhookEvent, WebhookEventType};
 
 const SIGNAL_DEBOUNCE: Duration = Duration::from_millis(250);
 const SIGNAL_BATCH_SIZE: usize = 1024;
@@ -168,7 +168,7 @@ pub async fn pegboard_runner_pool_error_tracker(
 						continue;
 					}
 
-					let payload = serde_json::to_string(&RunnerPoolEventPayload {
+					let data = serde_json::to_value(RunnerPoolEventPayload {
 						namespace_id,
 						runner_name: &runner_name,
 						error,
@@ -178,8 +178,13 @@ pub async fn pegboard_runner_pool_error_tracker(
 						// `graceful_not_found` because a webhook can be deleted between the
 						// listing above and this signal.
 						ctx.signal(webhook::workflows::webhook::Trigger {
-							event_type,
-							payload: payload.clone(),
+							event: WebhookEvent {
+								event_type,
+								// CloudEvents `subject`: which runner pool within the namespace
+								// this event is about.
+								subject: Some(runner_name.clone()),
+								data: data.clone(),
+							},
 						})
 						.to_workflow::<webhook::workflows::webhook::Workflow>()
 						.tag("namespace_id", namespace_id)

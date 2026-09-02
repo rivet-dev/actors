@@ -181,6 +181,19 @@ impl From<DeliveryStatus> for rivet_data::generated::webhook_delivery_v1::Delive
 	}
 }
 
+// The standardized shape a producer sends to a webhook workflow, mapping onto the CloudEvents
+// attributes of the same name. `data` stays polymorphic because each event type carries its own
+// body and this package must not depend on the producers' types.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebhookEvent {
+	pub event_type: WebhookEventType,
+	/// CloudEvents `subject`: which resource within the source the event is about, such as the
+	/// runner name for a runner pool event.
+	pub subject: Option<String>,
+	/// CloudEvents `data`.
+	pub data: serde_json::Value,
+}
+
 // Stored record for a single delivery (a triggered event, identified by delivery id, and every
 // attempt made to deliver it). Not the CloudEvents payload itself, just enough to retry it and
 // report its outcome. `created_at` is when the delivery was first triggered; a `Retry` reuses it
@@ -193,6 +206,7 @@ pub struct DeliveryRecord {
 	pub last_error: Option<String>,
 	pub created_at: i64,
 	pub event_type: WebhookEventType,
+	pub subject: Option<String>,
 }
 
 impl From<rivet_data::generated::webhook_delivery_v1::Data> for DeliveryRecord {
@@ -204,6 +218,7 @@ impl From<rivet_data::generated::webhook_delivery_v1::Data> for DeliveryRecord {
 			last_error: value.last_error,
 			created_at: value.created_at,
 			event_type: value.event_type.into(),
+			subject: value.subject,
 		}
 	}
 }
@@ -217,6 +232,7 @@ impl From<DeliveryRecord> for rivet_data::generated::webhook_delivery_v1::Data {
 			last_error: value.last_error,
 			created_at: value.created_at,
 			event_type: value.event_type.into(),
+			subject: value.subject,
 		}
 	}
 }
