@@ -681,6 +681,7 @@ pub fn convert_to_envoy_request_start_v6_to_v7(
 		headers: x.headers,
 		body: x.body,
 		stream: x.stream,
+		response_stream: false,
 	})
 }
 

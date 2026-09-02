@@ -2,7 +2,7 @@
 
 #![allow(dead_code, unused_variables)]
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::generated::{v6, v7};
 
@@ -674,6 +674,9 @@ pub fn convert_message_id_v7_to_v6(x: v7::MessageId) -> Result<v6::MessageId> {
 pub fn convert_to_envoy_request_start_v7_to_v6(
 	x: v7::ToEnvoyRequestStart,
 ) -> Result<v6::ToEnvoyRequestStart> {
+	if x.response_stream {
+		bail!("streaming HTTP responses require envoy protocol v7");
+	}
 	Ok(v6::ToEnvoyRequestStart {
 		actor_id: x.actor_id,
 		method: x.method,
@@ -791,6 +794,9 @@ pub fn convert_to_rivet_tunnel_message_kind_v7_to_v6(
 		v7::ToRivetTunnelMessageKind::ToRivetResponseAbort(_) => {
 			v6::ToRivetTunnelMessageKind::ToRivetResponseAbort
 		}
+		v7::ToRivetTunnelMessageKind::ToRivetRequestBodyWindowUpdate(_) => {
+			bail!("HTTP request body window updates require envoy protocol v7");
+		}
 		v7::ToRivetTunnelMessageKind::ToRivetWebSocketOpen(v) => {
 			v6::ToRivetTunnelMessageKind::ToRivetWebSocketOpen(
 				convert_to_rivet_web_socket_open_v7_to_v6(v)?,
@@ -839,6 +845,9 @@ pub fn convert_to_envoy_tunnel_message_kind_v7_to_v6(
 		}
 		v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(_) => {
 			v6::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort
+		}
+		v7::ToEnvoyTunnelMessageKind::ToEnvoyResponseBodyWindowUpdate(_) => {
+			bail!("HTTP response body window updates require envoy protocol v7");
 		}
 		v7::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(v) => {
 			v6::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(

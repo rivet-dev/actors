@@ -409,6 +409,8 @@ type ToEnvoyRequestStart struct {
 	headers: map<str><str>
 	body: optional<data>
 	stream: bool
+	# Whether the gateway can accept a streamed response body.
+	responseStream: bool
 }
 
 type ToEnvoyRequestChunk struct {
@@ -416,15 +418,16 @@ type ToEnvoyRequestChunk struct {
 	finish: bool
 }
 
+# Cumulative request-body bytes consumed by the actor handler. This restores
+# sender credit without requiring one acknowledgement per chunk.
+type ToRivetRequestBodyWindowUpdate struct {
+	consumedBytes: u64
+}
+
 type HttpStreamAbortReasonKind enum {
 	UNKNOWN
-	CLIENT_DISCONNECT
+	CANCELLED
 	HANDLER_ERROR
-	IDLE_TIMEOUT
-	OVERLOADED
-	BODY_TOO_LARGE
-	OUT_OF_MEMORY
-	SHUTDOWN
 	INTERNAL_ERROR
 }
 
@@ -447,6 +450,12 @@ type ToRivetResponseStart struct {
 type ToRivetResponseChunk struct {
 	body: data
 	finish: bool
+}
+
+# Cumulative response-body bytes consumed by the gateway client. This restores
+# sender credit without requiring one acknowledgement per chunk.
+type ToEnvoyResponseBodyWindowUpdate struct {
+	consumedBytes: u64
 }
 
 type ToRivetResponseAbort struct {
@@ -495,6 +504,7 @@ type ToRivetTunnelMessageKind union {
 	ToRivetResponseStart |
 	ToRivetResponseChunk |
 	ToRivetResponseAbort |
+	ToRivetRequestBodyWindowUpdate |
 
 	# WebSocket
 	ToRivetWebSocketOpen |
@@ -514,6 +524,7 @@ type ToEnvoyTunnelMessageKind union {
 	ToEnvoyRequestStart |
 	ToEnvoyRequestChunk |
 	ToEnvoyRequestAbort |
+	ToEnvoyResponseBodyWindowUpdate |
 
 	# WebSocket
 	ToEnvoyWebSocketOpen |
