@@ -57,7 +57,7 @@ use crate::actor::task_types::ShutdownKind;
 use crate::actor::work_registry::ActorWorkKind;
 use crate::error::{ActorLifecycle as ActorLifecycleError, ActorRuntime};
 use crate::runtime::RuntimeSpawner;
-use crate::telemetry::{ActionInvocationSpan, IncomingInvocationContext};
+use crate::telemetry::{ActorInvocation, IncomingInvocationContext};
 #[cfg(test)]
 use crate::time::sleep;
 use crate::time::{Instant, sleep_until, timeout};
@@ -908,7 +908,7 @@ impl ActorTask {
 				conn,
 				reply,
 			} => {
-				let invocation = ActionInvocationSpan::start(&self.ctx, &name, incoming);
+				let invocation = ActorInvocation::start_action(&self.ctx, &name, incoming);
 				let invocation_telemetry = invocation.telemetry();
 				tracing::info!(
 					actor_id = %self.ctx.actor_id(),
