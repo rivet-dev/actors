@@ -33,6 +33,7 @@ once_cell.workspace = true
 pegboard-envoy.workspace = true
 pegboard-gateway.workspace = true
 pegboard-gateway2.workspace = true
+pegboard-gateway3.workspace = true
 pegboard-runner.workspace = true
 pegboard.workspace = true
 regex.workspace = true

@@ -12,7 +12,11 @@ impl SharedState {
 				config,
 				pubsub.clone(),
 			),
-			pegboard_gateway2: pegboard_gateway2::shared_state::SharedState::new(config, pubsub),
+			pegboard_gateway2: pegboard_gateway2::shared_state::SharedState::new(
+				config,
+				pubsub.clone(),
+			),
+			pegboard_gateway3: pegboard_gateway3::shared_state::SharedState::new(config, pubsub),
 		}))
 	}
 
@@ -20,6 +24,7 @@ impl SharedState {
 		tokio::try_join!(
 			self.pegboard_gateway.start(),
 			self.pegboard_gateway2.start(),
+			self.pegboard_gateway3.start(),
 		)?;
 
 		Ok(())
@@ -37,4 +42,5 @@ impl Deref for SharedState {
 pub struct SharedStateInner {
 	pub pegboard_gateway: pegboard_gateway::shared_state::SharedState,
 	pub pegboard_gateway2: pegboard_gateway2::shared_state::SharedState,
+	pub pegboard_gateway3: pegboard_gateway3::shared_state::SharedState,
 }

@@ -1,0 +1,39 @@
+[package]
+name = "pegboard-gateway3"
+publish = false
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+gas.workspace = true
+http-body-util.workspace = true
+# TODO: Doesn't match workspace version
+hyper = "1.6"
+hyper-tungstenite.workspace = true
+lazy_static.workspace = true
+namespace.workspace = true
+pegboard.workspace = true
+rand.workspace = true
+replace_with.workspace = true
+rivet-config.workspace = true
+rivet-error.workspace = true
+rivet-guard-core.workspace = true
+rivet-metrics.workspace = true
+rivet-envoy-protocol.workspace = true
+rivet-util.workspace = true
+scc.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio-tungstenite.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+universaldb.workspace = true
+universalpubsub.workspace = true
+vbare.workspace = true

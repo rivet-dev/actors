@@ -36,6 +36,7 @@ members = [
   "engine/packages/pegboard-envoy",
   "engine/packages/pegboard-gateway",
   "engine/packages/pegboard-gateway2",
+  "engine/packages/pegboard-gateway3",
   "engine/packages/pegboard-outbound",
   "engine/packages/pegboard-runner",
   "engine/packages/pools",
@@ -511,6 +512,9 @@ members = [
 
     [workspace.dependencies.pegboard-gateway2]
     path = "engine/packages/pegboard-gateway2"
+
+    [workspace.dependencies.pegboard-gateway3]
+    path = "engine/packages/pegboard-gateway3"
 
     [workspace.dependencies.pegboard-outbound]
     path = "engine/packages/pegboard-outbound"

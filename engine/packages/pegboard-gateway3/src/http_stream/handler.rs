@@ -31,14 +31,14 @@ use super::{
 	send_http_request_abort,
 };
 use crate::{
-	PegboardGateway2, metrics_task,
+	PegboardGateway3, metrics_task,
 	request_metrics::{RequestKind, RequestMetrics},
 	shared_state::{InFlightRequestCtx, RequestProtocol, RequestStopResult},
 };
 
 const PHASE_PRE_REQUEST: &str = "pre_request";
 
-impl PegboardGateway2 {
+impl PegboardGateway3 {
 	pub(crate) async fn handle_http_request<B>(
 		&self,
 		req: Request<B>,

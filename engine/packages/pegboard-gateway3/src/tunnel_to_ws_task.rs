@@ -16,14 +16,14 @@ use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::LifecycleResult;
-use crate::shared_state::{InFlightRequestHandle, MsgGcReason, display_id};
+use crate::shared_state::{InFlightRequestHandle, InFlightTunnelMessage, MsgGcReason, display_id};
 
 #[tracing::instrument(name = "tunnel_to_ws_task", skip_all)]
 pub async fn task(
 	in_flight_req: InFlightRequestHandle,
 	client_ws: WebSocketHandle,
 	mut stopped_sub: message::SubscriptionHandle<pegboard::workflows::actor2::Stopped>,
-	mut msg_rx: mpsc::UnboundedReceiver<protocol::ToRivetTunnelMessageKind>,
+	mut msg_rx: mpsc::UnboundedReceiver<InFlightTunnelMessage>,
 	mut drop_rx: watch::Receiver<Option<MsgGcReason>>,
 	can_hibernate: bool,
 	egress_bytes: Arc<AtomicU64>,
@@ -33,7 +33,7 @@ pub async fn task(
 		tokio::select! {
 			res = msg_rx.recv() => {
 				if let Some(msg) = res {
-					match msg {
+					match msg.message_kind {
 						protocol::ToRivetTunnelMessageKind::ToRivetWebSocketMessage(ws_msg) => {
 							let data_len = ws_msg.data.len();
 							let binary = ws_msg.binary;
