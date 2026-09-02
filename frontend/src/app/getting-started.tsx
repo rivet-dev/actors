@@ -40,8 +40,8 @@ import {
 } from "@/content/agent-prompts";
 import { deriveProviderFromMetadata } from "@/lib/data";
 import { engineEnv } from "@/lib/env";
+import { ProductPicker } from "@/components/products/product-picker";
 import { features } from "@/lib/features";
-import { publicUrl } from "@/lib/utils";
 import { queryClient } from "@/queries/global";
 import { cn } from "../components/lib/utils";
 import { Badge } from "../components/ui/badge";
@@ -669,7 +669,6 @@ function OnboardingProgress({ action }: { action?: ReactNode }) {
 	const steps = s.all.filter((step) => isStepVisible(step.id));
 	const currentIndex = Math.max(0, visibleStepIndex(s.current.id));
 	const total = visibleStepCount;
-	const groupLabel = s.current.group === "local" ? "Local setup" : "Deploy";
 	return (
 		<div className="mb-6 flex flex-col gap-2">
 			<div
@@ -677,7 +676,7 @@ function OnboardingProgress({ action }: { action?: ReactNode }) {
 				aria-valuemin={1}
 				aria-valuemax={total}
 				aria-valuenow={currentIndex + 1}
-				aria-valuetext={`Step ${currentIndex + 1} of ${total}, ${groupLabel}`}
+				aria-valuetext={`Step ${currentIndex + 1} of ${total}`}
 				className="flex gap-1.5"
 			>
 				{steps.map((step, i) => (
@@ -692,7 +691,7 @@ function OnboardingProgress({ action }: { action?: ReactNode }) {
 			</div>
 			<div className="flex min-h-8 items-center justify-between gap-4">
 				<div className="text-xs text-muted-foreground tabular-nums">
-					Step {currentIndex + 1} of {total} · {groupLabel}
+					Step {currentIndex + 1} of {total}
 				</div>
 				{action}
 			</div>
@@ -741,119 +740,27 @@ function AgentOsKeyNotice() {
 	);
 }
 
-function ProductMark({ fileName }: { fileName: string }) {
-	return (
-		<img
-			src={publicUrl(`images/brand/${fileName}`)}
-			alt=""
-			aria-hidden="true"
-			className="size-8"
-			draggable={false}
-		/>
-	);
-}
-
-function BuildTargetCard({
-	icon,
-	label,
-	description,
-	badge,
-	onSelect,
-}: {
-	icon: ReactNode;
-	label: string;
-	description: string;
-	badge?: string;
-	onSelect: () => void;
-}) {
-	return (
-		<button
-			type="button"
-			onClick={onSelect}
-			className="flex items-start gap-3 rounded-lg border border-border px-4 py-3 text-left transition-colors cursor-pointer hover:border-primary hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-		>
-			<span className="mt-0.5 shrink-0">{icon}</span>
-			<div className="min-w-0">
-				<div className="flex items-center gap-2">
-					<p className="text-sm font-medium">{label}</p>
-					{badge ? (
-						<Badge
-							variant="outline"
-							className="text-[10px] leading-none py-0.5 px-1.5 font-medium"
-						>
-							{badge}
-						</Badge>
-					) : null}
-				</div>
-				<p className="text-xs text-muted-foreground">{description}</p>
-			</div>
-		</button>
-	);
-}
-
-// Product selector shown atop the first step. The common products are
-// available in every flavor; only the agentOS card is gated.
+// Product selector shown atop the first step. Selecting a product is the whole
+// step, so the choice advances the wizard instead of parking the user in front
+// of a Continue button.
 function BuildTargetSelector() {
 	const { control, setValue } = useFormContext();
 	const submitForm = useStepperFormSubmit();
-	// Selecting a product is the whole step, so the choice advances the wizard
-	// instead of parking the user in front of a Continue button.
-	const select = (template: OnboardingTarget) => {
-		setValue("template", template, {
-			shouldDirty: true,
-			shouldTouch: true,
-			shouldValidate: true,
-		});
-		submitForm?.();
-	};
 	return (
 		<FormField
 			control={control}
 			name="template"
 			render={() => (
-				<div>
-					<div
-						role="group"
-						aria-label="Select a product"
-						className="grid grid-cols-1 gap-2 sm:grid-cols-2"
-					>
-						<BuildTargetCard
-							icon={<ProductMark fileName="actors-mark.svg" />}
-							label="Actors"
-							description="The primitive for realtime, stateful workloads"
-							onSelect={() => select("actor")}
-						/>
-						{features.agentOs ? (
-							<BuildTargetCard
-								icon={
-									<ProductMark fileName="agentos-mark.svg" />
-								}
-								label="agentOS"
-								description="Hand every agent a computer of its own"
-								onSelect={() => select("agent-os")}
-							/>
-						) : null}
-						<BuildTargetCard
-							icon={<ProductMark fileName="workflows-mark.svg" />}
-							label="Workflows"
-							description="Write multi-step operations that survive restarts"
-							onSelect={() => select("workflows")}
-						/>
-						<BuildTargetCard
-							icon={
-								<ProductMark fileName="dynamic-apps-mark.svg" />
-							}
-							label="Dynamic Apps"
-							badge="Preview"
-							description="Deploy AI-generated apps for your users"
-							onSelect={() => select("dynamic-apps")}
-						/>
-					</div>
-					<p className="mt-2 text-xs text-muted-foreground">
-						Rivet is composable. Start with one product and add the
-						rest to the same project whenever you need them.
-					</p>
-				</div>
+				<ProductPicker
+					onSelect={(template) => {
+						setValue("template", template, {
+							shouldDirty: true,
+							shouldTouch: true,
+							shouldValidate: true,
+						});
+						submitForm?.();
+					}}
+				/>
 			)}
 		/>
 	);
