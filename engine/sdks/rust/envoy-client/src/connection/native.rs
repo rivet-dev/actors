@@ -3,12 +3,12 @@ use std::sync::atomic::Ordering;
 
 use futures_util::{SinkExt, StreamExt};
 use rivet_envoy_protocol as protocol;
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc, oneshot};
 use tokio_tungstenite::tungstenite;
 use tracing::Instrument;
 use vbare::OwnedVersionedData;
 
-use crate::context::{SharedContext, WsTxMessage};
+use crate::context::{HttpWsTxMessage, SharedContext, WsTxMessage};
 use crate::envoy::ToEnvoyMessage;
 use crate::handle::EnvoyHandle;
 use crate::metrics::METRICS;
@@ -39,27 +39,31 @@ async fn connection_loop(shared: Arc<SharedContext>) {
 		let connected_at = std::time::Instant::now();
 
 		match single_connection(&shared).await {
-			Ok(close_reason) => {
+			Ok((session, close_reason)) => {
 				if let Some(reason) = &close_reason {
 					if reason.group == "ws" && reason.error == "eviction" {
 						tracing::debug!("connection evicted");
 						let _ = crate::envoy::send_to_envoy_tx(
 							&shared,
-							ToEnvoyMessage::ConnClose { evict: true },
+							ToEnvoyMessage::ConnClose { evict: true, session },
 						);
 						return;
 					}
 				}
 				let _ = crate::envoy::send_to_envoy_tx(
 					&shared,
-					ToEnvoyMessage::ConnClose { evict: false },
+					ToEnvoyMessage::ConnClose { evict: false, session },
 				);
 			}
 			Err(error) => {
 				tracing::error!(?error, "connection failed");
+				let session = shared.connection_session.load(Ordering::Acquire);
+				if session != 0 {
+					super::remove_connection_for_session(&shared, session).await;
+				}
 				let _ = crate::envoy::send_to_envoy_tx(
 					&shared,
-					ToEnvoyMessage::ConnClose { evict: false },
+					ToEnvoyMessage::ConnClose { evict: false, session },
 				);
 			}
 		}
@@ -82,7 +86,7 @@ async fn connection_loop(shared: Arc<SharedContext>) {
 
 async fn single_connection(
 	shared: &Arc<SharedContext>,
-) -> anyhow::Result<Option<crate::utils::ParsedCloseReason>> {
+) -> anyhow::Result<(u64, Option<crate::utils::ParsedCloseReason>)> {
 	let url = super::ws_url(shared);
 	let protocols = {
 		let mut p = vec!["rivet".to_string()];
@@ -120,7 +124,11 @@ async fn single_connection(
 	// TODO: Bound shared WebSocket writer memory across protocol message types.
 	// https://github.com/rivet-dev/rivet/issues/5468
 	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<WsTxMessage>();
-	super::install_connection(shared, ws_tx).await;
+	let (http_ws_tx, mut http_ws_rx) =
+		mpsc::channel::<HttpWsTxMessage>(super::HTTP_WS_MESSAGE_CAPACITY);
+	let http_byte_budget = Arc::new(Semaphore::new(super::HTTP_WS_BYTE_CAPACITY));
+	let session =
+		super::install_connection_with_http(shared, ws_tx, http_ws_tx, http_byte_budget).await;
 
 	tracing::info!(
 		endpoint = %shared.config.endpoint,
@@ -140,20 +148,30 @@ async fn single_connection(
 	// Spawn write task
 	let shared2 = shared.clone();
 	let write_span = tracing::debug_span!("envoy_ws_write", envoy_key = %shared2.envoy_key);
+	let (write_failed_tx, mut write_failed_rx) = oneshot::channel();
 	let write_handle = tokio::spawn(
 		async move {
+			let mut write_failed_tx = Some(write_failed_tx);
 			super::send_initial_metadata(&shared2).await;
 
-			while let Some(msg) = ws_rx.recv().await {
+			loop {
+				let msg = tokio::select! {
+					msg = ws_rx.recv() => msg.map(EitherWrite::Legacy),
+					msg = http_ws_rx.recv() => msg.map(EitherWrite::Http),
+				};
+				let Some(msg) = msg else { break };
 				match msg {
-					WsTxMessage::Send(data) => {
+					EitherWrite::Legacy(WsTxMessage::Send(data)) => {
 						let result = write.send(tungstenite::Message::Binary(data.into())).await;
 						if let Err(e) = result {
 							tracing::error!(?e, "failed to send ws message");
+							if let Some(write_failed_tx) = write_failed_tx.take() {
+								let _ = write_failed_tx.send(());
+							}
 							break;
 						}
 					}
-					WsTxMessage::Close => {
+					EitherWrite::Legacy(WsTxMessage::Close) => {
 						let _ = write
 							.send(tungstenite::Message::Close(Some(
 								tungstenite::protocol::CloseFrame {
@@ -163,6 +181,20 @@ async fn single_connection(
 							)))
 							.await;
 						break;
+					}
+					EitherWrite::Http(message) => {
+						let result = write
+							.send(tungstenite::Message::Binary(message.data.into()))
+							.await
+							.map_err(anyhow::Error::from);
+						let failed = result.is_err();
+						let _ = message.written.send(result);
+						if failed {
+							if let Some(write_failed_tx) = write_failed_tx.take() {
+								let _ = write_failed_tx.send(());
+							}
+							break;
+						}
 					}
 				}
 			}
@@ -174,7 +206,15 @@ async fn single_connection(
 
 	let debug_latency_ms = shared.config.debug_latency_ms;
 
-	while let Some(msg) = read.next().await {
+	loop {
+		let msg = tokio::select! {
+			msg = read.next() => msg,
+			_ = &mut write_failed_rx => {
+				disconnect_reason = "write_error";
+				break;
+			}
+		};
+		let Some(msg) = msg else { break };
 		match msg {
 			Ok(tungstenite::Message::Binary(data)) => {
 				crate::utils::inject_latency(debug_latency_ms).await;
@@ -184,7 +224,7 @@ async fn single_connection(
 					protocol::PROTOCOL_VERSION,
 				)?;
 
-				super::forward_to_envoy(shared, decoded).await;
+				super::forward_to_envoy(shared, session, decoded).await;
 			}
 			Ok(tungstenite::Message::Close(frame)) => {
 				disconnect_reason = "close";
@@ -225,14 +265,19 @@ async fn single_connection(
 	);
 
 	// Clean up
-	super::remove_connection(shared).await;
+	super::remove_connection_for_session(shared, session).await;
 	write_handle.abort();
 	shared
 		.config
 		.callbacks
 		.on_disconnect(EnvoyHandle::from_shared(shared.clone()));
 
-	Ok(result)
+	Ok((session, result))
+}
+
+enum EitherWrite {
+	Legacy(WsTxMessage),
+	Http(HttpWsTxMessage),
 }
 
 fn extract_host(url: &str) -> String {

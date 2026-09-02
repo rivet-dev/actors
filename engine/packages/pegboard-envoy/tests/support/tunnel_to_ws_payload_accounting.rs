@@ -8,7 +8,7 @@ fn request_abort_counts_detail_utf8_bytes() {
 	let message =
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(protocol::ToEnvoyRequestAbort {
 			reason: protocol::HttpStreamAbortReason {
-				kind: protocol::HttpStreamAbortReasonKind::ClientDisconnect,
+				kind: protocol::HttpStreamAbortReasonKind::Cancelled,
 				detail: Some(detail.clone()),
 			},
 		});
@@ -24,7 +24,7 @@ fn request_abort_without_detail_has_no_inner_payload() {
 	let message =
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(protocol::ToEnvoyRequestAbort {
 			reason: protocol::HttpStreamAbortReason {
-				kind: protocol::HttpStreamAbortReasonKind::ClientDisconnect,
+				kind: protocol::HttpStreamAbortReasonKind::Cancelled,
 				detail: None,
 			},
 		});

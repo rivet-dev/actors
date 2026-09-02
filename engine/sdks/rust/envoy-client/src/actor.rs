@@ -41,6 +41,10 @@ pub enum ToActor {
 	ReqStart {
 		message_id: protocol::MessageId,
 		req: protocol::ToEnvoyRequestStart,
+		connection_session: u64,
+	},
+	ConnectionClosed {
+		session: u64,
 	},
 	ReqChunk {
 		message_id: protocol::MessageId,
@@ -49,6 +53,20 @@ pub enum ToActor {
 	ReqAbort {
 		message_id: protocol::MessageId,
 		reason: protocol::HttpStreamAbortReason,
+	},
+	ReqProtocolViolation {
+		message_id: protocol::MessageId,
+		detail: String,
+	},
+	ReqBodyCancelled {
+		message_id: protocol::MessageId,
+	},
+	ReqBodyCancel {
+		message_id: protocol::MessageId,
+	},
+	ResponseBodyWindowUpdate {
+		message_id: protocol::MessageId,
+		consumed_bytes: u64,
 	},
 	ReqComplete {
 		message_id: protocol::MessageId,
@@ -320,14 +338,44 @@ async fn actor_inner(
 							let _ = ack_tx.send(());
 						}
 					}
-					ToActor::ReqStart { message_id, req } => {
-						http::handle_req_start(&mut ctx, &handle, &mut http_request_tasks, message_id, req);
+					ToActor::ReqStart { message_id, req, connection_session } => {
+						http::handle_req_start(
+							&mut ctx,
+							&handle,
+							&mut http_request_tasks,
+							message_id,
+							req,
+							connection_session,
+						);
+					}
+					ToActor::ConnectionClosed { session } => {
+						http::handle_connection_closed(&mut ctx, session);
 					}
 					ToActor::ReqChunk { message_id, chunk } => {
 						http::handle_req_chunk(&mut ctx, message_id, chunk);
 					}
 					ToActor::ReqAbort { message_id, reason } => {
 						http::handle_req_abort(&mut ctx, message_id, reason);
+					}
+					ToActor::ReqProtocolViolation { message_id, detail } => {
+						http::handle_protocol_violation(&mut ctx, message_id, detail).await;
+					}
+					ToActor::ReqBodyCancelled { message_id } => {
+						http::handle_req_body_cancelled(&mut ctx, message_id);
+					}
+					ToActor::ReqBodyCancel { message_id } => {
+						http::handle_req_body_cancel(&mut ctx, message_id);
+					}
+					ToActor::ResponseBodyWindowUpdate {
+						message_id,
+						consumed_bytes,
+					} => {
+						http::handle_response_body_window_update(
+							&mut ctx,
+							message_id,
+							consumed_bytes,
+						)
+						.await;
 					}
 					ToActor::ReqComplete { message_id } => {
 						http::handle_req_complete(&mut ctx, message_id);
@@ -1218,6 +1266,10 @@ mod tests {
 		pub(super) body_tx: Mutex<Option<oneshot::Sender<mpsc::Sender<ResponseChunk>>>>,
 	}
 
+	pub(super) struct StreamingRequestCallbacks {
+		pub(super) request_tx: Mutex<Option<oneshot::Sender<HttpRequest>>>,
+	}
+
 	impl EnvoyCallbacks for TestCallbacks {
 		fn on_actor_start(
 			&self,
@@ -1306,6 +1358,72 @@ mod tests {
 					on_open: None,
 				})
 			})
+		}
+
+		fn can_hibernate(
+			&self,
+			_actor_id: &str,
+			_gateway_id: &protocol::GatewayId,
+			_request_id: &protocol::RequestId,
+			_request: &HttpRequest,
+		) -> BoxFuture<anyhow::Result<bool>> {
+			Box::pin(async { Ok(false) })
+		}
+	}
+
+	impl EnvoyCallbacks for StreamingRequestCallbacks {
+		fn on_actor_start(
+			&self,
+			_handle: EnvoyHandle,
+			_actor_id: String,
+			_generation: u32,
+			_config: protocol::ActorConfig,
+			_preloaded_kv: Option<protocol::PreloadedKv>,
+		) -> BoxFuture<anyhow::Result<()>> {
+			Box::pin(async { Ok(()) })
+		}
+
+		fn on_shutdown(&self) {}
+
+		fn fetch(
+			&self,
+			_handle: EnvoyHandle,
+			_actor_id: String,
+			_gateway_id: protocol::GatewayId,
+			_request_id: protocol::RequestId,
+			request: HttpRequest,
+		) -> BoxFuture<anyhow::Result<HttpResponse>> {
+			let request_tx = self
+				.request_tx
+				.lock()
+				.expect("streaming request mutex poisoned")
+				.take();
+			Box::pin(async move {
+				let Some(request_tx) = request_tx else {
+					anyhow::bail!("streaming request sender missing");
+				};
+				request_tx
+					.send(request)
+					.map_err(|_| anyhow::anyhow!("streaming request receiver dropped"))?;
+				pending::<()>().await;
+				unreachable!("pending request callback should not resolve")
+			})
+		}
+
+		fn websocket(
+			&self,
+			_handle: EnvoyHandle,
+			_actor_id: String,
+			_gateway_id: protocol::GatewayId,
+			_request_id: protocol::RequestId,
+			_request: HttpRequest,
+			_path: String,
+			_headers: HashMap<String, String>,
+			_is_hibernatable: bool,
+			_is_restoring_hibernatable: bool,
+			_sender: WebSocketSender,
+		) -> BoxFuture<anyhow::Result<WebSocketHandler>> {
+			Box::pin(async { anyhow::bail!("websocket should not be called in HTTP stream test") })
 		}
 
 		fn can_hibernate(
@@ -1503,6 +1621,7 @@ mod tests {
 			ws_tx: Arc::new(tokio::sync::Mutex::new(
 				None::<mpsc::UnboundedSender<WsTxMessage>>,
 			)),
+			http_ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
 			connection_session: std::sync::atomic::AtomicU64::new(0),
 			next_connection_session: std::sync::atomic::AtomicU64::new(0),
 			connection_session_tx: tokio::sync::watch::channel(0).0,
@@ -1531,6 +1650,7 @@ mod tests {
 			headers: HashMap::new(),
 			body: None,
 			stream: false,
+			response_stream: true,
 		}
 	}
 
@@ -1693,6 +1813,7 @@ mod tests {
 			.send(ToActor::ReqStart {
 				message_id: message_id(),
 				req: request_start(),
+				connection_session: 1,
 			})
 			.expect("failed to send request start");
 
@@ -1733,6 +1854,7 @@ mod tests {
 			.send(ToActor::ReqStart {
 				message_id: message_id(),
 				req: request_start(),
+				connection_session: 1,
 			})
 			.expect("failed to send request start");
 

@@ -1119,3 +1119,7 @@ mod tests {
 #[cfg(test)]
 #[path = "../../tests/support/versioned_http_abort.rs"]
 mod http_abort_tests;
+
+#[cfg(test)]
+#[path = "../../tests/support/versioned_v6_roundtrip.rs"]
+mod v6_roundtrip_tests;

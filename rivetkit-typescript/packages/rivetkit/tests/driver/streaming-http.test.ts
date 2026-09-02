@@ -215,54 +215,81 @@ describeDriverMatrix(
 							if (error) reject(error);
 							else resolve();
 						});
+						upstream.closeAllConnections();
 					});
 				}
 			}, 30_000);
 
 			test("aborts Request.signal even when the handler does not read the body", async (c) => {
-				const { client } = await setupDriverTest(c, driverTestConfig);
-				const actor = client.rawHttpActor.getOrCreate([
-					"request-cancellation",
-				]);
-				const abortController = new AbortController();
-				const request = actor.fetch("api/wait-for-request-abort", {
-					method: "POST",
-					body: Buffer.from("ignored"),
-					signal: abortController.signal,
+				let markStarted: () => void;
+				const started = new Promise<void>((resolve) => {
+					markStarted = resolve;
+				});
+				let markAborted: () => void;
+				const aborted = new Promise<void>((resolve) => {
+					markAborted = resolve;
+				});
+				const observer = createServer((incoming, response) => {
+					if (incoming.url === "/started") {
+						markStarted();
+					} else if (incoming.url === "/aborted") {
+						markAborted();
+					}
+					response.writeHead(204);
+					response.end();
+				});
+				await new Promise<void>((resolve, reject) => {
+					observer.once("error", reject);
+					observer.listen(0, "127.0.0.1", resolve);
 				});
 
-				const startDeadline = Date.now() + 2_000;
-				for (;;) {
-					const state = (await (
-						await actor.fetch("api/state")
-					).json()) as {
-						requestAbortStarted: boolean;
-					};
-					if (state.requestAbortStarted) break;
-					if (Date.now() >= startDeadline) {
-						throw new Error(
-							"actor did not start the abortable request",
-						);
+				try {
+					const address = observer.address();
+					if (!address || typeof address === "string") {
+						throw new Error("observer did not bind a TCP port");
 					}
-					await delay(25);
-				}
-				abortController.abort();
-				await expect(request).rejects.toThrow();
+					const target = encodeURIComponent(
+						`http://127.0.0.1:${address.port}`,
+					);
+					const { client } = await setupDriverTest(
+						c,
+						driverTestConfig,
+					);
+					const actor = client.rawHttpActor.getOrCreate([
+						"request-cancellation",
+					]);
+					const abortController = new AbortController();
+					const request = actor.fetch(
+						`api/wait-for-request-abort?target=${target}`,
+						{
+							method: "POST",
+							body: Buffer.from("ignored"),
+							signal: abortController.signal,
+						},
+					);
 
-				const deadline = Date.now() + 2_000;
-				for (;;) {
-					const state = (await (
-						await actor.fetch("api/state")
-					).json()) as {
-						requestAbortObserved: boolean;
-					};
-					if (state.requestAbortObserved) break;
-					if (Date.now() >= deadline) {
-						throw new Error(
-							"actor did not observe the aborted Request.signal",
-						);
-					}
-					await delay(25);
+					expect(
+						await Promise.race([
+							started.then(() => "started" as const),
+							delay(2_000),
+						]),
+					).toBe("started");
+					abortController.abort();
+					await expect(request).rejects.toThrow();
+					expect(
+						await Promise.race([
+							aborted.then(() => "aborted" as const),
+							delay(2_000),
+						]),
+					).toBe("aborted");
+				} finally {
+					await new Promise<void>((resolve, reject) => {
+						observer.close((error) => {
+							if (error) reject(error);
+							else resolve();
+						});
+						observer.closeAllConnections();
+					});
 				}
 			});
 

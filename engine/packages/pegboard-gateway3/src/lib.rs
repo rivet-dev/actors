@@ -10,8 +10,9 @@ use rivet_guard_core::{
 	ResponseBody, WebSocketHandle,
 	custom_serve::{CustomServeTrait, HibernationResult},
 	errors::{
-		ActorStoppedWhileWaitingForWebSocketOpen, WebSocketClosedBeforeOpen, WebSocketOpenDropped,
-		WebSocketOpenResponseClosed, WebSocketOpenTimeout,
+		ActorStoppedWhileWaiting, ActorStoppedWhileWaitingForWebSocketOpen,
+		WebSocketClosedBeforeOpen, WebSocketOpenDropped, WebSocketOpenResponseClosed,
+		WebSocketOpenTimeout,
 	},
 	request_context::RequestContext,
 	utils::is_ws_hibernate,
@@ -71,13 +72,16 @@ enum HibernationLifecycleResult {
 pub struct PegboardGateway3 {
 	ctx: StandaloneCtx,
 	shared_state: SharedState,
+	lifecycle: rivet_guard_core::metrics::PegboardGatewayLifecycle,
 	namespace_id: Id,
 	pool_name: String,
 	envoy_key: String,
+	envoy_protocol_version: Option<u16>,
 	actor_id: Id,
 	actor_key: Option<String>,
 	actor_generation: Option<u32>,
 	path: String,
+	prepared_http_request: tokio::sync::Mutex<Option<http_stream::PreparedHttpRequest>>,
 }
 
 impl PegboardGateway3 {
@@ -85,9 +89,11 @@ impl PegboardGateway3 {
 	pub fn new(
 		ctx: StandaloneCtx,
 		shared_state: SharedState,
+		lifecycle: rivet_guard_core::metrics::PegboardGatewayLifecycle,
 		namespace_id: Id,
 		pool_name: String,
 		envoy_key: String,
+		envoy_protocol_version: Option<u16>,
 		actor_id: Id,
 		actor_key: Option<String>,
 		actor_generation: Option<u32>,
@@ -96,18 +102,46 @@ impl PegboardGateway3 {
 		Self {
 			ctx,
 			shared_state,
+			lifecycle,
 			namespace_id,
 			pool_name,
 			envoy_key,
+			envoy_protocol_version,
 			actor_id,
 			actor_key,
 			actor_generation,
 			path,
+			prepared_http_request: tokio::sync::Mutex::new(None),
 		}
 	}
 }
 
 impl PegboardGateway3 {
+	async fn prepare_http_request(&self, ctx: &StandaloneCtx) -> Result<()> {
+		let route = ctx
+			.op(pegboard::ops::actor::get_for_gateway::Input {
+				actor_id: self.actor_id,
+			})
+			.await?;
+		let Some(route) = route else {
+			return Err(ActorStoppedWhileWaiting {
+				actor_id: self.actor_id.to_string(),
+				phase: "prepare_request".to_owned(),
+			}
+			.build());
+		};
+		if route.envoy_key.as_deref() != Some(self.envoy_key.as_str())
+			|| route.envoy_protocol_version != self.envoy_protocol_version
+		{
+			return Err(ActorStoppedWhileWaiting {
+				actor_id: self.actor_id.to_string(),
+				phase: "prepare_request".to_owned(),
+			}
+			.build());
+		}
+		Ok(())
+	}
+
 	async fn handle_websocket_inner(
 		&self,
 		ctx: &StandaloneCtx,
@@ -179,9 +213,11 @@ impl PegboardGateway3 {
 				self.pool_name.as_str(),
 				self.actor_key.clone(),
 				self.actor_generation,
+				self.envoy_protocol_version,
 				RequestProtocol::WebSocket,
 				tunnel_subject.clone(),
 				request_id,
+				self.lifecycle.clone(),
 				after_hibernation,
 			)
 			.await?;
@@ -696,6 +732,15 @@ impl PegboardGateway3 {
 impl CustomServeTrait for PegboardGateway3 {
 	fn streams_request_body(&self) -> bool {
 		true
+	}
+
+	async fn prepare_streaming_request(&self, req_ctx: &mut RequestContext) -> Result<()> {
+		let ctx = self.ctx.with_ray(req_ctx.ray_id(), req_ctx.req_id())?;
+		let prepared = self.prepare_http_exchange(&ctx, req_ctx).await?;
+		let mut slot = self.prepared_http_request.lock().await;
+		anyhow::ensure!(slot.is_none(), "HTTP request was prepared more than once");
+		*slot = Some(prepared);
+		Ok(())
 	}
 
 	#[tracing::instrument(skip_all, fields(actor_id=?self.actor_id, actor_key=?self.actor_key, actor_generation=?self.actor_generation, namespace_id=?self.namespace_id, pool_name=%self.pool_name, envoy_key=%self.envoy_key))]

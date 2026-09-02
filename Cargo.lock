@@ -5619,6 +5619,7 @@ dependencies = [
  "rivet-cache",
  "rivet-config",
  "rivet-data",
+ "rivet-envoy-protocol",
  "rivet-error",
  "rivet-guard-core",
  "rivet-logs",
@@ -5628,6 +5629,7 @@ dependencies = [
  "rivet-runner-protocol",
  "rivet-runtime",
  "rivet-types",
+ "rivet-util",
  "rustls",
  "rustls-pemfile",
  "serde",
@@ -5641,6 +5643,7 @@ dependencies = [
  "universalpubsub",
  "url",
  "urlencoding",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -5683,6 +5686,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-stream",
  "tokio-tungstenite",
+ "tokio-util",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",

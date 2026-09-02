@@ -131,9 +131,19 @@ async function pumpResponseBody(
 				.then((next) => ({ cancelled: false, next }) as const);
 			const result = await Promise.race([read, cancelled]);
 			if (result.cancelled) {
-				await reader.cancel(
-					new Error("native http response stream receiver dropped"),
-				);
+				// Web Streams closes pending reads before waiting for the source's cancel
+				// callback. Do not let an arbitrary user cancel promise retain the native
+				// request and connection cleanup indefinitely.
+				void reader
+					.cancel(
+						new Error("native http response stream receiver dropped"),
+					)
+					.catch((error) => {
+						logger().debug({
+							msg: "failed to cancel native http response reader",
+							error,
+						});
+					});
 				return;
 			}
 			const { next } = result;
@@ -154,13 +164,18 @@ async function pumpResponseBody(
 				error: streamError,
 			});
 		}
-		try {
-			await reader.cancel(error);
-		} catch {
+		void reader.cancel(error).catch(() => {
 			// Reader may already be closed after a native-side disconnect.
-		}
+		});
 	} finally {
-		reader.releaseLock();
+		try {
+			reader.releaseLock();
+		} catch (error) {
+			logger().debug({
+				msg: "failed to release native http response reader lock",
+				error,
+			});
+		}
 	}
 }
 

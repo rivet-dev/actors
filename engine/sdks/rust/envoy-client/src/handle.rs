@@ -662,7 +662,13 @@ impl EnvoyHandle {
 			data = crate::stringify::stringify_to_envoy(&message),
 			"received serverless start"
 		);
-		crate::envoy::send_to_envoy_tx(&self.shared, ToEnvoyMessage::ConnMessage { message })
+		crate::envoy::send_to_envoy_tx(
+			&self.shared,
+			ToEnvoyMessage::ConnMessage {
+				message,
+				session: self.shared.connection_session.load(Ordering::Acquire),
+			},
+		)
 			.map_err(|_| anyhow::anyhow!("envoy channel closed"))?;
 
 		Ok(())

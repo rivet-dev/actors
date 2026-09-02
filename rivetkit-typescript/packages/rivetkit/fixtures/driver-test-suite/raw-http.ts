@@ -169,6 +169,10 @@ export const rawHttpActor = actor({
 
 		if (url.pathname === "/api/wait-for-request-abort") {
 			ctx.state.requestAbortStarted = true;
+			const target = url.searchParams.get("target");
+			if (target) {
+				await fetch(`${target}/started`, { method: "POST" });
+			}
 			await new Promise<void>((resolve) => {
 				if (request.signal.aborted) {
 					resolve();
@@ -179,6 +183,9 @@ export const rawHttpActor = actor({
 				}
 			});
 			ctx.state.requestAbortObserved = true;
+			if (target) {
+				await fetch(`${target}/aborted`, { method: "POST" });
+			}
 			return new Response("aborted");
 		}
 

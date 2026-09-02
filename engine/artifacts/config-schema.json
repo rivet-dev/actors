@@ -477,6 +477,35 @@
       },
       "additionalProperties": false
     },
+    "Gateway3": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "default": "off",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Gateway3Mode"
+            }
+          ]
+        },
+        "rollout_percent": {
+          "default": 0,
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 100.0,
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "Gateway3Mode": {
+      "type": "string",
+      "enum": [
+        "off",
+        "opportunistic",
+        "on"
+      ]
+    },
     "Guard": {
       "type": "object",
       "properties": {
@@ -989,6 +1018,17 @@
           ],
           "format": "uint64",
           "minimum": 0.0
+        },
+        "gateway3": {
+          "description": "Controls routing to the streaming Gateway 3 implementation.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Gateway3"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "gateway_gc_interval_ms": {
           "description": "GC interval for in-flight requests in milliseconds.",

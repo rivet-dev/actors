@@ -20,6 +20,7 @@ pub struct Output {
 	pub connectable: bool,
 	pub runner_id: Option<Id>,
 	pub envoy_key: Option<String>,
+	pub envoy_protocol_version: Option<u16>,
 	pub version: u32,
 }
 
@@ -75,6 +76,16 @@ pub async fn pegboard_actor_get_for_gateway(
 
 			tx.tag(&format!("actor_get_for_gateway:{namespace_id}"))?;
 
+			let envoy_protocol_version = if let Some(envoy_key) = &envoy_key {
+				tx.read_opt(
+					&keys::envoy::ProtocolVersionKey::new(namespace_id, envoy_key.clone()),
+					Serializable,
+				)
+				.await?
+			} else {
+				None
+			};
+
 			Ok(Some(Output {
 				namespace_id,
 				workflow_id,
@@ -85,6 +96,7 @@ pub async fn pegboard_actor_get_for_gateway(
 				connectable,
 				runner_id,
 				envoy_key,
+				envoy_protocol_version,
 				version: version_entry.unwrap_or(1),
 			}))
 		})

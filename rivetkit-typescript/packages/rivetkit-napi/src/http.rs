@@ -65,13 +65,6 @@ impl HttpResponseBodyStream {
 		}
 	}
 
-	async fn take_sender(&self) -> napi::Result<mpsc::Sender<ResponseChunk>> {
-		self.tx
-			.lock()
-			.await
-			.take()
-			.ok_or_else(|| napi::Error::from_reason("http response body stream is already closed"))
-	}
 }
 
 #[napi]
@@ -83,20 +76,29 @@ impl HttpResponseBodyStream {
 
 	#[napi]
 	pub async fn write(&self, chunk: Buffer) -> napi::Result<()> {
-		let tx = self.tx.lock().await.clone().ok_or_else(|| {
+		let tx = self.tx.lock().await;
+		let tx = tx.as_ref().ok_or_else(|| {
 			napi::Error::from_reason("http response body stream is already closed")
 		})?;
-		tx.send(ResponseChunk::Data {
-			data: chunk.to_vec(),
-			finish: false,
-		})
-		.await
-		.map_err(|_| napi::Error::from_reason("http response body stream receiver dropped"))
+		for data in chunk.chunks(rivetkit_core::HTTP_BODY_MAX_CHUNK_SIZE) {
+			tx.send(ResponseChunk::Data {
+				data: data.to_vec(),
+				finish: false,
+			})
+			.await
+			.map_err(|_| {
+				napi::Error::from_reason("http response body stream receiver dropped")
+			})?;
+		}
+		Ok(())
 	}
 
 	#[napi]
 	pub async fn end(&self) -> napi::Result<()> {
-		let tx = self.take_sender().await?;
+		let mut tx = self.tx.lock().await;
+		let tx = tx
+			.take()
+			.ok_or_else(|| napi::Error::from_reason("http response body stream is already closed"))?;
 		tx.send(ResponseChunk::Data {
 			data: Vec::new(),
 			finish: true,
@@ -107,7 +109,10 @@ impl HttpResponseBodyStream {
 
 	#[napi]
 	pub async fn error(&self, message: String) -> napi::Result<()> {
-		let tx = self.take_sender().await?;
+		let mut tx = self.tx.lock().await;
+		let tx = tx
+			.take()
+			.ok_or_else(|| napi::Error::from_reason("http response body stream is already closed"))?;
 		tx.send(ResponseChunk::Error(message))
 			.await
 			.map_err(|_| napi::Error::from_reason("http response body stream receiver dropped"))

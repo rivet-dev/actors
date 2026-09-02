@@ -585,6 +585,7 @@ mod tests {
 			ws_tx: Arc::new(tokio::sync::Mutex::new(
 				None::<tokio::sync::mpsc::UnboundedSender<WsTxMessage>>,
 			)),
+			http_ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
 			connection_session: std::sync::atomic::AtomicU64::new(0),
 			next_connection_session: std::sync::atomic::AtomicU64::new(0),
 			connection_session_tx: tokio::sync::watch::channel(0).0,
@@ -606,6 +607,8 @@ mod tests {
 			remote_sqlite_requests: HashMap::new(),
 			next_remote_sqlite_request_id: 0,
 			request_to_actor: BufferMap::new(),
+			http_request_routes: BufferMap::new(),
+			http_message_indices: BufferMap::new(),
 			buffered_messages: Vec::new(),
 			processed_command_idx: HashMap::new(),
 		}

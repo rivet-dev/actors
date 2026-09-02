@@ -73,9 +73,11 @@ enum HibernationLifecycleResult {
 pub struct PegboardGateway2 {
 	ctx: StandaloneCtx,
 	shared_state: SharedState,
+	lifecycle: rivet_guard_core::metrics::PegboardGatewayLifecycle,
 	namespace_id: Id,
 	pool_name: String,
 	envoy_key: String,
+	envoy_protocol_version: Option<u16>,
 	actor_id: Id,
 	actor_key: Option<String>,
 	actor_generation: Option<u32>,
@@ -87,9 +89,11 @@ impl PegboardGateway2 {
 	pub fn new(
 		ctx: StandaloneCtx,
 		shared_state: SharedState,
+		lifecycle: rivet_guard_core::metrics::PegboardGatewayLifecycle,
 		namespace_id: Id,
 		pool_name: String,
 		envoy_key: String,
+		envoy_protocol_version: Option<u16>,
 		actor_id: Id,
 		actor_key: Option<String>,
 		actor_generation: Option<u32>,
@@ -98,9 +102,11 @@ impl PegboardGateway2 {
 		Self {
 			ctx,
 			shared_state,
+			lifecycle,
 			namespace_id,
 			pool_name,
 			envoy_key,
+			envoy_protocol_version,
 			actor_id,
 			actor_key,
 			actor_generation,
@@ -193,9 +199,11 @@ impl PegboardGateway2 {
 				self.pool_name.as_str(),
 				self.actor_key.clone(),
 				self.actor_generation,
+				self.envoy_protocol_version,
 				RequestProtocol::Http,
 				tunnel_subject,
 				request_id,
+				self.lifecycle.clone(),
 				false,
 			)
 			.await?;
@@ -214,6 +222,7 @@ impl PegboardGateway2 {
 						Some(body_bytes.to_vec())
 					},
 					stream: false,
+					response_stream: false,
 				},
 			);
 
@@ -244,7 +253,7 @@ impl PegboardGateway2 {
 									) => {
 										return anyhow::Ok(response_start);
 									}
-									protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort => {
+									protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(_) => {
 										tracing::warn!("request aborted");
 										return Err(TunnelRequestAborted {
 											phase: PHASE_WAITING_FOR_RESPONSE_START.to_owned(),
@@ -402,9 +411,11 @@ impl PegboardGateway2 {
 				self.pool_name.as_str(),
 				self.actor_key.clone(),
 				self.actor_generation,
+				self.envoy_protocol_version,
 				RequestProtocol::WebSocket,
 				tunnel_subject.clone(),
 				request_id,
+				self.lifecycle.clone(),
 				after_hibernation,
 			)
 			.await?;

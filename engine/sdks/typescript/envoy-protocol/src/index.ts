@@ -2167,6 +2167,12 @@ export function writeToRivetRequestBodyWindowUpdate(bc: bare.ByteCursor, x: ToRi
     bare.writeU64(bc, x.consumedBytes)
 }
 
+/**
+ * The actor handler no longer wants request-body bytes. The HTTP response may
+ * still continue normally.
+ */
+export type ToRivetRequestBodyCancel = null
+
 export enum HttpStreamAbortReasonKind {
     Unknown = "Unknown",
     Cancelled = "Cancelled",
@@ -2244,6 +2250,11 @@ export function readToEnvoyRequestAbort(bc: bare.ByteCursor): ToEnvoyRequestAbor
 export function writeToEnvoyRequestAbort(bc: bare.ByteCursor, x: ToEnvoyRequestAbort): void {
     writeHttpStreamAbortReason(bc, x.reason)
 }
+
+/**
+ * Stop the actor-side request body without cancelling the HTTP response.
+ */
+export type ToEnvoyRequestBodyCancel = null
 
 export type ToRivetResponseStart = {
     readonly status: u16
@@ -2461,6 +2472,7 @@ export type ToRivetTunnelMessageKind =
     | { readonly tag: "ToRivetResponseChunk"; readonly val: ToRivetResponseChunk }
     | { readonly tag: "ToRivetResponseAbort"; readonly val: ToRivetResponseAbort }
     | { readonly tag: "ToRivetRequestBodyWindowUpdate"; readonly val: ToRivetRequestBodyWindowUpdate }
+    | { readonly tag: "ToRivetRequestBodyCancel"; readonly val: ToRivetRequestBodyCancel }
     /**
      * WebSocket
      */
@@ -2482,12 +2494,14 @@ export function readToRivetTunnelMessageKind(bc: bare.ByteCursor): ToRivetTunnel
         case 3:
             return { tag: "ToRivetRequestBodyWindowUpdate", val: readToRivetRequestBodyWindowUpdate(bc) }
         case 4:
-            return { tag: "ToRivetWebSocketOpen", val: readToRivetWebSocketOpen(bc) }
+            return { tag: "ToRivetRequestBodyCancel", val: null }
         case 5:
-            return { tag: "ToRivetWebSocketMessage", val: readToRivetWebSocketMessage(bc) }
+            return { tag: "ToRivetWebSocketOpen", val: readToRivetWebSocketOpen(bc) }
         case 6:
-            return { tag: "ToRivetWebSocketMessageAck", val: readToRivetWebSocketMessageAck(bc) }
+            return { tag: "ToRivetWebSocketMessage", val: readToRivetWebSocketMessage(bc) }
         case 7:
+            return { tag: "ToRivetWebSocketMessageAck", val: readToRivetWebSocketMessageAck(bc) }
+        case 8:
             return { tag: "ToRivetWebSocketClose", val: readToRivetWebSocketClose(bc) }
         default: {
             bc.offset = offset
@@ -2518,23 +2532,27 @@ export function writeToRivetTunnelMessageKind(bc: bare.ByteCursor, x: ToRivetTun
             writeToRivetRequestBodyWindowUpdate(bc, x.val)
             break
         }
-        case "ToRivetWebSocketOpen": {
+        case "ToRivetRequestBodyCancel": {
             bare.writeU8(bc, 4)
+            break
+        }
+        case "ToRivetWebSocketOpen": {
+            bare.writeU8(bc, 5)
             writeToRivetWebSocketOpen(bc, x.val)
             break
         }
         case "ToRivetWebSocketMessage": {
-            bare.writeU8(bc, 5)
+            bare.writeU8(bc, 6)
             writeToRivetWebSocketMessage(bc, x.val)
             break
         }
         case "ToRivetWebSocketMessageAck": {
-            bare.writeU8(bc, 6)
+            bare.writeU8(bc, 7)
             writeToRivetWebSocketMessageAck(bc, x.val)
             break
         }
         case "ToRivetWebSocketClose": {
-            bare.writeU8(bc, 7)
+            bare.writeU8(bc, 8)
             writeToRivetWebSocketClose(bc, x.val)
             break
         }
@@ -2568,6 +2586,7 @@ export type ToEnvoyTunnelMessageKind =
     | { readonly tag: "ToEnvoyRequestStart"; readonly val: ToEnvoyRequestStart }
     | { readonly tag: "ToEnvoyRequestChunk"; readonly val: ToEnvoyRequestChunk }
     | { readonly tag: "ToEnvoyRequestAbort"; readonly val: ToEnvoyRequestAbort }
+    | { readonly tag: "ToEnvoyRequestBodyCancel"; readonly val: ToEnvoyRequestBodyCancel }
     | { readonly tag: "ToEnvoyResponseBodyWindowUpdate"; readonly val: ToEnvoyResponseBodyWindowUpdate }
     /**
      * WebSocket
@@ -2587,12 +2606,14 @@ export function readToEnvoyTunnelMessageKind(bc: bare.ByteCursor): ToEnvoyTunnel
         case 2:
             return { tag: "ToEnvoyRequestAbort", val: readToEnvoyRequestAbort(bc) }
         case 3:
-            return { tag: "ToEnvoyResponseBodyWindowUpdate", val: readToEnvoyResponseBodyWindowUpdate(bc) }
+            return { tag: "ToEnvoyRequestBodyCancel", val: null }
         case 4:
-            return { tag: "ToEnvoyWebSocketOpen", val: readToEnvoyWebSocketOpen(bc) }
+            return { tag: "ToEnvoyResponseBodyWindowUpdate", val: readToEnvoyResponseBodyWindowUpdate(bc) }
         case 5:
-            return { tag: "ToEnvoyWebSocketMessage", val: readToEnvoyWebSocketMessage(bc) }
+            return { tag: "ToEnvoyWebSocketOpen", val: readToEnvoyWebSocketOpen(bc) }
         case 6:
+            return { tag: "ToEnvoyWebSocketMessage", val: readToEnvoyWebSocketMessage(bc) }
+        case 7:
             return { tag: "ToEnvoyWebSocketClose", val: readToEnvoyWebSocketClose(bc) }
         default: {
             bc.offset = offset
@@ -2618,23 +2639,27 @@ export function writeToEnvoyTunnelMessageKind(bc: bare.ByteCursor, x: ToEnvoyTun
             writeToEnvoyRequestAbort(bc, x.val)
             break
         }
-        case "ToEnvoyResponseBodyWindowUpdate": {
+        case "ToEnvoyRequestBodyCancel": {
             bare.writeU8(bc, 3)
+            break
+        }
+        case "ToEnvoyResponseBodyWindowUpdate": {
+            bare.writeU8(bc, 4)
             writeToEnvoyResponseBodyWindowUpdate(bc, x.val)
             break
         }
         case "ToEnvoyWebSocketOpen": {
-            bare.writeU8(bc, 4)
+            bare.writeU8(bc, 5)
             writeToEnvoyWebSocketOpen(bc, x.val)
             break
         }
         case "ToEnvoyWebSocketMessage": {
-            bare.writeU8(bc, 5)
+            bare.writeU8(bc, 6)
             writeToEnvoyWebSocketMessage(bc, x.val)
             break
         }
         case "ToEnvoyWebSocketClose": {
-            bare.writeU8(bc, 6)
+            bare.writeU8(bc, 7)
             writeToEnvoyWebSocketClose(bc, x.val)
             break
         }

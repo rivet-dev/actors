@@ -1,15 +1,32 @@
 use super::*;
 
 #[test]
-fn request_body_streams_only_after_one_chunk() {
-	let hint = |size| SizeHint::with_exact(size as u64);
-	assert!(!should_stream_http_request_body_hint(&hint(0)));
-	assert!(!should_stream_http_request_body_hint(&hint(
-		HTTP_BODY_CHUNK_SIZE
-	)));
-	assert!(should_stream_http_request_body_hint(&hint(
-		HTTP_BODY_CHUNK_SIZE + 1
-	)));
+fn every_nonempty_http_upload_streams_after_request_start() {
+	assert!(!should_stream_http_request_body(
+		&Method::POST,
+		Some(0),
+		false
+	));
+	assert!(should_stream_http_request_body(
+		&Method::POST,
+		Some(1),
+		false
+	));
+	assert!(should_stream_http_request_body(
+		&Method::POST,
+		None,
+		false
+	));
+	assert!(!should_stream_http_request_body(
+		&Method::GET,
+		Some(1),
+		false
+	));
+	assert!(!should_stream_http_request_body(
+		&Method::POST,
+		Some(1),
+		true
+	));
 }
 
 #[test]

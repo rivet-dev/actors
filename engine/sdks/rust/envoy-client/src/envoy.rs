@@ -58,12 +58,21 @@ pub struct EnvoyContext {
 	pub remote_sqlite_requests: HashMap<u32, RemoteSqliteRequestEntry>,
 	pub next_remote_sqlite_request_id: u32,
 	pub request_to_actor: BufferMap<String>,
+	pub http_request_routes: BufferMap<HttpRequestRoute>,
+	pub http_message_indices: BufferMap<protocol::MessageIndex>,
 	pub buffered_messages: Vec<protocol::ToRivetTunnelMessage>,
 	/// Highest command index processed per `(actor_id, generation)`, used to
 	/// drop replayed commands from `pegboard-envoy` after a reconnect. Persists
 	/// across `remove_actor` so a replayed `CommandStartActor` for an
 	/// already-stopped actor cannot resurrect it.
 	pub processed_command_idx: HashMap<(String, u32), i64>,
+}
+
+pub struct HttpRequestRoute {
+	pub actor_id: String,
+	pub session: u64,
+	pub gateway_id: protocol::GatewayId,
+	pub request_id: protocol::RequestId,
 }
 
 pub struct ActorEntry {
@@ -89,9 +98,11 @@ pub enum BufferedActorMessage {
 pub enum ToEnvoyMessage {
 	ConnMessage {
 		message: protocol::ToEnvoy,
+		session: u64,
 	},
 	ConnClose {
 		evict: bool,
+		session: u64,
 	},
 	SendEvents {
 		events: Vec<protocol::EventWrapper>,
@@ -313,6 +324,7 @@ fn start_envoy_sync_inner(config: EnvoyConfig) -> EnvoyHandle {
 		live_tunnel_requests: Arc::new(std::sync::Mutex::new(HashMap::new())),
 		pending_hibernation_restores: Arc::new(std::sync::Mutex::new(HashMap::new())),
 		ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
+		http_ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
 		connection_session: std::sync::atomic::AtomicU64::new(0),
 		next_connection_session: std::sync::atomic::AtomicU64::new(0),
 		connection_session_tx,
@@ -341,6 +353,8 @@ fn start_envoy_sync_inner(config: EnvoyConfig) -> EnvoyHandle {
 		remote_sqlite_requests: HashMap::new(),
 		next_remote_sqlite_request_id: 0,
 		request_to_actor: BufferMap::new(),
+		http_request_routes: BufferMap::new(),
+		http_message_indices: BufferMap::new(),
 		buffered_messages: Vec::new(),
 		processed_command_idx: HashMap::new(),
 	};
@@ -376,10 +390,22 @@ async fn envoy_loop(
 				METRICS.envoy_tx_depth.dec();
 
 				match msg {
-					ToEnvoyMessage::ConnMessage { message } => {
-						lost_timeout = handle_conn_message(&mut ctx, &start_tx, lost_timeout, message).await;
+					ToEnvoyMessage::ConnMessage { message, session } => {
+						lost_timeout = handle_conn_message(&mut ctx, &start_tx, lost_timeout, message, session).await;
 					}
-					ToEnvoyMessage::ConnClose { evict } => {
+					ToEnvoyMessage::ConnClose { evict, session } => {
+						let closed_routes = ctx
+							.http_request_routes
+							.remove_where(|route| route.session == session);
+						for route in closed_routes {
+							ctx.http_message_indices
+								.remove(&[&route.gateway_id, &route.request_id]);
+						}
+						for generations in ctx.actors.values() {
+							for actor in generations.values() {
+								let _ = actor.handle.send(ToActor::ConnectionClosed { session });
+							}
+						}
 						fail_sent_remote_sqlite_requests_with_indeterminate_result(&mut ctx);
 						lost_timeout = handle_conn_close(&ctx, lost_timeout);
 						if evict {
@@ -422,7 +448,8 @@ async fn envoy_loop(
 						send_hibernatable_ws_message_ack(&mut ctx, gateway_id, request_id, envoy_message_index);
 					}
 					ToEnvoyMessage::HttpRequestComplete { gateway_id, request_id } => {
-						ctx.request_to_actor.remove(&[&gateway_id, &request_id]);
+						ctx.http_request_routes.remove(&[&gateway_id, &request_id]);
+						ctx.http_message_indices.remove(&[&gateway_id, &request_id]);
 					}
 					ToEnvoyMessage::GetActor { actor_id, generation, response_tx } => {
 						let info = ctx.get_actor(&actor_id, generation).map(|entry| {
@@ -569,6 +596,7 @@ async fn handle_conn_message(
 	start_tx: &tokio::sync::watch::Sender<()>,
 	mut lost_timeout: Option<SleepFuture>,
 	message: protocol::ToEnvoy,
+	session: u64,
 ) -> Option<SleepFuture> {
 	match message {
 		protocol::ToEnvoy::ToEnvoyInit(init) => {
@@ -612,7 +640,7 @@ async fn handle_conn_message(
 			handle_remote_sqlite_execute_batch_response(ctx, response).await;
 		}
 		protocol::ToEnvoy::ToEnvoyTunnelMessage(tunnel_msg) => {
-			handle_tunnel_message(ctx, tunnel_msg).await;
+			handle_tunnel_message(ctx, session, tunnel_msg).await;
 		}
 		protocol::ToEnvoy::ToEnvoyPing(_) => {
 			// Should be handled by connection task

@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use gas::prelude::*;
 use rivet_envoy_protocol as protocol;
+use rivet_guard_core::ResponseBodyTerminal;
 use std::sync::{
 	Arc,
 	atomic::{AtomicU64, Ordering},
@@ -12,11 +13,23 @@ use crate::shared_state::{
 	InFlightRequestHandle, InFlightTunnelMessage, MsgGcReason, RequestStopResult,
 };
 
+use crate::metrics::HttpResponseFlowMetrics;
+
 use super::{ResponseBodyError, send_http_request_abort};
 
 const HTTP_BODY_CHUNK_SIZE: usize = 64 * 1024;
 const HTTP_RESPONSE_QUEUE_OVERLOADED_DETAIL: &str =
 	"actor response producer outpaced downstream delivery and filled the gateway buffer";
+
+struct HttpResponseWindowStall(std::time::Instant);
+
+impl Drop for HttpResponseWindowStall {
+	fn drop(&mut self) {
+		crate::metrics::HTTP_BODY_WINDOW_STALL_DURATION_SECONDS
+			.with_label_values(&["response"])
+			.observe(self.0.elapsed().as_secs_f64());
+	}
+}
 
 /// Advances the expected tunnel sequence while rejecting missing or reordered response frames.
 fn advance_http_stream_message_index(
@@ -38,12 +51,55 @@ async fn send_http_response_body_bytes(
 	actor_id: Id,
 	body: Vec<u8>,
 	detail: &'static str,
-	egress_bytes: &AtomicU64,
+	response_consumed_bytes: &AtomicU64,
+	received_bytes: &mut u64,
+	terminal_error: &ResponseBodyTerminal,
+	flow_metrics: &Arc<HttpResponseFlowMetrics>,
 ) -> bool {
 	let body = Bytes::from(body);
 	for offset in (0..body.len()).step_by(HTTP_BODY_CHUNK_SIZE) {
 		let chunk = body.slice(offset..(offset + HTTP_BODY_CHUNK_SIZE).min(body.len()));
 		let chunk_len = chunk.len();
+		let consumed_bytes = response_consumed_bytes.load(Ordering::Acquire);
+		let Some((next_received_bytes, outstanding_bytes)) = received_bytes
+			.checked_add(chunk_len as u64)
+			.and_then(|next| next.checked_sub(consumed_bytes).map(|outstanding| (next, outstanding)))
+		else {
+			fail_response_window(
+				in_flight_req,
+				"invalid HTTP response body window accounting",
+				terminal_error,
+			)
+			.await;
+			return false;
+		};
+		if outstanding_bytes > protocol::HTTP_STREAM_INITIAL_WINDOW_BYTES {
+			crate::metrics::HTTP_PROTOCOL_VIOLATION_TOTAL
+				.with_label_values(&["response", "window_exceeded"])
+				.inc();
+			tracing::warn!(
+				outstanding_bytes,
+				window_bytes = protocol::HTTP_STREAM_INITIAL_WINDOW_BYTES,
+				"envoy exceeded the HTTP response body window"
+			);
+			fail_response_window(
+				in_flight_req,
+				"envoy exceeded the HTTP response body window",
+				terminal_error,
+			)
+			.await;
+			return false;
+		}
+		*received_bytes = next_received_bytes;
+		flow_metrics.enqueue(chunk_len);
+		let _stall = if body_tx.capacity() == 0 {
+			crate::metrics::HTTP_BODY_WINDOW_EXHAUSTED_TOTAL
+				.with_label_values(&["response"])
+				.inc();
+			Some(HttpResponseWindowStall(std::time::Instant::now()))
+		} else {
+			None
+		};
 		let delivery = tokio::select! {
 			biased;
 			_ = body_tx.closed() => Err((RequestStopResult::ClientDisconnect, detail.to_owned())),
@@ -56,7 +112,7 @@ async fn send_http_response_body_bytes(
 				if overloaded {
 					send_http_request_abort(
 						in_flight_req,
-						protocol::HttpStreamAbortReasonKind::Overloaded,
+						protocol::HttpStreamAbortReasonKind::InternalError,
 						Some(HTTP_RESPONSE_QUEUE_OVERLOADED_DETAIL.to_owned()),
 					)
 					.await;
@@ -79,13 +135,14 @@ async fn send_http_response_body_bytes(
 			},
 		};
 		if let Err((stop_result, message)) = delivery {
+			flow_metrics.consume(chunk_len);
 			tracing::debug!(?stop_result, %message, "stopped delivering streaming http response");
 			if !matches!(stop_result, RequestStopResult::ClientDisconnect) {
-				send_http_body_error(body_tx, message);
+				send_http_body_error(terminal_error, message);
 			} else {
 				send_http_request_abort(
 					in_flight_req,
-					protocol::HttpStreamAbortReasonKind::ClientDisconnect,
+					protocol::HttpStreamAbortReasonKind::Cancelled,
 					Some(detail.to_owned()),
 				)
 				.await;
@@ -93,10 +150,24 @@ async fn send_http_response_body_bytes(
 			in_flight_req.stop(stop_result).await;
 			return false;
 		}
-		egress_bytes.fetch_add(chunk_len as u64, Ordering::AcqRel);
 	}
 
 	true
+}
+
+async fn fail_response_window(
+	in_flight_req: &InFlightRequestHandle,
+	detail: &'static str,
+	terminal_error: &ResponseBodyTerminal,
+) {
+	send_http_request_abort(
+		in_flight_req,
+		protocol::HttpStreamAbortReasonKind::InternalError,
+		Some(detail.to_owned()),
+	)
+	.await;
+	send_http_body_error(terminal_error, detail);
+	in_flight_req.stop(RequestStopResult::EnvoyError).await;
 }
 
 pub(super) async fn drain_http_response_stream(
@@ -109,8 +180,12 @@ pub(super) async fn drain_http_response_stream(
 	mut expected_message_index: protocol::MessageIndex,
 	actor_id: Id,
 	idle_timeout: Option<Duration>,
-	egress_bytes: Arc<AtomicU64>,
+	response_consumed_bytes: Arc<AtomicU64>,
+	terminal_error: ResponseBodyTerminal,
+	flow_metrics: Arc<HttpResponseFlowMetrics>,
 ) {
+	let mut received_bytes = 0u64;
+	let mut idle_deadline = idle_timeout.map(|timeout| tokio::time::Instant::now() + timeout);
 	if let Some(body) = initial_body.filter(|body| !body.is_empty()) {
 		if !send_http_response_body_bytes(
 			&in_flight_req,
@@ -120,7 +195,10 @@ pub(super) async fn drain_http_response_stream(
 			actor_id,
 			body,
 			"client dropped response before initial body was sent",
-			&egress_bytes,
+			&response_consumed_bytes,
+			&mut received_bytes,
+			&terminal_error,
+			&flow_metrics,
 		)
 		.await
 		{
@@ -133,7 +211,7 @@ pub(super) async fn drain_http_response_stream(
 			res = msg_rx.recv() => {
 				let Some(msg) = res else {
 					tracing::warn!("streaming response tunnel channel closed");
-					send_http_body_error(&body_tx, "response stream closed before finish");
+					send_http_body_error(&terminal_error, "response stream closed before finish");
 					in_flight_req.stop(RequestStopResult::EnvoyError).await;
 					return;
 				};
@@ -144,6 +222,9 @@ pub(super) async fn drain_http_response_stream(
 				) {
 					Ok(next_message_index) => expected_message_index = next_message_index,
 					Err(()) => {
+						crate::metrics::HTTP_PROTOCOL_VIOLATION_TOTAL
+							.with_label_values(&["response", "message_index"])
+							.inc();
 						tracing::warn!(
 							expected_message_index,
 							actual_message_index = msg.message_id.message_index,
@@ -155,13 +236,29 @@ pub(super) async fn drain_http_response_stream(
 							Some("gateway detected response stream message index gap".to_owned()),
 						)
 						.await;
-						send_http_body_error(&body_tx, "response stream message index gap");
+						send_http_body_error(&terminal_error, "response stream message index gap");
 						in_flight_req.stop(RequestStopResult::EnvoyError).await;
 						return;
 					}
 				}
 
 				match msg.message_kind {
+					protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyWindowUpdate(update) => {
+						if let Err(error) = in_flight_req
+							.update_request_body_consumed(update.consumed_bytes)
+							.await
+						{
+							crate::metrics::HTTP_PROTOCOL_VIOLATION_TOTAL
+								.with_label_values(&["request", "invalid_credit"])
+								.inc();
+							tracing::warn!(?error, "invalid request body window update");
+							in_flight_req.stop(RequestStopResult::EnvoyError).await;
+							return;
+						}
+					}
+					protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyCancel => {
+						in_flight_req.cancel_upload();
+					}
 					protocol::ToRivetTunnelMessageKind::ToRivetResponseChunk(chunk) => {
 						if !chunk.body.is_empty() {
 							let delivered = send_http_response_body_bytes(
@@ -172,12 +269,17 @@ pub(super) async fn drain_http_response_stream(
 								actor_id,
 								chunk.body,
 								"client dropped streaming response body",
-								&egress_bytes,
+								&response_consumed_bytes,
+								&mut received_bytes,
+								&terminal_error,
+								&flow_metrics,
 							)
 							.await;
 							if !delivered {
 								return;
 							}
+							idle_deadline = idle_timeout
+								.map(|timeout| tokio::time::Instant::now() + timeout);
 						}
 
 						if chunk.finish {
@@ -186,6 +288,13 @@ pub(super) async fn drain_http_response_stream(
 						}
 					}
 					protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(abort) => {
+						crate::metrics::HTTP_STREAM_ABORT_TOTAL
+							.with_label_values(&[
+								"response",
+								"actor",
+								super::abort_kind_label(&abort.reason.kind),
+							])
+							.inc();
 						let message = match &abort.reason.detail {
 							Some(detail) => format!("{:?}: {detail}", abort.reason.kind),
 							None => format!("{:?}", abort.reason.kind),
@@ -196,13 +305,16 @@ pub(super) async fn drain_http_response_stream(
 							"streaming http response aborted by envoy"
 						);
 						send_http_body_error(
-							&body_tx,
+							&terminal_error,
 							format!("response stream aborted: {message}"),
 						);
 						in_flight_req.stop(RequestStopResult::EnvoyError).await;
 						return;
 					}
 					other => {
+						crate::metrics::HTTP_PROTOCOL_VIOLATION_TOTAL
+							.with_label_values(&["response", "unexpected_message"])
+							.inc();
 						tracing::warn!(
 							message_kind = ?other,
 							"unexpected message while streaming http response"
@@ -213,7 +325,7 @@ pub(super) async fn drain_http_response_stream(
 							Some("gateway received unexpected response stream message".to_owned()),
 						)
 						.await;
-						send_http_body_error(&body_tx, "unexpected response stream message");
+						send_http_body_error(&terminal_error, "unexpected response stream message");
 						in_flight_req.stop(RequestStopResult::EnvoyError).await;
 						return;
 					}
@@ -229,18 +341,18 @@ pub(super) async fn drain_http_response_stream(
 				if overloaded {
 					send_http_request_abort(
 						&in_flight_req,
-						protocol::HttpStreamAbortReasonKind::Overloaded,
+						protocol::HttpStreamAbortReasonKind::InternalError,
 						Some(HTTP_RESPONSE_QUEUE_OVERLOADED_DETAIL.to_owned()),
 					)
 					.await;
 				}
-				send_http_body_error(&body_tx, format!("response stream garbage collected: {reason}"));
+				send_http_body_error(&terminal_error, format!("response stream garbage collected: {reason}"));
 				in_flight_req.stop(RequestStopResult::RequestTimeout).await;
 				return;
 			}
 			_ = stopped_sub.next() => {
 				tracing::debug!(%actor_id, "actor stopped while streaming response");
-				send_http_body_error(&body_tx, "actor stopped while streaming response");
+				send_http_body_error(&terminal_error, "actor stopped while streaming response");
 				in_flight_req.stop(RequestStopResult::EnvoyError).await;
 				return;
 			}
@@ -248,7 +360,7 @@ pub(super) async fn drain_http_response_stream(
 				tracing::debug!("client dropped idle streaming http response body");
 				send_http_request_abort(
 					&in_flight_req,
-					protocol::HttpStreamAbortReasonKind::ClientDisconnect,
+					protocol::HttpStreamAbortReasonKind::Cancelled,
 					Some("client dropped streaming response body".to_owned()),
 				)
 				.await;
@@ -256,8 +368,8 @@ pub(super) async fn drain_http_response_stream(
 				return;
 			}
 			_ = async {
-				match idle_timeout {
-					Some(timeout) => tokio::time::sleep(timeout).await,
+				match idle_deadline {
+					Some(deadline) => tokio::time::sleep_until(deadline).await,
 					None => std::future::pending().await,
 				}
 			} => {
@@ -268,11 +380,11 @@ pub(super) async fn drain_http_response_stream(
 				);
 				send_http_request_abort(
 					&in_flight_req,
-					protocol::HttpStreamAbortReasonKind::IdleTimeout,
+					protocol::HttpStreamAbortReasonKind::Cancelled,
 					Some("gateway timed out waiting for response stream chunk".to_owned()),
 				)
 				.await;
-				send_http_body_error(&body_tx, "response stream idle timeout");
+				send_http_body_error(&terminal_error, "response stream idle timeout");
 				in_flight_req.stop(RequestStopResult::RequestTimeout).await;
 				return;
 			}
@@ -280,20 +392,31 @@ pub(super) async fn drain_http_response_stream(
 	}
 }
 
-fn send_http_body_error(
-	body_tx: &mpsc::Sender<Result<Bytes, ResponseBodyError>>,
-	message: impl Into<String>,
+pub(super) async fn send_http_response_window_updates(
+	in_flight_req: InFlightRequestHandle,
+	mut consumed_rx: mpsc::UnboundedReceiver<u64>,
 ) {
-	let error: Result<Bytes, ResponseBodyError> =
-		Err(Box::new(std::io::Error::other(message.into())));
-	match body_tx.try_send(error) {
-		Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
-		Err(mpsc::error::TrySendError::Full(_)) => {
-			tracing::warn!(
-				"could not deliver streaming response error because the downstream buffer is full"
-			);
+	while let Some(mut consumed_bytes) = consumed_rx.recv().await {
+		while let Ok(next) = consumed_rx.try_recv() {
+			consumed_bytes = next;
+		}
+
+		let message = protocol::ToEnvoyTunnelMessageKind::ToEnvoyResponseBodyWindowUpdate(
+			protocol::ToEnvoyResponseBodyWindowUpdate { consumed_bytes },
+		);
+		if let Err(error) = in_flight_req.send_message(message, false).await {
+			tracing::debug!(?error, "failed to return HTTP response body credit");
+			in_flight_req.stop(RequestStopResult::EnvoyError).await;
+			return;
 		}
 	}
+}
+
+fn send_http_body_error(
+	terminal_error: &ResponseBodyTerminal,
+	message: impl Into<String>,
+) {
+	terminal_error.fail(Box::new(std::io::Error::other(message.into())));
 }
 
 #[cfg(test)]

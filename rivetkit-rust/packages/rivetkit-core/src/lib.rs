@@ -151,7 +151,8 @@ pub use error::ActorLifecycle;
 pub use inspector::{Inspector, InspectorSnapshot};
 pub use registry::{CoreRegistry, EngineSpawnMode, ServeConfig};
 pub use rivet_envoy_client::config::{
-	HTTP_BODY_STREAM_CHANNEL_CAPACITY, HttpRequestBodyStream, ResponseChunk,
+	HTTP_BODY_MAX_CHUNK_SIZE, HTTP_BODY_STREAM_CHANNEL_CAPACITY, HttpRequestBodyStream,
+	ResponseChunk,
 };
 pub use runtime::{RuntimeBoxFuture, RuntimeSpawner, boxed_runtime_future};
 pub use serverless::{CoreServerlessRuntime, ServerlessRequest, ServerlessResponse};

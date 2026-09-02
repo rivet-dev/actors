@@ -797,6 +797,9 @@ pub fn convert_to_rivet_tunnel_message_kind_v7_to_v6(
 		v7::ToRivetTunnelMessageKind::ToRivetRequestBodyWindowUpdate(_) => {
 			bail!("HTTP request body window updates require envoy protocol v7");
 		}
+		v7::ToRivetTunnelMessageKind::ToRivetRequestBodyCancel => {
+			bail!("HTTP request body cancellation requires envoy protocol v7");
+		}
 		v7::ToRivetTunnelMessageKind::ToRivetWebSocketOpen(v) => {
 			v6::ToRivetTunnelMessageKind::ToRivetWebSocketOpen(
 				convert_to_rivet_web_socket_open_v7_to_v6(v)?,
@@ -845,6 +848,9 @@ pub fn convert_to_envoy_tunnel_message_kind_v7_to_v6(
 		}
 		v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(_) => {
 			v6::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort
+		}
+		v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestBodyCancel => {
+			bail!("HTTP request body cancellation requires envoy protocol v7");
 		}
 		v7::ToEnvoyTunnelMessageKind::ToEnvoyResponseBodyWindowUpdate(_) => {
 			bail!("HTTP response body window updates require envoy protocol v7");

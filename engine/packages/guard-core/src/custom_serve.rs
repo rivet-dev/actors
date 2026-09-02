@@ -23,6 +23,13 @@ pub trait CustomServeTrait: Send + Sync {
 		false
 	}
 
+	/// Revalidate a streaming route while Guard still owns the untouched body.
+	/// Only this phase is retryable; once `handle_streaming_request` begins, the
+	/// body and any upstream side effects belong to that selected handler.
+	async fn prepare_streaming_request(&self, _req_ctx: &mut RequestContext) -> Result<()> {
+		Ok(())
+	}
+
 	/// Handle a regular HTTP request
 	async fn handle_request(
 		&self,

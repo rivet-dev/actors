@@ -10,47 +10,62 @@ use tokio::task::yield_now;
 
 use super::http::ActiveHttpRequestGuard;
 use super::tests::{
-	StreamingCallbacks, TestCallbacks, actor_config, build_shared_context, message_id,
-	recv_ws_tunnel_msg, request_start, wait_for_zero,
+	StreamingCallbacks, StreamingRequestCallbacks, TestCallbacks, actor_config,
+	build_shared_context, message_id, recv_ws_tunnel_msg, request_start, wait_for_zero,
 };
 use super::{ToActor, create_actor, protocol};
 use crate::{
 	async_counter::AsyncCounter,
 	context::SharedActorEntry,
+	envoy::EnvoyContext,
 	handle::EnvoyHandle,
 	http::{HTTP_BODY_MAX_CHUNK_SIZE, ResponseChunk},
+	utils::BufferMap,
 };
 
 #[tokio::test]
 async fn request_chunk_without_start_is_rejected_instead_of_buffered() {
 	let (shared, _envoy_rx) = build_shared_context(Arc::new(TestCallbacks::idle()));
 	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
-	*shared.ws_tx.lock().await = Some(ws_tx);
-	let (actor_tx, _) = create_actor(
+	let session = crate::connection::install_connection(&shared, ws_tx).await;
+	let mut ctx = EnvoyContext {
 		shared,
-		"actor-missing-request-start".to_string(),
-		1,
-		actor_config(),
-		Vec::new(),
-		None,
-	);
-
-	actor_tx
-		.send(ToActor::ReqChunk {
+		shutting_down: false,
+		actors: HashMap::new(),
+		buffered_actor_messages: HashMap::new(),
+		kv_requests: HashMap::new(),
+		next_kv_request_id: 0,
+		sqlite_requests: HashMap::new(),
+		next_sqlite_request_id: 0,
+		remote_sqlite_requests: HashMap::new(),
+		next_remote_sqlite_request_id: 0,
+		request_to_actor: BufferMap::new(),
+		http_request_routes: BufferMap::new(),
+		http_message_indices: BufferMap::new(),
+		buffered_messages: Vec::new(),
+		processed_command_idx: HashMap::new(),
+	};
+	crate::tunnel::handle_tunnel_message(
+		&mut ctx,
+		session,
+		protocol::ToEnvoyTunnelMessage {
 			message_id: message_id(),
-			chunk: protocol::ToEnvoyRequestChunk {
-				body: vec![1, 2, 3],
-				finish: false,
-			},
-		})
-		.expect("failed to send request chunk");
+			message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestChunk(
+				protocol::ToEnvoyRequestChunk {
+					body: vec![1, 2, 3],
+					finish: false,
+				},
+			),
+		},
+	)
+	.await;
 
 	let abort = recv_ws_tunnel_msg(&mut ws_rx).await;
 	assert!(matches!(
 		abort.message_kind,
 		protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(protocol::ToRivetResponseAbort {
 			reason: protocol::HttpStreamAbortReason {
-				kind: protocol::HttpStreamAbortReasonKind::HandlerError,
+				kind: protocol::HttpStreamAbortReasonKind::InternalError,
 				..
 			}
 		})
@@ -79,6 +94,7 @@ async fn streamed_request_remains_cancellable_after_upload_finishes() {
 		.send(ToActor::ReqStart {
 			message_id: message_id(),
 			req: request,
+			connection_session: 1,
 		})
 		.expect("failed to send request start");
 	fetch_started_rx
@@ -97,7 +113,7 @@ async fn streamed_request_remains_cancellable_after_upload_finishes() {
 		.send(ToActor::ReqAbort {
 			message_id: message_id(),
 			reason: protocol::HttpStreamAbortReason {
-				kind: protocol::HttpStreamAbortReasonKind::ClientDisconnect,
+				kind: protocol::HttpStreamAbortReasonKind::Cancelled,
 				detail: None,
 			},
 		})
@@ -110,6 +126,78 @@ async fn streamed_request_remains_cancellable_after_upload_finishes() {
 }
 
 #[tokio::test]
+async fn streamed_request_returns_credit_only_after_handler_consumption() {
+	let (request_tx, request_rx) = oneshot::channel();
+	let callbacks = Arc::new(StreamingRequestCallbacks {
+		request_tx: Mutex::new(Some(request_tx)),
+	});
+	let (shared, _envoy_rx) = build_shared_context(callbacks);
+	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+	let session = crate::connection::install_connection(&shared, ws_tx).await;
+	let (actor_tx, _active_http_request_count) = create_actor(
+		shared,
+		"actor-request-window".to_string(),
+		1,
+		actor_config(),
+		Vec::new(),
+		None,
+	);
+	let mut start = request_start();
+	start.method = "POST".to_owned();
+	start.stream = true;
+
+	actor_tx
+		.send(ToActor::ReqStart {
+			message_id: message_id(),
+			req: start,
+			connection_session: session,
+		})
+		.expect("send streamed request start");
+	let mut request = request_rx.await.expect("receive streamed request");
+	let mut body = request
+		.body_stream
+		.take()
+		.expect("request should carry a body stream");
+	actor_tx
+		.send(ToActor::ReqChunk {
+			message_id: message_id(),
+			chunk: protocol::ToEnvoyRequestChunk {
+				body: vec![7; 32],
+				finish: false,
+			},
+		})
+		.expect("send request body chunk");
+
+	assert!(
+		tokio::time::timeout(Duration::from_millis(20), ws_rx.recv())
+			.await
+			.is_err(),
+		"actor returned request credit before the handler consumed bytes",
+	);
+	assert_eq!(
+		body.recv().await.expect("read request body"),
+		Some(vec![7; 32]),
+	);
+	let credit = recv_ws_tunnel_msg(&mut ws_rx).await;
+	assert!(matches!(
+		credit.message_kind,
+		protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyWindowUpdate(
+			protocol::ToRivetRequestBodyWindowUpdate { consumed_bytes: 32 }
+		)
+	));
+
+	actor_tx
+		.send(ToActor::ReqAbort {
+			message_id: message_id(),
+			reason: protocol::HttpStreamAbortReason {
+				kind: protocol::HttpStreamAbortReasonKind::Cancelled,
+				detail: None,
+			},
+		})
+		.expect("abort request after flow-control assertion");
+}
+
+#[tokio::test]
 async fn active_http_request_count_spans_streaming_response_drain() {
 	let (body_tx_tx, body_tx_rx) = oneshot::channel();
 	let callbacks = Arc::new(StreamingCallbacks {
@@ -117,7 +205,7 @@ async fn active_http_request_count_spans_streaming_response_drain() {
 	});
 	let (shared, _envoy_rx) = build_shared_context(callbacks);
 	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
-	*shared.ws_tx.lock().await = Some(ws_tx);
+	let session = crate::connection::install_connection(&shared, ws_tx).await;
 	let (actor_tx, active_http_request_count) = create_actor(
 		shared,
 		"actor-stream".to_string(),
@@ -131,6 +219,7 @@ async fn active_http_request_count_spans_streaming_response_drain() {
 		.send(ToActor::ReqStart {
 			message_id: message_id(),
 			req: request_start(),
+			connection_session: session,
 		})
 		.expect("failed to send request start");
 
@@ -193,6 +282,99 @@ async fn active_http_request_count_spans_streaming_response_drain() {
 		other => panic!("expected finish response chunk, got {other:?}"),
 	}
 
+	wait_for_zero(&active_http_request_count).await;
+}
+
+#[tokio::test]
+async fn streamed_response_stalls_at_window_until_gateway_consumes_bytes() {
+	let (body_tx_tx, body_tx_rx) = oneshot::channel();
+	let callbacks = Arc::new(StreamingCallbacks {
+		body_tx: Mutex::new(Some(body_tx_tx)),
+	});
+	let (shared, _envoy_rx) = build_shared_context(callbacks);
+	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+	let session = crate::connection::install_connection(&shared, ws_tx).await;
+	let (actor_tx, active_http_request_count) = create_actor(
+		shared,
+		"actor-response-window".to_string(),
+		1,
+		actor_config(),
+		Vec::new(),
+		None,
+	);
+
+	actor_tx
+		.send(ToActor::ReqStart {
+			message_id: message_id(),
+			req: request_start(),
+			connection_session: session,
+		})
+		.expect("send request start");
+	let body_tx = body_tx_rx.await.expect("receive response body sender");
+	let start = recv_ws_tunnel_msg(&mut ws_rx).await;
+	assert!(matches!(
+		start.message_kind,
+		protocol::ToRivetTunnelMessageKind::ToRivetResponseStart(_)
+	));
+
+	body_tx
+		.send(ResponseChunk::Data {
+			data: vec![7; protocol::HTTP_STREAM_INITIAL_WINDOW_BYTES as usize + 1],
+			finish: false,
+		})
+		.await
+		.expect("send response larger than initial window");
+	let window_chunks =
+		protocol::HTTP_STREAM_INITIAL_WINDOW_BYTES as usize / HTTP_BODY_MAX_CHUNK_SIZE;
+	for expected_index in 1..=window_chunks {
+		let chunk = recv_ws_tunnel_msg(&mut ws_rx).await;
+		assert_eq!(chunk.message_id.message_index as usize, expected_index);
+		assert!(matches!(
+			chunk.message_kind,
+			protocol::ToRivetTunnelMessageKind::ToRivetResponseChunk(
+				protocol::ToRivetResponseChunk { ref body, finish: false }
+			) if body.len() == HTTP_BODY_MAX_CHUNK_SIZE
+		));
+	}
+	assert!(
+		tokio::time::timeout(Duration::from_millis(20), ws_rx.recv())
+			.await
+			.is_err(),
+		"actor sent bytes beyond the response window"
+	);
+
+	actor_tx
+		.send(ToActor::ResponseBodyWindowUpdate {
+			message_id: message_id(),
+			consumed_bytes: 1,
+		})
+		.expect("return response credit");
+	let final_data = recv_ws_tunnel_msg(&mut ws_rx).await;
+	assert_eq!(
+		final_data.message_id.message_index as usize,
+		window_chunks + 1
+	);
+	assert!(matches!(
+		final_data.message_kind,
+		protocol::ToRivetTunnelMessageKind::ToRivetResponseChunk(
+			protocol::ToRivetResponseChunk { ref body, finish: false }
+		) if body == &[7]
+	));
+
+	body_tx
+		.send(ResponseChunk::Data {
+			data: Vec::new(),
+			finish: true,
+		})
+		.await
+		.expect("finish response stream");
+	let finish = recv_ws_tunnel_msg(&mut ws_rx).await;
+	assert!(matches!(
+		finish.message_kind,
+		protocol::ToRivetTunnelMessageKind::ToRivetResponseChunk(
+			protocol::ToRivetResponseChunk { ref body, finish: true }
+		) if body.is_empty()
+	));
 	wait_for_zero(&active_http_request_count).await;
 }
 

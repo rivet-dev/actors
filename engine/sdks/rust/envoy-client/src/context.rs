@@ -5,10 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
 
 use crate::async_counter::AsyncCounter;
 use rivet_envoy_protocol as protocol;
-use tokio::sync::Mutex;
-use tokio::sync::Notify;
-use tokio::sync::mpsc;
-use tokio::sync::watch;
+use tokio::sync::{Mutex, Notify, Semaphore, mpsc, oneshot, watch};
 
 use crate::actor::ToActor;
 use crate::config::EnvoyConfig;
@@ -30,6 +27,7 @@ pub struct SharedContext {
 	pub pending_hibernation_restores:
 		Arc<StdMutex<HashMap<String, Vec<HibernatingWebSocketMetadata>>>>,
 	pub ws_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WsTxMessage>>>>,
+	pub http_ws_tx: Arc<Mutex<Option<HttpConnectionTx>>>,
 	/// The currently connected WebSocket session, or zero while disconnected.
 	///
 	/// Session IDs are actor-client-local and never cross the wire. Remote SQLite
@@ -56,4 +54,17 @@ pub struct SharedContext {
 pub enum WsTxMessage {
 	Send(Vec<u8>),
 	Close,
+}
+
+#[derive(Clone)]
+pub struct HttpConnectionTx {
+	pub session: u64,
+	pub tx: mpsc::Sender<HttpWsTxMessage>,
+	pub byte_budget: Arc<Semaphore>,
+}
+
+pub struct HttpWsTxMessage {
+	pub data: Vec<u8>,
+	pub _byte_permit: tokio::sync::OwnedSemaphorePermit,
+	pub written: oneshot::Sender<anyhow::Result<()>>,
 }

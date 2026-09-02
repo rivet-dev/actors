@@ -186,13 +186,15 @@ pub(crate) fn err_into_response(err: anyhow::Error) -> Result<Response<ResponseB
 pub(crate) fn should_retry_request(res: &Result<Response<ResponseBody>>) -> bool {
 	match res {
 		Ok(resp) => should_retry_request_inner(resp.status(), resp.headers()),
-		Err(err) => {
-			if let Some(rivet_err) = err.chain().find_map(|x| x.downcast_ref::<RivetError>()) {
-				rivet_err.group() == "guard" && is_retryable_guard_http_error(rivet_err.code())
-			} else {
-				false
-			}
-		}
+		Err(err) => should_retry_error(err),
+	}
+}
+
+pub(crate) fn should_retry_error(err: &anyhow::Error) -> bool {
+	if let Some(rivet_err) = err.chain().find_map(|x| x.downcast_ref::<RivetError>()) {
+		rivet_err.group() == "guard" && is_retryable_guard_http_error(rivet_err.code())
+	} else {
+		false
 	}
 }
 

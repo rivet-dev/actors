@@ -8,8 +8,9 @@ use rivet_envoy_protocol as protocol;
 use std::collections::HashMap;
 use vbare::OwnedVersionedData;
 
-use crate::context::SharedContext;
-use crate::context::WsTxMessage;
+use crate::context::{
+	HttpConnectionTx, HttpWsTxMessage, SharedContext, WsTxMessage,
+};
 #[cfg(any(
 	feature = "native-transport",
 	all(feature = "wasm-transport", target_arch = "wasm32")
@@ -30,28 +31,153 @@ pub(crate) enum WsSendResult {
 	StaleSession { current: Option<u64> },
 }
 
+pub(crate) const HTTP_WS_MESSAGE_CAPACITY: usize = 256;
+pub(crate) const HTTP_WS_BYTE_CAPACITY: usize = 16 * 1024 * 1024;
+
+#[cfg(test)]
 pub(crate) async fn install_connection(
 	shared: &SharedContext,
 	tx: tokio::sync::mpsc::UnboundedSender<WsTxMessage>,
 ) -> u64 {
+	let (http_tx, mut http_rx) =
+		tokio::sync::mpsc::channel::<HttpWsTxMessage>(HTTP_WS_MESSAGE_CAPACITY);
+	let http_byte_budget =
+		std::sync::Arc::new(tokio::sync::Semaphore::new(HTTP_WS_BYTE_CAPACITY));
+	let relay_tx = tx.clone();
+	tokio::spawn(async move {
+		while let Some(message) = http_rx.recv().await {
+			let result = relay_tx
+				.send(WsTxMessage::Send(message.data))
+				.map_err(|_| anyhow::anyhow!("test WebSocket receiver closed"));
+			let _ = message.written.send(result);
+		}
+	});
+	install_connection_with_http(
+		shared,
+		tx,
+		http_tx,
+		http_byte_budget,
+	)
+	.await
+}
+
+pub(crate) async fn install_connection_with_http(
+	shared: &SharedContext,
+	tx: tokio::sync::mpsc::UnboundedSender<WsTxMessage>,
+	http_tx: tokio::sync::mpsc::Sender<HttpWsTxMessage>,
+	http_byte_budget: std::sync::Arc<tokio::sync::Semaphore>,
+) -> u64 {
 	let mut guard = shared.ws_tx.lock().await;
+	let mut http_guard = shared.http_ws_tx.lock().await;
 	let session = shared
 		.next_connection_session
 		.fetch_add(1, Ordering::AcqRel)
 		.saturating_add(1);
 	shared.connection_session.store(session, Ordering::Release);
 	*guard = Some(tx);
+	*http_guard = Some(HttpConnectionTx {
+		session,
+		tx: http_tx,
+		byte_budget: http_byte_budget,
+	});
+	drop(http_guard);
 	drop(guard);
 	shared.connection_session_tx.send_replace(session);
 	session
 }
 
+#[cfg(test)]
 pub(crate) async fn remove_connection(shared: &SharedContext) {
+	let session = shared.connection_session.load(Ordering::Acquire);
+	remove_connection_for_session(shared, session).await;
+}
+
+pub(crate) async fn remove_connection_for_session(shared: &SharedContext, session: u64) {
 	let mut guard = shared.ws_tx.lock().await;
+	let mut http_guard = shared.http_ws_tx.lock().await;
+	if shared.connection_session.load(Ordering::Acquire) != session {
+		return;
+	}
 	*guard = None;
+	*http_guard = None;
 	shared.connection_session.store(0, Ordering::Release);
+	drop(http_guard);
 	drop(guard);
 	shared.connection_session_tx.send_replace(0);
+}
+
+/// Sends a streaming HTTP frame on the exact WebSocket session that accepted its request start.
+/// Success means the socket writer, not merely the local queue, accepted the frame.
+pub(crate) async fn ws_send_http_for_session(
+	shared: &SharedContext,
+	message: protocol::ToRivet,
+	expected_session: u64,
+) -> WsSendResult {
+	if tracing::enabled!(tracing::Level::DEBUG) {
+		tracing::debug!(data = stringify_to_rivet(&message), "sending HTTP tunnel message");
+	}
+
+	let encoded = crate::protocol::versioned::ToRivet::wrap_latest(message)
+		.serialize(protocol::PROTOCOL_VERSION)
+		.expect("failed to encode HTTP tunnel message");
+	let Ok(encoded_len) = u32::try_from(encoded.len()) else {
+		return WsSendResult::Unavailable;
+	};
+	if encoded.len() > HTTP_WS_BYTE_CAPACITY {
+		return WsSendResult::Unavailable;
+	}
+
+	let connection = {
+		let guard = shared.http_ws_tx.lock().await;
+		let current = shared.connection_session.load(Ordering::Acquire);
+		if current != expected_session {
+			return WsSendResult::StaleSession {
+				current: (current != 0).then_some(current),
+			};
+		}
+		let Some(connection) = guard.as_ref() else {
+			return WsSendResult::Unavailable;
+		};
+		if connection.session != expected_session {
+			return WsSendResult::StaleSession {
+				current: Some(connection.session),
+			};
+		}
+		connection.clone()
+	};
+
+	let Ok(byte_permit) = connection
+		.byte_budget
+		.clone()
+		.acquire_many_owned(encoded_len)
+		.await
+	else {
+		return WsSendResult::Unavailable;
+	};
+	let (written, written_rx) = tokio::sync::oneshot::channel();
+	if connection
+		.tx
+		.send(HttpWsTxMessage {
+			data: encoded,
+			_byte_permit: byte_permit,
+			written,
+		})
+		.await
+		.is_err()
+	{
+		return WsSendResult::Unavailable;
+	}
+
+	match written_rx.await {
+		Ok(Ok(())) => WsSendResult::Sent {
+			session: expected_session,
+		},
+		Ok(Err(error)) => {
+			tracing::debug!(?error, expected_session, "HTTP WebSocket write failed");
+			WsSendResult::Unavailable
+		}
+		Err(_) => WsSendResult::Unavailable,
+	}
 }
 
 #[cfg(all(feature = "native-transport", feature = "wasm-transport"))]
@@ -110,7 +236,11 @@ async fn send_initial_metadata(shared: &SharedContext) {
 	feature = "native-transport",
 	all(feature = "wasm-transport", target_arch = "wasm32")
 ))]
-async fn forward_to_envoy(shared: &SharedContext, message: protocol::ToEnvoy) {
+async fn forward_to_envoy(
+	shared: &SharedContext,
+	session: u64,
+	message: protocol::ToEnvoy,
+) {
 	if tracing::enabled!(tracing::Level::DEBUG) {
 		tracing::debug!(data = stringify_to_envoy(&message), "received message");
 	}
@@ -129,7 +259,10 @@ async fn forward_to_envoy(shared: &SharedContext, message: protocol::ToEnvoy) {
 		other => {
 			let _ = crate::envoy::send_to_envoy_tx(
 				shared,
-				ToEnvoyMessage::ConnMessage { message: other },
+				ToEnvoyMessage::ConnMessage {
+					message: other,
+					session,
+				},
 			);
 		}
 	}

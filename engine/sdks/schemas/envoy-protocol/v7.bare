@@ -424,6 +424,10 @@ type ToRivetRequestBodyWindowUpdate struct {
 	consumedBytes: u64
 }
 
+# The actor handler no longer wants request-body bytes. The HTTP response may
+# still continue normally.
+type ToRivetRequestBodyCancel void
+
 type HttpStreamAbortReasonKind enum {
 	UNKNOWN
 	CANCELLED
@@ -439,6 +443,9 @@ type HttpStreamAbortReason struct {
 type ToEnvoyRequestAbort struct {
 	reason: HttpStreamAbortReason
 }
+
+# Stop the actor-side request body without cancelling the HTTP response.
+type ToEnvoyRequestBodyCancel void
 
 type ToRivetResponseStart struct {
 	status: u16
@@ -505,6 +512,7 @@ type ToRivetTunnelMessageKind union {
 	ToRivetResponseChunk |
 	ToRivetResponseAbort |
 	ToRivetRequestBodyWindowUpdate |
+	ToRivetRequestBodyCancel |
 
 	# WebSocket
 	ToRivetWebSocketOpen |
@@ -524,6 +532,7 @@ type ToEnvoyTunnelMessageKind union {
 	ToEnvoyRequestStart |
 	ToEnvoyRequestChunk |
 	ToEnvoyRequestAbort |
+	ToEnvoyRequestBodyCancel |
 	ToEnvoyResponseBodyWindowUpdate |
 
 	# WebSocket

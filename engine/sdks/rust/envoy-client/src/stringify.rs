@@ -49,6 +49,15 @@ pub fn stringify_to_rivet_tunnel_message_kind(kind: &protocol::ToRivetTunnelMess
 		protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(_) => {
 			"ToRivetResponseAbort".to_string()
 		}
+		protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyWindowUpdate(val) => {
+			format!(
+				"ToRivetRequestBodyWindowUpdate{{consumedBytes: {}}}",
+				val.consumed_bytes
+			)
+		}
+		protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyCancel => {
+			"ToRivetRequestBodyCancel".to_string()
+		}
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketOpen(val) => {
 			format!(
 				"ToRivetWebSocketOpen{{canHibernate: {}}}",
@@ -108,6 +117,15 @@ pub fn stringify_to_envoy_tunnel_message_kind(kind: &protocol::ToEnvoyTunnelMess
 		}
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(_) => {
 			"ToEnvoyRequestAbort".to_string()
+		}
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestBodyCancel => {
+			"ToEnvoyRequestBodyCancel".to_string()
+		}
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyResponseBodyWindowUpdate(val) => {
+			format!(
+				"ToEnvoyResponseBodyWindowUpdate{{consumedBytes: {}}}",
+				val.consumed_bytes
+			)
 		}
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(val) => {
 			format!(

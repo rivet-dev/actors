@@ -6,7 +6,7 @@ fn gateway_retry_metric_accepts_all_bucket_labels() {
 
 	for bucket in buckets {
 		metrics::REQUEST_RETRIES_TOTAL
-			.with_label_values(&[bucket])
+			.with_label_values(&["namespace", "pool", "http", bucket])
 			.inc();
 	}
 }
@@ -21,14 +21,16 @@ fn gateway_in_flight_metrics_accept_all_labels() {
 		"envoy_error",
 	];
 
-	metrics::IN_FLIGHT.with_label_values(&["namespace"]).set(1);
+	metrics::IN_FLIGHT
+		.with_label_values(&["namespace", "pool", "http"])
+		.set(1);
 	metrics::IN_FLIGHT_DROPPED_TOTAL
-		.with_label_values(&["namespace", "client_disconnect"])
+		.with_label_values(&["namespace", "pool", "http", "client_disconnect"])
 		.inc();
 
 	for result in results {
 		metrics::REQUEST_DURATION_SECONDS
-			.with_label_values(&["namespace", result])
+			.with_label_values(&["namespace", "pool", "http", result])
 			.observe(0.0);
 	}
 }

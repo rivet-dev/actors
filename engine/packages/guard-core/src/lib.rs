@@ -15,7 +15,7 @@ pub mod websocket_handle;
 pub use cert_resolver::CertResolverFn;
 pub use custom_serve::CustomServeTrait;
 pub use proxy_service::{ProxyService, ProxyState};
-pub use response_body::ResponseBody;
+pub use response_body::{ResponseBody, ResponseBodyTerminal};
 pub use route::{CacheKeyFn, RouteConfig, RouteTarget, RoutingFn, RoutingOutput};
 pub use websocket_handle::WebSocketHandle;
 

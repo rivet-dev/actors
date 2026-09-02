@@ -6,14 +6,14 @@ mod imp {
 
 	use js_sys::{Array, Function, Promise, Reflect, Uint8Array};
 	use rivet_envoy_protocol as protocol;
-	use tokio::sync::mpsc;
+	use tokio::sync::{Semaphore, mpsc, oneshot};
 	use tracing::Instrument;
 	use vbare::OwnedVersionedData;
 	use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 	use wasm_bindgen_futures::JsFuture;
 	use web_sys::{BinaryType, CloseEvent, ErrorEvent, Event, MessageEvent, WebSocket};
 
-	use crate::context::{SharedContext, WsTxMessage};
+	use crate::context::{HttpWsTxMessage, SharedContext, WsTxMessage};
 	use crate::envoy::ToEnvoyMessage;
 	use crate::utils::{BackoffOptions, calculate_backoff, parse_ws_close_reason};
 
@@ -45,27 +45,40 @@ mod imp {
 			let connected_at_ms = js_sys::Date::now();
 
 			match single_connection(&shared).await {
-				Ok(close_reason) => {
+				Ok((session, close_reason)) => {
 					if let Some(reason) = &close_reason {
 						if reason.group == "ws" && reason.error == "eviction" {
 							tracing::debug!("connection evicted");
 							let _ = crate::envoy::send_to_envoy_tx(
 								&shared,
-								ToEnvoyMessage::ConnClose { evict: true },
+								ToEnvoyMessage::ConnClose {
+									evict: true,
+									session,
+								},
 							);
 							return;
 						}
 					}
 					let _ = crate::envoy::send_to_envoy_tx(
 						&shared,
-						ToEnvoyMessage::ConnClose { evict: false },
+						ToEnvoyMessage::ConnClose {
+							evict: false,
+							session,
+						},
 					);
 				}
 				Err(error) => {
 					tracing::error!(?error, "connection failed");
+					let session = shared.connection_session.load(Ordering::Acquire);
+					if session != 0 {
+						super::super::remove_connection_for_session(&shared, session).await;
+					}
 					let _ = crate::envoy::send_to_envoy_tx(
 						&shared,
-						ToEnvoyMessage::ConnClose { evict: false },
+						ToEnvoyMessage::ConnClose {
+							evict: false,
+							session,
+						},
 					);
 				}
 			}
@@ -88,7 +101,7 @@ mod imp {
 
 	async fn single_connection(
 		shared: &Arc<SharedContext>,
-	) -> anyhow::Result<Option<crate::utils::ParsedCloseReason>> {
+	) -> anyhow::Result<(u64, Option<crate::utils::ParsedCloseReason>)> {
 		let url = super::super::ws_url(shared);
 		let protocols = protocols(&shared.config.token);
 		let ws = WebSocket::new_with_str_sequence(&url, protocols.as_ref())
@@ -146,7 +159,9 @@ mod imp {
 			ConnectionEvent::Open => {}
 			ConnectionEvent::Close { code, reason } => {
 				tracing::info!(code, reason = %reason, "websocket closed");
-				return Ok(parse_ws_close_reason(&reason));
+				return Err(anyhow::anyhow!(
+					"websocket closed before opening: {code} {reason}"
+				));
 			}
 			ConnectionEvent::Error(message) => {
 				anyhow::bail!("websocket failed to open: {message}");
@@ -159,7 +174,16 @@ mod imp {
 		// TODO: Bound shared WebSocket writer memory across protocol message types.
 		// https://github.com/rivet-dev/rivet/issues/5468
 		let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<WsTxMessage>();
-		super::super::install_connection(shared, ws_tx).await;
+		let (http_ws_tx, mut http_ws_rx) =
+			mpsc::channel::<HttpWsTxMessage>(super::super::HTTP_WS_MESSAGE_CAPACITY);
+		let http_byte_budget = Arc::new(Semaphore::new(super::super::HTTP_WS_BYTE_CAPACITY));
+		let session = super::super::install_connection_with_http(
+			shared,
+			ws_tx,
+			http_ws_tx,
+			http_byte_budget,
+		)
+		.await;
 
 		tracing::info!(
 			endpoint = %shared.config.endpoint,
@@ -169,30 +193,65 @@ mod imp {
 			"websocket connected"
 		);
 
+		let (write_shutdown_tx, write_shutdown_rx) = oneshot::channel();
 		wasm_bindgen_futures::spawn_local({
 			let shared = shared.clone();
 			let ws = ws.clone();
 			let event_tx = event_tx.clone();
 			let write_span = tracing::debug_span!("envoy_ws_write", envoy_key = %shared.envoy_key);
 			async move {
-				super::super::send_initial_metadata(&shared).await;
+				tokio::select! {
+					_ = write_shutdown_rx => {}
+					_ = async {
+						super::super::send_initial_metadata(&shared).await;
 
-				while let Some(msg) = ws_rx.recv().await {
-					match msg {
-						WsTxMessage::Send(data) => {
-							let data = Uint8Array::from(data.as_slice());
-							if let Err(error) = ws.send_with_array_buffer(&data.buffer()) {
-								tracing::error!(error = %js_error(error), "failed to send ws message");
-								let _ = event_tx.send(ConnectionEvent::WriteFailed);
-								break;
+						loop {
+							let msg = tokio::select! {
+								msg = ws_rx.recv() => msg.map(EitherWrite::Legacy),
+								msg = http_ws_rx.recv() => msg.map(EitherWrite::Http),
+							};
+							let Some(msg) = msg else { break };
+							match msg {
+								EitherWrite::Legacy(WsTxMessage::Send(data)) => {
+									let data = Uint8Array::from(data.as_slice());
+									if let Err(error) = ws.send_with_array_buffer(&data.buffer()) {
+										tracing::error!(error = %js_error(error), "failed to send ws message");
+										let _ = event_tx.send(ConnectionEvent::WriteFailed);
+										break;
+									}
+								}
+								EitherWrite::Legacy(WsTxMessage::Close) => {
+									let _ = ws.close_with_code_and_reason(
+										NORMAL_CLOSE_CODE,
+										"envoy.shutdown",
+									);
+									break;
+								}
+								EitherWrite::Http(message) => {
+									let data = Uint8Array::from(message.data.as_slice());
+									let result = ws
+										.send_with_array_buffer(&data.buffer())
+										.map_err(|error| {
+											anyhow::anyhow!(
+												"failed to send HTTP websocket message: {}",
+												js_error(error)
+											)
+										});
+									let failed = result.is_err();
+									if !failed {
+										while ws.buffered_amount() > 1024 * 1024 {
+											sleep(Duration::from_millis(5)).await;
+										}
+									}
+									let _ = message.written.send(result);
+									if failed {
+										let _ = event_tx.send(ConnectionEvent::WriteFailed);
+										break;
+									}
+								}
 							}
 						}
-						WsTxMessage::Close => {
-							let _ =
-								ws.close_with_code_and_reason(NORMAL_CLOSE_CODE, "envoy.shutdown");
-							break;
-						}
-					}
+					} => {}
 				}
 			}
 			.instrument(write_span)
@@ -216,7 +275,7 @@ mod imp {
 						protocol::PROTOCOL_VERSION,
 					)?;
 
-					super::super::forward_to_envoy(shared, decoded).await;
+					super::super::forward_to_envoy(shared, session, decoded).await;
 				}
 				ConnectionEvent::Close { code, reason } => {
 					tracing::info!(code, reason = %reason, "websocket closed");
@@ -233,7 +292,8 @@ mod imp {
 			}
 		}
 
-		super::super::remove_connection(shared).await;
+		super::super::remove_connection_for_session(shared, session).await;
+		let _ = write_shutdown_tx.send(());
 
 		close_if_open(&ws);
 		ws.set_onopen(None);
@@ -242,7 +302,12 @@ mod imp {
 		ws.set_onerror(None);
 		drop((onopen, onmessage, onclose, onerror));
 
-		Ok(result)
+		Ok((session, result))
+	}
+
+	enum EitherWrite {
+		Legacy(WsTxMessage),
+		Http(HttpWsTxMessage),
 	}
 
 	fn protocols(token: &Option<String>) -> JsValue {
@@ -317,7 +382,13 @@ mod imp {
 	use crate::envoy::ToEnvoyMessage;
 
 	pub fn start_connection(shared: Arc<SharedContext>) {
-		let _ = crate::envoy::send_to_envoy_tx(&shared, ToEnvoyMessage::ConnClose { evict: false });
+		let _ = crate::envoy::send_to_envoy_tx(
+			&shared,
+			ToEnvoyMessage::ConnClose {
+				evict: false,
+				session: 0,
+			},
+		);
 		tracing::error!("wasm envoy transport requires the wasm32 target");
 	}
 }

@@ -188,3 +188,37 @@ fn v7_response_window_update_cannot_downgrade_to_v6() {
 
 	assert!(result.is_err());
 }
+
+#[test]
+fn v7_gateway_upload_cancel_cannot_downgrade_to_v6() {
+	let result = ToEnvoy::wrap_latest(v7::ToEnvoy::ToEnvoyTunnelMessage(
+		v7::ToEnvoyTunnelMessage {
+			message_id: v7::MessageId {
+				gateway_id: [1; 4],
+				request_id: [7; 4],
+				message_index: 1,
+			},
+			message_kind: v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestBodyCancel,
+		},
+	))
+	.serialize(6);
+
+	assert!(result.is_err());
+}
+
+#[test]
+fn v7_actor_upload_cancel_cannot_downgrade_to_v6() {
+	let result = ToRivet::wrap_latest(v7::ToRivet::ToRivetTunnelMessage(
+		v7::ToRivetTunnelMessage {
+			message_id: v7::MessageId {
+				gateway_id: [1; 4],
+				request_id: [7; 4],
+				message_index: 1,
+			},
+			message_kind: v7::ToRivetTunnelMessageKind::ToRivetRequestBodyCancel,
+		},
+	))
+	.serialize(6);
+
+	assert!(result.is_err());
+}

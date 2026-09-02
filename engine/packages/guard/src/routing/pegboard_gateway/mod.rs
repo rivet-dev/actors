@@ -1,4 +1,5 @@
 mod cors;
+mod gateway3_selector;
 mod resolve_actor_query;
 
 use std::{sync::Arc, time::Duration};
@@ -23,6 +24,7 @@ use crate::{
 	shared_state::SharedState,
 };
 use cors::{CorsPreflight, set_non_preflight_cors};
+use gateway3_selector::select_gateway;
 use resolve_actor_query::resolve_query;
 
 /// Time to wait before starting pool error checks
@@ -259,6 +261,16 @@ fn is_actor_http_request_path(path: &str) -> bool {
 	stripped.is_empty() || matches!(stripped.as_bytes().first(), Some(b'/') | Some(b'?'))
 }
 
+#[tracing::instrument(
+	skip_all,
+	fields(
+		gateway = tracing::field::Empty,
+		envoy_protocol = tracing::field::Empty,
+		request_kind = tracing::field::Empty,
+		mode = tracing::field::Empty,
+		decision = tracing::field::Empty,
+	)
+)]
 async fn route_request_inner(
 	ctx: &StandaloneCtx,
 	shared_state: &SharedState,
@@ -371,9 +383,10 @@ async fn route_request_inner(
 			drop(destroy_sub);
 			drop(migrate_sub);
 
-			handle_actor_v2(
-				ctx,
-				shared_state,
+				handle_actor_v2(
+					ctx,
+					shared_state,
+					req_ctx,
 				actor_id,
 				actor,
 				stripped_path,
@@ -389,6 +402,7 @@ async fn route_request_inner(
 			handle_actor_v1(
 				ctx,
 				shared_state,
+				req_ctx,
 				actor_id,
 				actor,
 				stripped_path,
@@ -412,8 +426,9 @@ async fn route_request_inner(
 async fn handle_actor_v2(
 	ctx: &StandaloneCtx,
 	shared_state: &SharedState,
+	req_ctx: &RequestContext,
 	actor_id: Id,
-	actor: pegboard::ops::actor::get_for_gateway::Output,
+	mut actor: pegboard::ops::actor::get_for_gateway::Output,
 	stripped_path: &str,
 	skip_ready_wait: bool,
 	mut ready_sub: SubscriptionHandle<pegboard::workflows::actor2::Ready>,
@@ -455,12 +470,14 @@ async fn handle_actor_v2(
 
 	let actor_envoy_key = actor.envoy_key.clone();
 	let was_sleeping = actor.sleeping;
+	let mut waited_for_ready = false;
 	let envoy_key = if let (Some(envoy_key), true) = (
 		actor_envoy_key.clone(),
 		actor.connectable || skip_ready_wait,
 	) {
 		envoy_key
 	} else {
+		waited_for_ready = true;
 		tracing::debug!(
 			?actor_id,
 			actor_key = ?actor.key,
@@ -604,6 +621,25 @@ async fn handle_actor_v2(
 		}
 	};
 
+	if waited_for_ready {
+		let Some(refreshed_actor) = ctx
+			.op(pegboard::ops::actor::get_for_gateway::Input { actor_id })
+			.await?
+		else {
+			return Err(pegboard::errors::Actor::NotFound.build());
+		};
+
+		if refreshed_actor.destroyed || refreshed_actor.envoy_key.as_deref() != Some(&envoy_key) {
+			return Err(rivet_guard_core::errors::ActorStoppedWhileWaiting {
+				actor_id: actor_id.to_string(),
+				phase: "route_after_ready".to_owned(),
+			}
+			.build());
+		}
+
+		actor = refreshed_actor;
+	}
+
 	let pool_name = actor
 		.runner_name_selector
 		.clone()
@@ -617,24 +653,67 @@ async fn handle_actor_v2(
 		"actor ready"
 	);
 
-	// Return pegboard-gateway2 instance with path
-	let gateway = pegboard_gateway2::PegboardGateway2::new(
-		ctx.clone(),
-		shared_state.pegboard_gateway2.clone(),
+	let selection = select_gateway(
+		&ctx.config().pegboard().gateway3(),
+		req_ctx,
 		actor.namespace_id,
-		pool_name,
-		envoy_key,
 		actor_id,
-		actor.key,
-		None,
-		stripped_path.to_string(),
+		actor.envoy_protocol_version,
 	);
-	Ok(RoutingOutput::CustomServe(std::sync::Arc::new(gateway)))
+	selection.record();
+	let request_kind = if req_ctx.is_websocket() {
+		rivet_guard_core::metrics::PegboardGatewayRequestKind::WebSocket
+	} else {
+		rivet_guard_core::metrics::PegboardGatewayRequestKind::Http
+	};
+
+	if selection.use_gateway3() {
+		let lifecycle = rivet_guard_core::metrics::PegboardGatewayLifecycle::new(
+			rivet_guard_core::metrics::PegboardGatewayVersion::V3,
+			actor.envoy_protocol_version,
+			request_kind,
+		);
+		let gateway = pegboard_gateway3::PegboardGateway3::new(
+			ctx.clone(),
+			shared_state.pegboard_gateway3.clone(),
+			lifecycle,
+			actor.namespace_id,
+			pool_name,
+			envoy_key,
+			actor.envoy_protocol_version,
+			actor_id,
+			actor.key,
+			None,
+			stripped_path.to_string(),
+		);
+		Ok(RoutingOutput::CustomServe(std::sync::Arc::new(gateway)))
+	} else {
+		let lifecycle = rivet_guard_core::metrics::PegboardGatewayLifecycle::new(
+			rivet_guard_core::metrics::PegboardGatewayVersion::V2,
+			actor.envoy_protocol_version,
+			request_kind,
+		);
+		let gateway = pegboard_gateway2::PegboardGateway2::new(
+			ctx.clone(),
+			shared_state.pegboard_gateway2.clone(),
+			lifecycle,
+			actor.namespace_id,
+			pool_name,
+			envoy_key,
+			actor.envoy_protocol_version,
+			actor_id,
+			actor.key,
+			None,
+			stripped_path.to_string(),
+		);
+		Ok(RoutingOutput::CustomServe(std::sync::Arc::new(gateway)))
+	}
 }
 
 async fn handle_actor_v1(
 	ctx: &StandaloneCtx,
 	shared_state: &SharedState,
+	req_ctx: &RequestContext,
 	actor_id: Id,
 	actor: pegboard::ops::actor::get_for_gateway::Output,
 	stripped_path: &str,
@@ -765,6 +844,7 @@ async fn handle_actor_v1(
 					return handle_actor_v2(
 						ctx,
 						shared_state,
+						req_ctx,
 						actor_id,
 						actor,
 						stripped_path,

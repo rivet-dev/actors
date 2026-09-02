@@ -185,6 +185,55 @@ describe("native http response streaming", () => {
 		expect(writes[2][0]).toBe(7);
 	});
 
+	test("does not read the next response chunk while a native write is backpressured", async () => {
+		let releaseFirstWrite!: () => void;
+		const firstWriteBlocked = new Promise<void>((resolve) => {
+			releaseFirstWrite = resolve;
+		});
+		let markFirstWriteStarted!: () => void;
+		const firstWriteStarted = new Promise<void>((resolve) => {
+			markFirstWriteStarted = resolve;
+		});
+		const writes: number[] = [];
+		const responseBodyStream = {
+			async cancelled() {
+				return new Promise<void>(() => {});
+			},
+			async write(chunk: Uint8Array) {
+				writes.push(chunk[0] ?? 0);
+				if (writes.length === 1) {
+					markFirstWriteStarted();
+					await firstWriteBlocked;
+				}
+			},
+			async end() {},
+			async error(message: string) {
+				throw new Error(message);
+			},
+		};
+		const response = new Response(
+			new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(new Uint8Array([1]));
+					controller.enqueue(new Uint8Array([2]));
+					controller.close();
+				},
+			}),
+		);
+
+		const conversion =
+			await nativeHttpTestInternals.convertRuntimeHttpResponse(
+				response,
+				responseBodyStream,
+			);
+		await firstWriteStarted;
+		expect(writes).toEqual([1]);
+
+		releaseFirstWrite();
+		await conversion.bodyCompletion;
+		expect(writes).toEqual([1, 2]);
+	});
+
 	test("does not impose a cumulative 20 MiB response limit", async () => {
 		const responseSize = 20 * 1024 * 1024 + 1;
 		let writtenBytes = 0;
@@ -355,5 +404,35 @@ describe("native http response streaming", () => {
 		expect(conversion.response.stream).toBe(true);
 		expect(reason).toBeInstanceOf(Error);
 		expect((reason as Error).message).toContain("receiver dropped");
+	});
+
+	test("does not retain cleanup when a response source cancel never settles", async () => {
+		let cancelNative!: () => void;
+		const nativeCancelled = new Promise<void>((resolve) => {
+			cancelNative = resolve;
+		});
+		let cancelCalled = false;
+		const never = new Promise<void>(() => {});
+		const response = new Response(
+			new ReadableStream<Uint8Array>({
+				pull: () => never,
+				cancel() {
+					cancelCalled = true;
+					return never;
+				},
+			}),
+		);
+		const conversion =
+			await nativeHttpTestInternals.convertRuntimeHttpResponse(response, {
+				cancelled: () => nativeCancelled,
+				async write() {},
+				async end() {},
+				async error() {},
+			});
+
+		cancelNative();
+		await conversion.bodyCompletion;
+
+		expect(cancelCalled).toBe(true);
 	});
 });

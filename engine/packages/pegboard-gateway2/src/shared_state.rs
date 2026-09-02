@@ -69,7 +69,13 @@ fn to_envoy_tunnel_message_kind_name(kind: &protocol::ToEnvoyTunnelMessageKind) 
 	match kind {
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(_) => "ToEnvoyRequestStart",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestChunk(_) => "ToEnvoyRequestChunk",
-		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort => "ToEnvoyRequestAbort",
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(_) => "ToEnvoyRequestAbort",
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestBodyCancel => {
+			"ToEnvoyRequestBodyCancel"
+		}
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyResponseBodyWindowUpdate(_) => {
+			"ToEnvoyResponseBodyWindowUpdate"
+		}
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(_) => "ToEnvoyWebSocketOpen",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketMessage(_) => "ToEnvoyWebSocketMessage",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketClose(_) => "ToEnvoyWebSocketClose",
@@ -80,7 +86,13 @@ fn to_rivet_tunnel_message_kind_name(kind: &protocol::ToRivetTunnelMessageKind) 
 	match kind {
 		protocol::ToRivetTunnelMessageKind::ToRivetResponseStart(_) => "ToRivetResponseStart",
 		protocol::ToRivetTunnelMessageKind::ToRivetResponseChunk(_) => "ToRivetResponseChunk",
-		protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort => "ToRivetResponseAbort",
+		protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(_) => "ToRivetResponseAbort",
+		protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyWindowUpdate(_) => {
+			"ToRivetRequestBodyWindowUpdate"
+		}
+		protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyCancel => {
+			"ToRivetRequestBodyCancel"
+		}
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketOpen(_) => "ToRivetWebSocketOpen",
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketMessage(_) => "ToRivetWebSocketMessage",
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketMessageAck(_) => {
@@ -138,6 +150,17 @@ impl RequestStopResult {
 			RequestStopResult::ActorReadyTimeout => "actor_ready_timeout",
 			RequestStopResult::RequestTimeout => "request_timeout",
 			RequestStopResult::EnvoyError => "envoy_error",
+		}
+	}
+
+	fn lifecycle_result(self) -> rivet_guard_core::metrics::PegboardGatewayResult {
+		use rivet_guard_core::metrics::PegboardGatewayResult;
+		match self {
+			Self::Success => PegboardGatewayResult::Success,
+			Self::ClientDisconnect => PegboardGatewayResult::ClientDisconnect,
+			Self::ActorReadyTimeout => PegboardGatewayResult::ActorReadyTimeout,
+			Self::RequestTimeout => PegboardGatewayResult::RequestTimeout,
+			Self::EnvoyError => PegboardGatewayResult::EnvoyError,
 		}
 	}
 }
@@ -349,9 +372,11 @@ impl SharedState {
 		pool_name: &str,
 		actor_key: Option<String>,
 		actor_generation: Option<u32>,
+		envoy_protocol_version: Option<u16>,
 		protocol: RequestProtocol,
 		receiver_subject: String,
 		request_id: protocol::RequestId,
+		lifecycle: rivet_guard_core::metrics::PegboardGatewayLifecycle,
 		after_hibernation: bool,
 	) -> Result<InFlightRequestCtx> {
 		let (msg_tx, msg_rx) = mpsc::unbounded_channel();
@@ -369,7 +394,9 @@ impl SharedState {
 					pool_name: pool_name.to_string(),
 					actor_key,
 					actor_generation,
+					envoy_protocol_version,
 					protocol,
+					lifecycle,
 					receiver_subject,
 					message_index: 0,
 					created_at: Instant::now(),
@@ -394,6 +421,7 @@ impl SharedState {
 			Entry::Occupied(mut entry) => {
 				entry.actor_key = actor_key;
 				entry.actor_generation = actor_generation;
+				entry.envoy_protocol_version = envoy_protocol_version;
 				entry.wake(receiver_subject, msg_tx, drop_tx);
 
 				false
@@ -1076,7 +1104,9 @@ struct InFlightRequest {
 	pool_name: String,
 	actor_key: Option<String>,
 	actor_generation: Option<u32>,
+	envoy_protocol_version: Option<u16>,
 	protocol: RequestProtocol,
+	lifecycle: rivet_guard_core::metrics::PegboardGatewayLifecycle,
 	/// UPS subject to send messages to for this request.
 	receiver_subject: String,
 	/// Message index counter for this request.
@@ -1087,12 +1117,14 @@ struct InFlightRequest {
 
 impl InFlightRequest {
 	fn observe_terminal(&self, result: RequestStopResult) {
+		self.lifecycle.finish(result.lifecycle_result());
+		let result = result.as_str();
 		metrics::REQUEST_DURATION_SECONDS
 			.with_label_values(&[
 				self.namespace_id.to_string().as_str(),
 				self.pool_name.as_str(),
 				self.protocol.to_string().as_str(),
-				result.as_str(),
+				result,
 			])
 			.observe(self.created_at.elapsed().as_secs_f64());
 	}

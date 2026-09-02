@@ -1,5 +1,4 @@
 use std::{
-	collections::HashMap,
 	sync::{
 		Arc,
 		atomic::{AtomicU64, Ordering},
@@ -10,8 +9,8 @@ use std::{
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use gas::prelude::*;
-use http_body_util::{BodyExt, Full, Limited};
-use hyper::{Method, Request, Response, StatusCode, body::Body};
+use http_body_util::Full;
+use hyper::{Request, Response, StatusCode, body::Body};
 use rivet_envoy_protocol as protocol;
 use rivet_guard_core::{
 	ResponseBody,
@@ -22,9 +21,8 @@ use tokio::sync::{mpsc, watch};
 use tracing::Instrument;
 
 use super::{
-	ResponseBodyError,
 	request::{
-		should_stream_http_request_body_hint, stream_http_request_and_wait_for_response,
+		should_stream_http_request_body, stream_http_request_and_wait_for_response,
 		wait_for_http_response_start,
 	},
 	response::drain_http_response_stream,
@@ -38,7 +36,111 @@ use crate::{
 
 const PHASE_PRE_REQUEST: &str = "pre_request";
 
+pub(crate) struct PreparedHttpRequest {
+	msg_rx: mpsc::UnboundedReceiver<crate::shared_state::InFlightTunnelMessage>,
+	drop_rx: watch::Receiver<Option<crate::shared_state::MsgGcReason>>,
+	in_flight_req: crate::shared_state::InFlightRequestHandle,
+	stopped_sub: message::SubscriptionHandle<pegboard::workflows::actor2::Stopped>,
+	client_disconnect_guard: HttpClientDisconnectGuard,
+	request_id: protocol::RequestId,
+	request_stream: bool,
+}
+
 impl PegboardGateway3 {
+	pub(crate) async fn prepare_http_exchange(
+		&self,
+		ctx: &StandaloneCtx,
+		req_ctx: &mut RequestContext,
+	) -> Result<PreparedHttpRequest> {
+		let max_request_body_size = ctx.config().guard().http_max_request_body_size();
+		if req_ctx
+			.request_body_exact_size()
+			.is_some_and(|size| size > max_request_body_size as u64)
+		{
+			return Err(InvalidRequestBody {
+				reason: format!("request body exceeded the {max_request_body_size}-byte limit"),
+			}
+			.build());
+		}
+
+		let request_stream = should_stream_http_request_body(
+			req_ctx.method(),
+			req_ctx.request_body_exact_size(),
+			req_ctx.request_body_is_end_stream(),
+		);
+		let request_id = req_ctx.in_flight_request_id()?;
+		let headers = req_ctx
+			.headers()
+			.iter()
+			.filter_map(|(name, value)| {
+				value
+					.to_str()
+					.ok()
+					.map(|value| (name.to_string(), value.to_owned()))
+			})
+			.collect();
+		let mut stopped_sub = ctx
+			.subscribe::<pegboard::workflows::actor2::Stopped>(("actor_id", self.actor_id))
+			.await?;
+		self.prepare_http_request(ctx).await?;
+
+		let tunnel_subject = pegboard::pubsub_subjects::EnvoyReceiverSubject::new(
+			self.namespace_id,
+			self.envoy_key.clone(),
+		)
+		.to_string();
+		let InFlightRequestCtx {
+			msg_rx,
+			drop_rx,
+			handle: in_flight_req,
+		} = self
+			.shared_state
+			.create_or_wake_in_flight_request(
+				self.namespace_id,
+				self.pool_name.as_str(),
+				self.actor_key.clone(),
+				self.actor_generation,
+				self.envoy_protocol_version,
+				RequestProtocol::Http,
+				tunnel_subject,
+				request_id,
+				self.lifecycle.clone(),
+				false,
+			)
+			.await?;
+		let client_disconnect_guard = HttpClientDisconnectGuard::new(in_flight_req.clone());
+		let message = protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
+			protocol::ToEnvoyRequestStart {
+				actor_id: self.actor_id.to_string(),
+				method: req_ctx.method().to_string(),
+				path: self.path.clone(),
+				headers,
+				body: None,
+				stream: request_stream,
+				response_stream: true,
+			},
+		);
+		send_to_envoy_or_actor_stopped(
+			&in_flight_req,
+			&mut stopped_sub,
+			self.actor_id,
+			PHASE_PRE_REQUEST,
+			message,
+			false,
+		)
+		.await?;
+
+		Ok(PreparedHttpRequest {
+			msg_rx,
+			drop_rx,
+			in_flight_req,
+			stopped_sub,
+			client_disconnect_guard,
+			request_id,
+			request_stream,
+		})
+	}
+
 	pub(crate) async fn handle_http_request<B>(
 		&self,
 		req: Request<B>,
@@ -120,11 +222,20 @@ impl PegboardGateway3 {
 		B: Body<Data = Bytes> + Unpin,
 		B::Error: std::error::Error + Send + Sync + 'static,
 	{
-		let actor_id = self.actor_id.to_string();
-		let request_id = req_ctx.in_flight_request_id()?;
+		let prepared = match self.prepared_http_request.lock().await.take() {
+			Some(prepared) => prepared,
+			None => self.prepare_http_exchange(ctx, req_ctx).await?,
+		};
+		let PreparedHttpRequest {
+			mut msg_rx,
+			mut drop_rx,
+			in_flight_req,
+			mut stopped_sub,
+			mut client_disconnect_guard,
+			request_id,
+			request_stream,
+		} = prepared;
 
-		// Buffer small and explicitly sized requests. Unknown or large bodies are forwarded with
-		// backpressure while still enforcing the same total request-size limit.
 		let request_body_size_hint = req.body().size_hint();
 		let max_request_body_size = ctx.config().guard().http_max_request_body_size();
 		if request_body_size_hint
@@ -136,118 +247,11 @@ impl PegboardGateway3 {
 			}
 			.build());
 		}
-		let request_stream = !matches!(req_ctx.method(), &Method::GET | &Method::HEAD)
-			&& should_stream_http_request_body_hint(&request_body_size_hint);
-		let (req_parts, body) = req.into_parts();
-		let headers = req_parts
-			.headers
-			.iter()
-			.filter_map(|(name, value)| {
-				value
-					.to_str()
-					.ok()
-					.map(|value_str| (name.to_string(), value_str.to_string()))
-			})
-			.collect::<HashMap<_, _>>();
-		let (body_bytes, streaming_body) = if request_stream {
-			(Bytes::new(), Some(body))
-		} else {
-			(
-				Limited::new(body, max_request_body_size)
-					.collect()
-					.await
-					.map_err(|error| anyhow!("failed to read body: {error}"))?
-					.to_bytes(),
-				None,
-			)
-		};
-		ingress_bytes.fetch_add(body_bytes.len() as u64, Ordering::AcqRel);
+		let (_, body) = req.into_parts();
+		let streaming_body = request_stream.then_some(body);
 
-		let mut stopped_sub = ctx
-			.subscribe::<pegboard::workflows::actor2::Stopped>(("actor_id", self.actor_id))
-			.await?;
-
-		// Open the stopped subscription before resolving the envoy key so actor reallocation cannot
-		// race between the lookup and request registration.
-		let res = ctx
-			.op(pegboard::ops::actor::get_for_gateway::Input {
-				actor_id: self.actor_id,
-			})
-			.await?;
-		let Some(envoy_key) = res.and_then(|x| x.envoy_key) else {
-			return Err(ActorStoppedWhileWaiting {
-				actor_id: self.actor_id.to_string(),
-				phase: PHASE_PRE_REQUEST.to_owned(),
-			}
-			.build());
-		};
-
-		if self.envoy_key != envoy_key {
-			tracing::debug!(
-				gateway_envoy_key=%self.envoy_key,
-				new_envoy_key=%envoy_key,
-				"actor changed envoy while waiting for HTTP response",
-			);
-			return Err(ActorStoppedWhileWaiting {
-				actor_id: self.actor_id.to_string(),
-				phase: PHASE_PRE_REQUEST.to_owned(),
-			}
-			.build());
-		}
-
-		let tunnel_subject = pegboard::pubsub_subjects::EnvoyReceiverSubject::new(
-			self.namespace_id,
-			self.envoy_key.clone(),
-		)
-		.to_string();
-
-		let InFlightRequestCtx {
-			mut msg_rx,
-			mut drop_rx,
-			handle: in_flight_req,
-		} = self
-			.shared_state
-			.create_or_wake_in_flight_request(
-				self.namespace_id,
-				self.pool_name.as_str(),
-				self.actor_key.clone(),
-				self.actor_generation,
-				RequestProtocol::Http,
-				tunnel_subject,
-				request_id,
-				false,
-			)
-			.await?;
-		// Keep this armed until response ownership has safely transferred to either the returned body
-		// or the explicit error path.
-		let mut client_disconnect_guard = HttpClientDisconnectGuard::new(in_flight_req.clone());
-
-		let res = async {
-			let message = protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
-				protocol::ToEnvoyRequestStart {
-					actor_id: actor_id.clone(),
-					method: req_ctx.method().to_string(),
-					path: self.path.clone(),
-					headers,
-					body: if body_bytes.is_empty() {
-						None
-					} else {
-						Some(body_bytes.to_vec())
-					},
-					stream: request_stream,
-				},
-			);
-
-			send_to_envoy_or_actor_stopped(
-				&in_flight_req,
-				&mut stopped_sub,
-				self.actor_id,
-				PHASE_PRE_REQUEST,
-				message,
-				false,
-			)
-			.await?;
-
+		let client_disconnect = req_ctx.client_disconnect_token();
+		let exchange = async {
 			let response_start_timeout = Duration::from_millis(
 				self.ctx
 					.config()
@@ -273,6 +277,7 @@ impl PegboardGateway3 {
 				.await?
 			} else {
 				wait_for_http_response_start(
+					&in_flight_req,
 					&mut msg_rx,
 					&mut drop_rx,
 					&mut stopped_sub,
@@ -298,8 +303,11 @@ impl PegboardGateway3 {
 					.config()
 					.pegboard()
 					.gateway_http_response_body_channel_capacity();
-				let (body_tx, body_rx) =
-					mpsc::channel::<Result<Bytes, ResponseBodyError>>(body_channel_capacity);
+				let (body_tx, response_body, terminal_error) =
+					ResponseBody::channel_with_terminal(body_channel_capacity);
+				let response_consumed_bytes = Arc::new(AtomicU64::new(0));
+				let flow_metrics = crate::metrics::HttpResponseFlowMetrics::new();
+				let (response_consumed_tx, response_consumed_rx) = mpsc::unbounded_channel();
 				let idle_timeout = self
 					.ctx
 					.config()
@@ -321,12 +329,40 @@ impl PegboardGateway3 {
 						expected_message_index,
 						self.actor_id,
 						idle_timeout,
-						egress_bytes,
+						response_consumed_bytes.clone(),
+						terminal_error,
+						flow_metrics.clone(),
+					)
+					.in_current_span(),
+				);
+				tokio::spawn(
+					super::response::send_http_response_window_updates(
+						in_flight_req.clone(),
+						response_consumed_rx,
 					)
 					.in_current_span(),
 				);
 
-				response_builder.body(ResponseBody::Channel(body_rx))?
+				let egress_bytes = egress_bytes.clone();
+				let consumption_flow_metrics = flow_metrics.clone();
+				response_builder.body(
+					response_body.with_consumption(move |bytes| {
+						let Ok(bytes) = u64::try_from(bytes) else {
+							return;
+						};
+						let Ok(previous) = response_consumed_bytes.fetch_update(
+							Ordering::AcqRel,
+							Ordering::Acquire,
+							|current| current.checked_add(bytes),
+						) else {
+							return;
+						};
+						let consumed = previous + bytes;
+						egress_bytes.fetch_add(bytes, Ordering::AcqRel);
+						consumption_flow_metrics.consume(bytes as usize);
+						let _ = response_consumed_tx.send(consumed);
+					}),
+				)?
 			} else {
 				let body = response_start.body.unwrap_or_default();
 				egress_bytes.fetch_add(body.len() as u64, Ordering::AcqRel);
@@ -338,10 +374,26 @@ impl PegboardGateway3 {
 			};
 
 			Ok(response)
-		}
-		.await;
+		};
+		tokio::pin!(exchange);
+		let (res, client_disconnected) = tokio::select! {
+			biased;
+			_ = client_disconnect.cancelled() => (
+				Err(anyhow!("client disconnected before the HTTP response started")),
+				true,
+			),
+			res = &mut exchange => (res, false),
+		};
 
-		if res.is_err() {
+		if client_disconnected {
+			send_http_request_abort(
+				&in_flight_req,
+				protocol::HttpStreamAbortReasonKind::Cancelled,
+				Some("client disconnected before the HTTP response started".to_owned()),
+			)
+			.await;
+			in_flight_req.stop(RequestStopResult::ClientDisconnect).await;
+		} else if res.is_err() {
 			send_http_request_abort(
 				&in_flight_req,
 				protocol::HttpStreamAbortReasonKind::InternalError,
@@ -403,7 +455,7 @@ impl Drop for HttpClientDisconnectGuard {
 		tokio::spawn(async move {
 			send_http_request_abort(
 				&in_flight_req,
-				protocol::HttpStreamAbortReasonKind::ClientDisconnect,
+				protocol::HttpStreamAbortReasonKind::Cancelled,
 				Some("client disconnected before the HTTP response started".to_owned()),
 			)
 			.await;

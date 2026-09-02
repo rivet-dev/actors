@@ -118,6 +118,7 @@ fn test_envoy_handle() -> (EnvoyHandle, mpsc::UnboundedReceiver<ToEnvoyMessage>)
 		live_tunnel_requests: Default::default(),
 		pending_hibernation_restores: Default::default(),
 		ws_tx: Arc::new(AsyncMutex::new(None::<mpsc::UnboundedSender<WsTxMessage>>)),
+		http_ws_tx: Arc::new(AsyncMutex::new(None)),
 		connection_session: std::sync::atomic::AtomicU64::new(1),
 		next_connection_session: std::sync::atomic::AtomicU64::new(1),
 		connection_session_tx: tokio::sync::watch::channel(1).0,

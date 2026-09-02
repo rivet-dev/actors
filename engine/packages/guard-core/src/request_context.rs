@@ -6,6 +6,7 @@ use std::{
 	net::{IpAddr, SocketAddr},
 	time::{Duration, Instant},
 };
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct RequestContext {
@@ -23,6 +24,9 @@ pub struct RequestContext {
 	pub(crate) is_websocket: bool,
 	pub(crate) client_ip: IpAddr,
 	pub(crate) start_time: Instant,
+	pub(crate) request_body_exact_size: Option<u64>,
+	pub(crate) request_body_is_end_stream: bool,
+	pub(crate) client_disconnect: CancellationToken,
 
 	pub(crate) rate_limit: RateLimitConfig,
 	pub(crate) max_in_flight: MaxInFlightConfig,
@@ -45,6 +49,7 @@ impl RequestContext {
 		is_websocket: bool,
 		client_ip: IpAddr,
 		start_time: Instant,
+		client_disconnect: CancellationToken,
 	) -> Self {
 		let hostname = host.split(':').next().unwrap_or(&host).to_string();
 
@@ -60,6 +65,9 @@ impl RequestContext {
 			is_websocket,
 			client_ip,
 			start_time,
+			request_body_exact_size: None,
+			request_body_is_end_stream: true,
+			client_disconnect,
 
 			rate_limit: RateLimitConfig {
 				requests: 10000, // 10000 requests
@@ -115,6 +123,27 @@ impl RequestContext {
 
 	pub fn elapsed(&self) -> Duration {
 		self.start_time.elapsed()
+	}
+
+	pub fn request_body_exact_size(&self) -> Option<u64> {
+		self.request_body_exact_size
+	}
+
+	pub fn request_body_is_end_stream(&self) -> bool {
+		self.request_body_is_end_stream
+	}
+
+	pub fn client_disconnect_token(&self) -> CancellationToken {
+		self.client_disconnect.clone()
+	}
+
+	pub(crate) fn set_request_body_metadata(
+		&mut self,
+		exact_size: Option<u64>,
+		is_end_stream: bool,
+	) {
+		self.request_body_exact_size = exact_size;
+		self.request_body_is_end_stream = is_end_stream;
 	}
 
 	pub fn in_flight_request_id(&self) -> Result<protocol::RequestId> {

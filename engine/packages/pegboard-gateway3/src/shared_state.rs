@@ -13,7 +13,7 @@ use std::{
 	},
 	time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Mutex, Notify, mpsc, watch};
 use universalpubsub::{NextOutput, PubSub, PublishOpts};
 use vbare::OwnedVersionedData;
 
@@ -74,6 +74,12 @@ fn to_envoy_tunnel_message_kind_name(kind: &protocol::ToEnvoyTunnelMessageKind) 
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(_) => "ToEnvoyRequestStart",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestChunk(_) => "ToEnvoyRequestChunk",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(_) => "ToEnvoyRequestAbort",
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestBodyCancel => {
+			"ToEnvoyRequestBodyCancel"
+		}
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyResponseBodyWindowUpdate(_) => {
+			"ToEnvoyResponseBodyWindowUpdate"
+		}
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(_) => "ToEnvoyWebSocketOpen",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketMessage(_) => "ToEnvoyWebSocketMessage",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketClose(_) => "ToEnvoyWebSocketClose",
@@ -85,12 +91,31 @@ fn to_rivet_tunnel_message_kind_name(kind: &protocol::ToRivetTunnelMessageKind) 
 		protocol::ToRivetTunnelMessageKind::ToRivetResponseStart(_) => "ToRivetResponseStart",
 		protocol::ToRivetTunnelMessageKind::ToRivetResponseChunk(_) => "ToRivetResponseChunk",
 		protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(_) => "ToRivetResponseAbort",
+		protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyWindowUpdate(_) => {
+			"ToRivetRequestBodyWindowUpdate"
+		}
+		protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyCancel => {
+			"ToRivetRequestBodyCancel"
+		}
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketOpen(_) => "ToRivetWebSocketOpen",
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketMessage(_) => "ToRivetWebSocketMessage",
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketMessageAck(_) => {
 			"ToRivetWebSocketMessageAck"
 		}
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketClose(_) => "ToRivetWebSocketClose",
+	}
+}
+
+fn retries_no_responders(
+	request_protocol: RequestProtocol,
+	message_kind: &protocol::ToEnvoyTunnelMessageKind,
+) -> bool {
+	match request_protocol {
+		RequestProtocol::Http => matches!(
+			message_kind,
+			protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(_)
+		),
+		RequestProtocol::WebSocket => true,
 	}
 }
 
@@ -146,6 +171,17 @@ impl RequestStopResult {
 			RequestStopResult::EnvoyError => "envoy_error",
 		}
 	}
+
+	fn lifecycle_result(self) -> rivet_guard_core::metrics::PegboardGatewayResult {
+		use rivet_guard_core::metrics::PegboardGatewayResult;
+		match self {
+			Self::Success => PegboardGatewayResult::Success,
+			Self::ClientDisconnect => PegboardGatewayResult::ClientDisconnect,
+			Self::ActorReadyTimeout => PegboardGatewayResult::ActorReadyTimeout,
+			Self::RequestTimeout => PegboardGatewayResult::RequestTimeout,
+			Self::EnvoyError => PegboardGatewayResult::EnvoyError,
+		}
+	}
 }
 
 pub struct SharedStateInner {
@@ -192,7 +228,8 @@ impl SharedState {
 			http_response_queue_max_messages: pegboard_config
 				.gateway_http_response_queue_max_messages(),
 			streaming_http_response_queue_max_bytes: pegboard_config
-				.gateway_streaming_http_response_queue_max_bytes(),
+				.gateway_streaming_http_response_queue_max_bytes()
+				.min(protocol::HTTP_STREAM_INITIAL_WINDOW_BYTES as usize),
 		}))
 	}
 
@@ -363,9 +400,11 @@ impl SharedState {
 		pool_name: &str,
 		actor_key: Option<String>,
 		actor_generation: Option<u32>,
+		envoy_protocol_version: Option<u16>,
 		protocol: RequestProtocol,
 		receiver_subject: String,
 		request_id: protocol::RequestId,
+		lifecycle: rivet_guard_core::metrics::PegboardGatewayLifecycle,
 		after_hibernation: bool,
 	) -> Result<InFlightRequestCtx> {
 		let (msg_tx, msg_rx) = mpsc::unbounded_channel();
@@ -380,21 +419,31 @@ impl SharedState {
 			None
 		};
 
-		let new = match self
+		let (new, send_lock, request_body_window, upload_cancel_tx) = match self
 			.in_flight_requests
 			.entry_async(request_id)
 			.instrument(tracing::info_span!("entry_async"))
 			.await
 		{
 			Entry::Vacant(entry) => {
+				let send_lock = Arc::new(Mutex::new(()));
+				let request_body_window = Arc::new(HttpBodySendWindow::new());
+				let (upload_cancel_tx, _) = watch::channel(false);
 				entry.insert_entry(InFlightRequest {
 					namespace_id,
 					pool_name: pool_name.to_string(),
 					actor_key,
 					actor_generation,
+					envoy_protocol_version,
 					protocol,
 					receiver_subject,
 					message_index: 0,
+					http_send_state: HttpSendState::PreCommit,
+					abort_sent: false,
+					send_lock: send_lock.clone(),
+					request_body_window: request_body_window.clone(),
+					upload_cancel_tx: upload_cancel_tx.clone(),
+					lifecycle,
 					created_at: Instant::now(),
 					state: InFlightRequestState::Active {
 						msg_tx,
@@ -412,12 +461,16 @@ impl SharedState {
 					])
 					.inc();
 
-				true
+				(true, send_lock, request_body_window, upload_cancel_tx)
 			}
 			// If the entry already exists it means we transition from hibernating to active
 			Entry::Occupied(mut entry) => {
+				let send_lock = entry.send_lock.clone();
+				let request_body_window = entry.request_body_window.clone();
+				let upload_cancel_tx = entry.upload_cancel_tx.clone();
 				entry.actor_key = actor_key;
 				entry.actor_generation = actor_generation;
+				entry.envoy_protocol_version = envoy_protocol_version;
 				entry.wake(
 					receiver_subject,
 					msg_tx,
@@ -425,7 +478,7 @@ impl SharedState {
 					http_response_queue_budget,
 				);
 
-				false
+				(false, send_lock, request_body_window, upload_cancel_tx)
 			}
 		};
 
@@ -440,6 +493,9 @@ impl SharedState {
 			handle: InFlightRequestHandle {
 				shared_state: self.clone(),
 				request_id,
+				send_lock,
+				request_body_window,
+				upload_cancel_tx,
 			},
 		})
 	}
@@ -461,6 +517,9 @@ impl SharedState {
 
 		let (msg_tx, msg_rx) = mpsc::unbounded_channel();
 		let (drop_tx, drop_rx) = watch::channel(None);
+		let send_lock = req.send_lock.clone();
+		let request_body_window = req.request_body_window.clone();
+		let upload_cancel_tx = req.upload_cancel_tx.clone();
 
 		req.hibernate(msg_tx, drop_tx, None);
 		req.namespace_id = namespace_id;
@@ -474,6 +533,9 @@ impl SharedState {
 			handle: InFlightRequestHandle {
 				shared_state: self.clone(),
 				request_id,
+				send_lock,
+				request_body_window,
+				upload_cancel_tx,
 			},
 		})
 	}
@@ -565,6 +627,125 @@ pub struct InFlightRequestCtx {
 }
 
 #[derive(Debug)]
+struct HttpBodySendWindowState {
+	sent_bytes: u64,
+	consumed_bytes: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct HttpBodySendWindow {
+	state: Mutex<HttpBodySendWindowState>,
+	credit_available: Notify,
+	outstanding_bytes: AtomicU64,
+}
+
+struct HttpRequestWindowStall(Instant);
+
+impl Drop for HttpRequestWindowStall {
+	fn drop(&mut self) {
+		metrics::HTTP_BODY_WINDOW_STALL_DURATION_SECONDS
+			.with_label_values(&["request"])
+			.observe(self.0.elapsed().as_secs_f64());
+	}
+}
+
+impl HttpBodySendWindow {
+	fn new() -> Self {
+		metrics::HTTP_BODY_WINDOW_BYTES
+			.with_label_values(&["request"])
+			.add(protocol::HTTP_STREAM_INITIAL_WINDOW_BYTES as i64);
+		Self {
+			state: Mutex::new(HttpBodySendWindowState {
+				sent_bytes: 0,
+				consumed_bytes: 0,
+			}),
+			credit_available: Notify::new(),
+			outstanding_bytes: AtomicU64::new(0),
+		}
+	}
+
+	pub(crate) async fn reserve(&self, bytes: u64) -> Result<()> {
+		ensure!(
+			bytes <= protocol::HTTP_STREAM_INITIAL_WINDOW_BYTES,
+			"HTTP body frame exceeds the flow-control window"
+		);
+		if bytes == 0 {
+			return Ok(());
+		}
+
+		let mut stall = None;
+		loop {
+			let notified = self.credit_available.notified();
+			{
+				let mut state = self.state.lock().await;
+				let outstanding = state
+					.sent_bytes
+					.checked_sub(state.consumed_bytes)
+					.context("HTTP body flow-control accounting underflow")?;
+				let available = protocol::HTTP_STREAM_INITIAL_WINDOW_BYTES
+					.checked_sub(outstanding)
+					.context("HTTP body flow-control window exceeded")?;
+				if bytes <= available {
+					state.sent_bytes = state
+						.sent_bytes
+						.checked_add(bytes)
+						.context("HTTP body sent-byte counter overflow")?;
+					self.outstanding_bytes.fetch_add(bytes, Ordering::AcqRel);
+					metrics::HTTP_BODY_BUFFERED_BYTES
+						.with_label_values(&["request"])
+						.add(bytes as i64);
+					return Ok(());
+				}
+			}
+			if stall.is_none() {
+				metrics::HTTP_BODY_WINDOW_EXHAUSTED_TOTAL
+					.with_label_values(&["request"])
+					.inc();
+				stall = Some(HttpRequestWindowStall(Instant::now()));
+			}
+			notified.await;
+		}
+	}
+
+	pub(crate) async fn update_consumed(&self, consumed_bytes: u64) -> Result<()> {
+		let mut state = self.state.lock().await;
+		ensure!(
+			consumed_bytes >= state.consumed_bytes,
+			"HTTP body consumed-byte counter moved backwards"
+		);
+		ensure!(
+			consumed_bytes <= state.sent_bytes,
+			"HTTP body consumed-byte counter exceeds sent bytes"
+		);
+		if consumed_bytes == state.consumed_bytes {
+			return Ok(());
+		}
+		let consumed_delta = consumed_bytes - state.consumed_bytes;
+		state.consumed_bytes = consumed_bytes;
+		drop(state);
+		self.outstanding_bytes
+			.fetch_sub(consumed_delta, Ordering::AcqRel);
+		metrics::HTTP_BODY_BUFFERED_BYTES
+			.with_label_values(&["request"])
+			.sub(consumed_delta as i64);
+		self.credit_available.notify_waiters();
+		Ok(())
+	}
+}
+
+impl Drop for HttpBodySendWindow {
+	fn drop(&mut self) {
+		let outstanding = self.outstanding_bytes.swap(0, Ordering::AcqRel);
+		metrics::HTTP_BODY_BUFFERED_BYTES
+			.with_label_values(&["request"])
+			.sub(outstanding as i64);
+		metrics::HTTP_BODY_WINDOW_BYTES
+			.with_label_values(&["request"])
+			.sub(protocol::HTTP_STREAM_INITIAL_WINDOW_BYTES as i64);
+	}
+}
+
+#[derive(Debug)]
 pub struct InFlightTunnelMessage {
 	pub message_id: protocol::MessageId,
 	pub message_kind: protocol::ToRivetTunnelMessageKind,
@@ -575,14 +756,56 @@ pub struct InFlightTunnelMessage {
 pub struct InFlightRequestHandle {
 	shared_state: SharedState,
 	pub request_id: protocol::RequestId,
+	send_lock: Arc<Mutex<()>>,
+	request_body_window: Arc<HttpBodySendWindow>,
+	upload_cancel_tx: watch::Sender<bool>,
 }
 
 impl InFlightRequestHandle {
+	pub(crate) async fn mark_abort_sent(&self) -> bool {
+		let Some(mut request) = self
+			.shared_state
+			.in_flight_requests
+			.get_async(&self.request_id)
+			.await
+		else {
+			return false;
+		};
+		if request.abort_sent {
+			return false;
+		}
+		request.abort_sent = true;
+		true
+	}
+
 	#[tracing::instrument(skip_all, fields(request_id=%display_id(&self.request_id)))]
 	pub async fn send_message(
 		&self,
 		message_kind: protocol::ToEnvoyTunnelMessageKind,
 		ephemeral: bool,
+	) -> Result<()> {
+		// Admission to this FIFO mutex is the message handoff boundary. Once admitted, move the
+		// guard and frame into an independent task so cancelling the caller cannot leave an index
+		// gap or let a later abort/window frame overtake this message.
+		let send_guard = self.send_lock.clone().lock_owned().await;
+		let handle = self.clone();
+		tokio::spawn(
+			async move {
+				handle
+					.send_message_admitted(message_kind, ephemeral, send_guard)
+					.await
+			}
+			.in_current_span(),
+		)
+		.await
+		.context("gateway outbound message task failed")?
+	}
+
+	async fn send_message_admitted(
+		&self,
+		message_kind: protocol::ToEnvoyTunnelMessageKind,
+		ephemeral: bool,
+		_send_guard: tokio::sync::OwnedMutexGuard<()>,
 	) -> Result<()> {
 		let mut req = self
 			.shared_state
@@ -604,10 +827,28 @@ impl InFlightRequestHandle {
 			&message_kind,
 			protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(_)
 		);
+		let is_http = matches!(req.protocol, RequestProtocol::Http);
+		let is_request_start = matches!(
+			&message_kind,
+			protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(_)
+		);
+		ensure!(
+			!is_http
+				|| match req.http_send_state {
+					HttpSendState::PreCommit => is_request_start,
+					HttpSendState::Committed => !is_request_start,
+					HttpSendState::Terminal => false,
+				},
+			"HTTP tunnel message is invalid for the current send state"
+		);
+		let retry_no_responders = retries_no_responders(req.protocol, &message_kind);
 
-		// Increment message index for next message
+		// HTTP advances only after the Envoy transport acknowledges admission. WebSocket keeps its
+		// existing pre-send indexing because hibernation replay depends on that behavior.
 		let current_message_index = req.message_index;
-		req.message_index = req.message_index.wrapping_add(1);
+		if !is_http {
+			req.message_index = req.message_index.wrapping_add(1);
+		}
 
 		// Check if this is a WebSocket message for hibernation tracking
 		let is_ws_message = matches!(
@@ -683,6 +924,15 @@ impl InFlightRequestHandle {
 		let mut attempt = 0;
 		loop {
 			if !backoff.tick().await {
+				if is_http
+					&& let Some(mut req) = self
+						.shared_state
+						.in_flight_requests
+						.get_async(&self.request_id)
+						.await
+				{
+					req.http_send_state = HttpSendState::Terminal;
+				}
 				tracing::warn!(
 					%namespace_id,
 					%pool_name,
@@ -697,7 +947,12 @@ impl InFlightRequestHandle {
 					"no responders for gateway message after retry budget exhausted, aborting"
 				);
 				return Err(TunnelMessageTimeout {
-					phase: "active_websocket".to_owned(),
+					phase: if is_http {
+						"request_start"
+					} else {
+						"active_websocket"
+					}
+					.to_owned(),
 					reason: "no_responders_after_retry_budget_exhausted".to_owned(),
 				}
 				.build());
@@ -729,15 +984,102 @@ impl InFlightRequestHandle {
 				attempt,
 				"sending gateway message to envoy"
 			);
-			let res = self
-				.shared_state
-				.ups
-				.request(&receiver_subject, &message_serialized)
-				.await?;
+			let publish_timeout = Duration::from_millis(
+				self.shared_state.tunnel_ping_timeout.max(1) as u64,
+			);
+			let res = match tokio::time::timeout(
+				publish_timeout,
+				self.shared_state
+					.ups
+					.request(&receiver_subject, &message_serialized),
+			)
+			.await
+			{
+				Ok(Ok(res)) => res,
+				Ok(Err(error)) => {
+					if is_http && !is_request_start {
+						metrics::HTTP_POST_COMMIT_FAILURE_TOTAL
+							.with_label_values(&["ups_error"])
+							.inc();
+					}
+					if is_http
+						&& let Some(mut req) = self
+							.shared_state
+							.in_flight_requests
+							.get_async(&self.request_id)
+							.await
+					{
+						req.http_send_state = HttpSendState::Terminal;
+					}
+					return Err(error.into());
+				}
+				Err(_) => {
+					if is_http && !is_request_start {
+						metrics::HTTP_POST_COMMIT_FAILURE_TOTAL
+							.with_label_values(&["handoff_timeout"])
+							.inc();
+					}
+					if is_http
+						&& let Some(mut req) = self
+							.shared_state
+							.in_flight_requests
+							.get_async(&self.request_id)
+							.await
+					{
+						req.http_send_state = HttpSendState::Terminal;
+					}
+					return Err(TunnelMessageTimeout {
+						phase: if is_request_start {
+							"request_start"
+						} else {
+							"committed_http"
+						}
+						.to_owned(),
+						reason: "envoy_handoff_ack_timeout".to_owned(),
+					}
+					.build());
+				}
+			};
 
-			if let NextOutput::NoResponders = res {
+			if matches!(res, NextOutput::Unsubscribed) {
+				if is_http && !is_request_start {
+					metrics::HTTP_POST_COMMIT_FAILURE_TOTAL
+						.with_label_values(&["subscription_closed"])
+						.inc();
+				}
+				if is_http
+					&& let Some(mut req) = self
+						.shared_state
+						.in_flight_requests
+						.get_async(&self.request_id)
+						.await
+				{
+					req.http_send_state = HttpSendState::Terminal;
+				}
+				return Err(TunnelMessageTimeout {
+					phase: if is_http && !is_request_start {
+						"committed_http"
+					} else if is_http {
+						"request_start"
+					} else {
+						"active_websocket"
+					}
+					.to_owned(),
+					reason: "envoy_subscription_closed".to_owned(),
+				}
+				.build());
+			} else if matches!(res, NextOutput::NoResponders) {
 				// Ignore no responders
 				if ephemeral {
+					if is_http
+						&& let Some(mut req) = self
+							.shared_state
+							.in_flight_requests
+							.get_async(&self.request_id)
+							.await
+					{
+						req.http_send_state = HttpSendState::Terminal;
+					}
 					tracing::debug!(
 						%namespace_id,
 						%pool_name,
@@ -754,6 +1096,26 @@ impl InFlightRequestHandle {
 						"no responders for gateway message, ignoring because message is ephemeral"
 					);
 					break;
+				}
+				if !retry_no_responders {
+					if is_http && !is_request_start {
+						metrics::HTTP_POST_COMMIT_FAILURE_TOTAL
+							.with_label_values(&["no_responder"])
+							.inc();
+					}
+					if let Some(mut req) = self
+						.shared_state
+						.in_flight_requests
+						.get_async(&self.request_id)
+						.await
+					{
+						req.http_send_state = HttpSendState::Terminal;
+					}
+					return Err(TunnelMessageTimeout {
+						phase: "committed_http".to_owned(),
+						reason: "no_responder_after_request_start".to_owned(),
+					}
+					.build());
 				}
 
 				metrics::REQUEST_RETRIES_TOTAL
@@ -781,6 +1143,22 @@ impl InFlightRequestHandle {
 					"no responders for gateway message, retrying with backoff"
 				);
 			} else {
+				if is_http {
+					let mut req = self
+						.shared_state
+						.in_flight_requests
+						.get_async(&self.request_id)
+						.await
+						.context("request removed during HTTP start handoff")?;
+					ensure!(
+						req.message_index == current_message_index,
+						"HTTP message index changed during an admitted handoff"
+					);
+					req.message_index = req.message_index.wrapping_add(1);
+					if is_request_start {
+						req.http_send_state = HttpSendState::Committed;
+					}
+				}
 				tracing::trace!(
 					%namespace_id,
 					%pool_name,
@@ -821,6 +1199,27 @@ impl InFlightRequestHandle {
 		}
 
 		Ok(())
+	}
+
+	pub(crate) async fn reserve_request_body_bytes(&self, bytes: usize) -> Result<()> {
+		self.request_body_window.reserve(bytes as u64).await
+	}
+
+	pub(crate) async fn update_request_body_consumed(
+		&self,
+		consumed_bytes: u64,
+	) -> Result<()> {
+		self.request_body_window
+			.update_consumed(consumed_bytes)
+			.await
+	}
+
+	pub(crate) fn subscribe_upload_cancel(&self) -> watch::Receiver<bool> {
+		self.upload_cancel_tx.subscribe()
+	}
+
+	pub(crate) fn cancel_upload(&self) {
+		self.upload_cancel_tx.send_replace(true);
 	}
 
 	#[tracing::instrument(skip_all, fields(request_id=%display_id(&self.request_id)))]
@@ -1068,6 +1467,9 @@ impl InFlightRequestHandle {
 
 	#[tracing::instrument(skip_all)]
 	pub async fn stop(&self, result: RequestStopResult) {
+		// Serialize removal behind any admitted outbound handoff so commitment and message index
+		// are recorded before terminal cleanup wins the race.
+		let _send_guard = self.send_lock.clone().lock_owned().await;
 		if let Some((_, req)) = self
 			.shared_state
 			.in_flight_requests
@@ -1107,28 +1509,149 @@ fn attempt_bucket(attempt: u32) -> &'static str {
 	}
 }
 
+#[cfg(test)]
+mod tests {
+	use std::time::Duration;
+
+	use super::*;
+
+	fn request_start() -> protocol::ToEnvoyTunnelMessageKind {
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
+			protocol::ToEnvoyRequestStart {
+				actor_id: "test-actor".into(),
+				method: "POST".into(),
+				path: "/".into(),
+				headers: Default::default(),
+				body: None,
+				stream: true,
+				response_stream: true,
+			},
+		)
+	}
+
+	#[test]
+	fn http_retries_only_request_start_before_streaming() {
+		assert!(retries_no_responders(RequestProtocol::Http, &request_start()));
+		assert!(!retries_no_responders(
+			RequestProtocol::Http,
+			&protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestChunk(
+				protocol::ToEnvoyRequestChunk {
+					body: Vec::new(),
+					finish: false,
+				},
+			),
+		));
+		assert!(!retries_no_responders(
+			RequestProtocol::Http,
+			&protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(
+				protocol::ToEnvoyRequestAbort {
+					reason: protocol::HttpStreamAbortReason {
+						kind: protocol::HttpStreamAbortReasonKind::Cancelled,
+						detail: None,
+					},
+				},
+			),
+		));
+	}
+
+	#[test]
+	fn websocket_preserves_existing_retry_policy() {
+		assert!(retries_no_responders(
+			RequestProtocol::WebSocket,
+			&protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketClose(
+				protocol::ToEnvoyWebSocketClose { code: None, reason: None },
+			),
+		));
+	}
+
+	#[tokio::test]
+	async fn request_body_window_blocks_until_actor_consumption_is_acknowledged() {
+		let window = Arc::new(HttpBodySendWindow::new());
+		window
+			.reserve(protocol::HTTP_STREAM_INITIAL_WINDOW_BYTES)
+			.await
+			.expect("reserve initial request window");
+
+		let blocked = tokio::spawn({
+			let window = window.clone();
+			async move { window.reserve(1).await }
+		});
+		assert!(
+			tokio::time::timeout(Duration::from_millis(20), async {
+				while !blocked.is_finished() {
+					tokio::task::yield_now().await;
+				}
+			})
+			.await
+			.is_err(),
+			"request body exceeded its initial byte window",
+		);
+
+		window
+			.update_consumed(1)
+			.await
+			.expect("return one byte of request credit");
+		blocked
+			.await
+			.expect("join blocked request reservation")
+			.expect("reserve request byte after credit");
+	}
+
+	#[tokio::test]
+	async fn request_body_window_rejects_regression_and_over_credit() {
+		let window = HttpBodySendWindow::new();
+		window.reserve(10).await.expect("reserve request bytes");
+		window
+			.update_consumed(5)
+			.await
+			.expect("consume request bytes");
+		assert!(window.update_consumed(4).await.is_err());
+		assert!(window.update_consumed(11).await.is_err());
+		window
+			.update_consumed(5)
+			.await
+			.expect("duplicate cumulative request credit");
+	}
+}
+
 struct InFlightRequest {
 	namespace_id: Id,
 	pool_name: String,
 	actor_key: Option<String>,
 	actor_generation: Option<u32>,
+	envoy_protocol_version: Option<u16>,
 	protocol: RequestProtocol,
 	/// UPS subject to send messages to for this request.
 	receiver_subject: String,
 	/// Message index counter for this request.
 	message_index: protocol::MessageIndex,
+	http_send_state: HttpSendState,
+	abort_sent: bool,
+	send_lock: Arc<Mutex<()>>,
+	request_body_window: Arc<HttpBodySendWindow>,
+	upload_cancel_tx: watch::Sender<bool>,
+	lifecycle: rivet_guard_core::metrics::PegboardGatewayLifecycle,
 	created_at: Instant,
 	state: InFlightRequestState,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HttpSendState {
+	PreCommit,
+	Committed,
+	Terminal,
+}
+
 impl InFlightRequest {
 	fn observe_terminal(&self, result: RequestStopResult) {
+		self.lifecycle.finish(result.lifecycle_result());
+		let result = result.as_str();
 		metrics::REQUEST_DURATION_SECONDS
 			.with_label_values(&[
 				self.namespace_id.to_string().as_str(),
 				self.pool_name.as_str(),
 				self.protocol.to_string().as_str(),
-				result.as_str(),
+				result,
 			])
 			.observe(self.created_at.elapsed().as_secs_f64());
 	}

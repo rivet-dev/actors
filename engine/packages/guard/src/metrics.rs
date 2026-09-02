@@ -9,6 +9,14 @@ lazy_static! {
 		*REGISTRY
 	)
 	.unwrap();
+	pub static ref PEGBOARD_GATEWAY_ROUTE_TOTAL: IntCounterVec =
+		register_int_counter_vec_with_registry!(
+			"pegboard_gateway_route_total",
+			"Pegboard gateway selections by bounded routing decision.",
+			&["gateway", "envoy_protocol", "request_kind", "mode", "decision"],
+			*REGISTRY
+		)
+		.unwrap();
 	pub static ref ROUTE_DISPATCH_DURATION: HistogramVec = register_histogram_vec_with_registry!(
 		"guard_route_dispatch_duration",
 		"Time spent dispatching to a guard routing module in seconds.",

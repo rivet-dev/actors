@@ -104,6 +104,7 @@ pub async fn run_server(
 
 		// Create a proxy service instance for this connection
 		let proxy_service = factory_clone.create_service(remote_addr);
+		let client_disconnect = proxy_service.client_disconnect_token();
 
 		// Using service_fn to convert our function into a hyper service
 		let service = service_fn(move |req| {
@@ -120,6 +121,7 @@ pub async fn run_server(
 				if let Err(err) = conn.await {
 					tracing::warn!("{} connection error: {}", port_type_str, err);
 				}
+				client_disconnect.cancel();
 				tracing::debug!("{} connection dropped: {}", port_type_str, remote_addr);
 
 				let connection_duration = connection_start.elapsed().as_secs_f64();
@@ -195,6 +197,7 @@ pub async fn run_server(
 												// Create service for this connection
 												let io = hyper_util::rt::TokioIo::new(tls_stream);
 												let proxy_service = https_factory_clone.create_service(remote_addr);
+												let client_disconnect = proxy_service.client_disconnect_token();
 
 												// Using service_fn to convert our function into a hyper service
 												let service = service_fn(move |req| {
@@ -212,6 +215,7 @@ pub async fn run_server(
 												if let Err(err) = conn_server.serve_connection_with_upgrades(io, service).await {
 													tracing::debug!(?err, "HTTPS connection error");
 												}
+												client_disconnect.cancel();
 
 												tracing::debug!("HTTPS connection dropped: {}", remote_addr);
 											},

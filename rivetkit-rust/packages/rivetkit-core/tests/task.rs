@@ -434,6 +434,7 @@ pub(crate) mod moved_tests {
 			ws_tx: Arc::new(tokio::sync::Mutex::new(
 				None::<mpsc::UnboundedSender<WsTxMessage>>,
 			)),
+			http_ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
 			connection_session: std::sync::atomic::AtomicU64::new(1),
 			next_connection_session: std::sync::atomic::AtomicU64::new(1),
 			connection_session_tx: tokio::sync::watch::channel(1).0,

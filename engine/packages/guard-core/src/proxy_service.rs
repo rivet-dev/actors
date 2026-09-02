@@ -4,7 +4,7 @@ use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{
 	Request, Response, StatusCode,
-	body::Incoming as BodyIncoming,
+	body::{Body as _, Incoming as BodyIncoming},
 	header::{HeaderName, HeaderValue},
 };
 use hyper_tungstenite;
@@ -25,6 +25,7 @@ use std::{
 };
 use tokio::sync::Mutex;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tracing::Instrument;
 use url::Url;
@@ -350,6 +351,7 @@ pub struct ProxyService {
 	state: Arc<ProxyState>,
 	remote_addr: SocketAddr,
 	connection_start: Instant,
+	client_disconnect: CancellationToken,
 }
 
 impl ProxyService {
@@ -358,7 +360,12 @@ impl ProxyService {
 			state,
 			remote_addr,
 			connection_start: Instant::now(),
+			client_disconnect: CancellationToken::new(),
 		}
+	}
+
+	pub(crate) fn client_disconnect_token(&self) -> CancellationToken {
+		self.client_disconnect.clone()
 	}
 
 	/// Process an individual request.
@@ -433,6 +440,8 @@ impl ProxyService {
 			.unwrap_or_else(|| self.remote_addr.ip());
 
 		let is_websocket = hyper_tungstenite::is_upgrade_request(&req);
+		let request_body_exact_size = req.body().size_hint().exact();
+		let request_body_is_end_stream = req.body().is_end_stream();
 		let mut req_ctx = RequestContext::new(
 			self.remote_addr,
 			request_ids.ray_id,
@@ -444,7 +453,9 @@ impl ProxyService {
 			is_websocket,
 			client_ip,
 			start_time,
+			self.client_disconnect.clone(),
 		);
+		req_ctx.set_request_body_metadata(request_body_exact_size, request_body_is_end_stream);
 
 		// TLS information would be set here if available (for HTTPS connections)
 		// This requires TLS connection introspection and is marked for future enhancement
@@ -961,8 +972,29 @@ impl ProxyService {
 				.build());
 			}
 			ResolveRouteOutput::CustomServe(mut handler) => {
-				if handler.streams_request_body() {
-					return handler.handle_streaming_request(req, req_ctx).await;
+				let mut prepare_attempts = 0;
+				while handler.streams_request_body() {
+					prepare_attempts += 1;
+					match handler.prepare_streaming_request(req_ctx).await {
+						Ok(()) => return handler.handle_streaming_request(req, req_ctx).await,
+						Err(error)
+							if prepare_attempts < req_ctx.retry.max_attempts
+								&& utils::should_retry_error(&error) =>
+						{
+							let backoff = utils::calculate_backoff(
+								prepare_attempts,
+								req_ctx.retry.initial_interval,
+							);
+							tokio::time::sleep(backoff).await;
+							let ResolveRouteOutput::CustomServe(new_handler) =
+								self.state.resolve_route(req_ctx, true).await?
+							else {
+								bail!("resolved route does not match CustomServe");
+							};
+							handler = new_handler;
+						}
+						Err(error) => return Err(error),
+					}
 				}
 
 				// Collect request body
@@ -1919,6 +1951,7 @@ impl Clone for ProxyService {
 			state: self.state.clone(),
 			remote_addr: self.remote_addr,
 			connection_start: self.connection_start,
+			client_disconnect: self.client_disconnect.clone(),
 		}
 	}
 }

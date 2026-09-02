@@ -243,6 +243,17 @@ impl<T> BufferMap<T> {
 	pub fn contains_key(&self, buffers: &[&[u8]]) -> bool {
 		self.inner.contains_key(&cyrb53(buffers))
 	}
+
+	pub fn remove_where(&mut self, mut predicate: impl FnMut(&T) -> bool) -> Vec<T> {
+		let keys = self
+			.inner
+			.iter()
+			.filter_map(|(key, value)| predicate(value).then_some(key.clone()))
+			.collect::<Vec<_>>();
+		keys.into_iter()
+			.filter_map(|key| self.inner.remove(&key))
+			.collect()
+	}
 }
 
 impl<T> Default for BufferMap<T> {
