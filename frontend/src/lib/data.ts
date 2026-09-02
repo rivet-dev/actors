@@ -1,3 +1,4 @@
+import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import z from "zod";
 
 const providerMetadataSchema = z
@@ -133,3 +134,38 @@ const _safeJsonParse = (str: unknown): unknown => {
 		return str;
 	}
 };
+
+type OnboardingPeekProvider = {
+	currentNamespaceQueryOptions(): { queryKey: QueryKey };
+	actorsCountQueryOptions(): { queryKey: QueryKey };
+};
+
+// Synchronous best-effort guess of the destination screen, for pending UI that
+// must pick a skeleton before the loader resolves. Onboarding is shown exactly
+// when an onboarding-eligible namespace has no actors, so an uncached actor
+// count returns false instead of guessing.
+export function peekDisplaysOnboarding(opts: {
+	queryClient: QueryClient;
+	dataProvider: OnboardingPeekProvider | undefined;
+	onboardingDisplayName: string;
+	isSkipped: boolean;
+}): boolean {
+	const { queryClient, dataProvider, onboardingDisplayName, isSkipped } =
+		opts;
+	if (isSkipped || !dataProvider) {
+		return false;
+	}
+
+	const namespace = queryClient.getQueryData<{ displayName?: string }>(
+		dataProvider.currentNamespaceQueryOptions().queryKey,
+	);
+	if (namespace?.displayName !== onboardingDisplayName) {
+		return false;
+	}
+
+	return (
+		queryClient.getQueryData<number>(
+			dataProvider.actorsCountQueryOptions().queryKey,
+		) === 0
+	);
+}

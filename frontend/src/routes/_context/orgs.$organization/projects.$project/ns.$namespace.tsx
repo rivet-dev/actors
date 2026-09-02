@@ -5,15 +5,17 @@ import {
 	useNavigate,
 	useSearch,
 } from "@tanstack/react-router";
+import { NamespaceLandingPending } from "@/app/actors-grid";
+import { peekCloudNamespaceContext } from "@/app/data-providers/cache";
 import {
 	ConnectProviderSheet,
 	isConnectProviderModal,
 } from "@/app/dialogs/connect-provider-sheet";
 import { EditRunnerConfigSheet } from "@/app/dialogs/edit-runner-config-sheet";
-import { NamespaceLandingPending } from "@/app/actors-grid";
 import { GettingStarted } from "@/app/getting-started";
 import { SidebarlessHeader } from "@/app/layout";
 import { NotFoundCard } from "@/app/not-found-card";
+import { OnboardingSkeleton } from "@/app/onboarding-skeleton";
 import { RouteError } from "@/app/route-error";
 import { RouteLayout } from "@/app/route-layout";
 import { useDialog } from "@/app/use-dialog";
@@ -21,6 +23,7 @@ import { ls } from "@/components";
 import { CreateActorSheet } from "@/components/actors/dialogs/create-actor-sheet";
 import {
 	deriveOnboardingState,
+	peekDisplaysOnboarding,
 	type RunnerConfigsInfiniteData,
 	type RunnerNamesInfiniteData,
 } from "@/lib/data";
@@ -29,6 +32,7 @@ import {
 	RECENT_NAMESPACES_KEY,
 	recordRecentVisit,
 } from "@/lib/recently-visited";
+import { queryClient } from "@/queries/global";
 
 export const Route = createFileRoute(
 	"/_context/orgs/$organization/projects/$project/ns/$namespace",
@@ -171,8 +175,32 @@ export const Route = createFileRoute(
 	errorComponent: RouteError,
 	pendingMinMs: 0,
 	pendingMs: 0,
-	pendingComponent: NamespaceLandingPending,
+	pendingComponent: NamespacePending,
 });
+
+function NamespacePending() {
+	const { organization, project, namespace } = Route.useParams();
+	const { skipOnboarding } = Route.useSearch();
+
+	const displaysOnboarding = peekDisplaysOnboarding({
+		queryClient,
+		dataProvider: peekCloudNamespaceContext(
+			organization,
+			project,
+			namespace,
+		),
+		onboardingDisplayName: "Production",
+		isSkipped:
+			ls.onboarding.getSkipWelcome(project, namespace) ||
+			skipOnboarding === true,
+	});
+
+	if (displaysOnboarding) {
+		return <OnboardingSkeleton header={<SidebarlessHeader />} />;
+	}
+
+	return <NamespaceLandingPending />;
+}
 
 function RouteComponent() {
 	const {

@@ -133,3 +133,13 @@ export function getOrCreateEngineNamespaceContext(
 	engineNamespaceContextCache.set(key, context);
 	return context;
 }
+
+export function peekCloudNamespaceContext(
+	organization: string,
+	project: string,
+	namespace: string,
+): CloudNamespaceContext | undefined {
+	return cloudNamespaceContextCache.get(
+		`${organization}:${project}:${namespace}`,
+	);
+}

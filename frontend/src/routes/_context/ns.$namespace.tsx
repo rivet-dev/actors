@@ -1,5 +1,6 @@
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { match } from "ts-pattern";
+import { NamespaceLandingPending } from "@/app/actors-grid";
 import {
 	ConnectProviderSheet,
 	isConnectProviderModal,
@@ -8,12 +9,14 @@ import { EditRunnerConfigSheet } from "@/app/dialogs/edit-runner-config-sheet";
 import { GettingStarted } from "@/app/getting-started";
 import { SidebarlessHeader } from "@/app/layout";
 import { NotFoundCard } from "@/app/not-found-card";
+import { OnboardingSkeleton } from "@/app/onboarding-skeleton";
 import { RouteLayout } from "@/app/route-layout";
 import { useDialog } from "@/app/use-dialog";
 import { ls } from "@/components";
 import { CreateActorSheet } from "@/components/actors/dialogs/create-actor-sheet";
 import {
 	deriveOnboardingState,
+	peekDisplaysOnboarding,
 	type RunnerConfigsInfiniteData,
 	type RunnerNamesInfiniteData,
 } from "@/lib/data";
@@ -22,6 +25,7 @@ import {
 	RECENT_NAMESPACES_KEY,
 	recordRecentVisit,
 } from "@/lib/recently-visited";
+import { queryClient } from "@/queries/global";
 
 export const Route = createFileRoute("/_context/ns/$namespace")({
 	context: ({ context, params }) =>
@@ -144,7 +148,31 @@ export const Route = createFileRoute("/_context/ns/$namespace")({
 	},
 	component: RouteComponent,
 	notFoundComponent: () => <NotFoundCard />,
+	pendingMinMs: 0,
+	pendingMs: 0,
+	pendingComponent: NamespacePending,
 });
+
+function NamespacePending() {
+	const { namespace } = Route.useParams();
+	const { dataProvider } = Route.useRouteContext();
+	const search = Route.useSearch() as { skipOnboarding?: boolean };
+
+	const displaysOnboarding = peekDisplaysOnboarding({
+		queryClient,
+		dataProvider,
+		onboardingDisplayName: "Default",
+		isSkipped:
+			ls.onboarding.getSkipWelcomeEngine(namespace) ||
+			search.skipOnboarding === true,
+	});
+
+	if (displaysOnboarding) {
+		return <OnboardingSkeleton header={<SidebarlessHeader />} />;
+	}
+
+	return <NamespaceLandingPending />;
+}
 
 function RouteComponent() {
 	const {
