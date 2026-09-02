@@ -320,6 +320,22 @@ impl ActorContext {
 		self.inner.is_same_instance(&other.inner)
 	}
 
+	/// Returns a handle for the same invocation whose Core spans parent to the
+	/// application span active in JavaScript, given as W3C headers.
+	#[napi]
+	pub fn with_application_span(
+		&self,
+		traceparent: Option<String>,
+		tracestate: Option<String>,
+	) -> ActorContext {
+		ActorContext {
+			inner: self
+				.inner
+				.with_application_span(traceparent.as_deref(), tracestate.as_deref()),
+			shared: self.shared.clone(),
+		}
+	}
+
 	#[napi]
 	pub fn invocation_trace_context(&self) -> Option<JsActorInvocationTraceContext> {
 		self.inner.invocation_trace_context().map(Into::into)

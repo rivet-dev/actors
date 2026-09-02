@@ -40,5 +40,12 @@ export const telemetryActor = actor({
 			);
 			return "replied";
 		},
+		scheduleTrace: async (c, correlationToken: string) => {
+			await c.schedule.after(50, "scheduledTrace", correlationToken);
+			return correlationToken;
+		},
+		scheduledTrace: async (c, correlationToken: string) => {
+			await c.db.execute("SELECT ? AS trace", correlationToken);
+		},
 	},
 });

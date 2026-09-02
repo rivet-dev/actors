@@ -5,7 +5,8 @@ pub mod export;
 
 use std::sync::Arc;
 
-use opentelemetry::propagation::{Extractor, TextMapPropagator as _};
+use opentelemetry::Context;
+use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator as _};
 use opentelemetry::trace::{SpanContext, TraceContextExt as _};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use parking_lot::Mutex;
@@ -58,17 +59,38 @@ fn invocation_ray_id(headers: &http::HeaderMap) -> Option<String> {
 	rivetkit_client_protocol::telemetry_headers::bounded_ray_id(value).map(str::to_owned)
 }
 
-/// The single root span for one client action invocation.
+/// Owns the complete lifecycle of one actor invocation.
 #[derive(Debug)]
-pub(crate) struct ActionInvocationSpan {
+pub(crate) struct ActorInvocation {
 	telemetry: ActorInvocationTelemetry,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum InvocationType {
+	Action,
+	Scheduled,
+}
+
+impl InvocationType {
+	fn as_label(self) -> &'static str {
+		match self {
+			Self::Action => "action",
+			Self::Scheduled => "scheduled",
+		}
+	}
+}
+
 /// Opaque invocation context carried across foreign-runtime adapters.
+///
+/// Every clone of a handle shares one invocation. `application_span` is the
+/// span the host runtime had active when it resolved this handle; Core cannot
+/// see the host's span stack, so spans opened through the handle parent there
+/// when it is set and to the invocation span otherwise.
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct ActorInvocationTelemetry {
 	inner: Arc<InvocationInner>,
+	application_span: Option<SpanContext>,
 }
 
 /// Identity fields that do not change while an actor is alive. Built once per
@@ -102,6 +124,16 @@ const OPERATION_ABANDONED_ERROR_TYPE: &str = "actor.operation_abandoned";
 /// span is released when the last guard drops after the terminal status has
 /// been recorded, so work that settles before the reply changes nothing.
 pub(crate) struct InvocationWorkGuard(ActorInvocationTelemetry);
+
+/// Where later work came from: the ray ID of the invocation that caused it and
+/// the span that was active there. Persisted beside schedules and queue
+/// messages so the work they cause can link back to the invocation that caused it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct IncomingTraceContext {
+	pub(crate) ray_id: Option<String>,
+	pub(crate) traceparent: Option<String>,
+	pub(crate) tracestate: Option<String>,
+}
 
 /// Active actor invocation fields exposed to foreign-runtime adapters.
 #[doc(hidden)]
@@ -165,21 +197,58 @@ pub(crate) struct SqliteOperationSpan {
 	span: Option<tracing::Span>,
 }
 
-impl ActionInvocationSpan {
-	pub(crate) fn start(
+impl ActorInvocation {
+	pub(crate) fn start_action(
 		ctx: &ActorContext,
 		action_name: &str,
 		incoming: IncomingInvocationContext,
 	) -> Self {
+		Self::start(
+			ctx,
+			action_name,
+			InvocationType::Action,
+			incoming.ray_id,
+			incoming.remote_parent,
+			None,
+		)
+	}
+
+	pub(crate) fn start_scheduled(
+		ctx: &ActorContext,
+		action_name: &str,
+		trace_context: IncomingTraceContext,
+	) -> Self {
+		let remote_parent = parse_remote_parent(
+			trace_context.traceparent.as_deref(),
+			trace_context.tracestate.as_deref(),
+		);
+		Self::start(
+			ctx,
+			action_name,
+			InvocationType::Scheduled,
+			trace_context.ray_id,
+			None,
+			remote_parent,
+		)
+	}
+
+	fn start(
+		ctx: &ActorContext,
+		action_name: &str,
+		invocation_type: InvocationType,
+		ray_id: Option<String>,
+		parent: Option<SpanContext>,
+		link: Option<SpanContext>,
+	) -> Self {
 		let identity = ctx.telemetry_identity();
-		let ray_id = incoming.ray_id;
 		let span = if tracing::enabled!(target: "rivetkit::telemetry", tracing::Level::INFO) {
 			let span = tracing::info_span!(
 				target: "rivetkit::telemetry",
 				parent: None,
 				"rivet.actor.invoke",
-				otel.kind = "server",
-				rivet.invocation.type = "action",
+				otel.name = %format!("{}/{}", identity.actor_name, action_name),
+				otel.kind = otel_kind(invocation_type),
+				rivet.invocation.type = invocation_type.as_label(),
 				rivet.actor.id = %identity.actor_id,
 				rivet.actor.name = %identity.actor_name,
 				rivet.actor.key = %identity.actor_key,
@@ -191,8 +260,11 @@ impl ActionInvocationSpan {
 			if let Some(ray_id) = ray_id.as_deref() {
 				span.record("rivet.ray.id", ray_id);
 			}
-			if let Some(parent) = incoming.remote_parent {
-				span.set_parent(opentelemetry::Context::new().with_remote_span_context(parent));
+			if let Some(parent) = parent {
+				span.set_parent(Context::new().with_remote_span_context(parent));
+			}
+			if let Some(link) = link {
+				span.add_link(link);
 			}
 			Some(span)
 		} else {
@@ -213,7 +285,7 @@ impl ActionInvocationSpan {
 	}
 }
 
-impl Drop for ActionInvocationSpan {
+impl Drop for ActorInvocation {
 	fn drop(&mut self) {
 		self.telemetry.finish_dropped();
 	}
@@ -235,6 +307,47 @@ impl ActorInvocationTelemetry {
 				}),
 				identity,
 			}),
+			application_span: None,
+		}
+	}
+
+	/// Returns a handle for the same invocation whose spans parent to the
+	/// application span identified by `traceparent` and `tracestate`. Absent
+	/// or invalid context, or the invocation span itself, which the host sees
+	/// as active when no application span is open, yields a handle that
+	/// parents to the invocation span.
+	pub(crate) fn with_application_span(
+		&self,
+		traceparent: Option<&str>,
+		tracestate: Option<&str>,
+	) -> Self {
+		let application_span = parse_remote_parent(traceparent, tracestate).filter(|parent| {
+			self.inner
+				.state
+				.lock()
+				.span
+				.as_ref()
+				.and_then(otel_span_context_of)
+				.map_or(true, |own| own.span_id() != parent.span_id())
+		});
+		Self {
+			inner: self.inner.clone(),
+			application_span,
+		}
+	}
+
+	/// The context a span opened through this handle parents to: the
+	/// application span when set, else the invocation span while it is open.
+	fn parent_context(&self) -> Option<Context> {
+		let state = self.inner.state.lock();
+		if state.finished && state.pending_work == 0 {
+			return None;
+		}
+		match &self.application_span {
+			Some(application_span) => {
+				Some(Context::new().with_remote_span_context(application_span.clone()))
+			}
+			None => state.span.as_ref().map(tracing::Span::context),
 		}
 	}
 
@@ -262,21 +375,7 @@ impl ActorInvocationTelemetry {
 		let span = span.and_then(|span| {
 			let context = span.context();
 			let context_span = context.span();
-			let span_context = context_span.span_context();
-			if !span_context.is_valid() {
-				return None;
-			}
-			let tracestate = span_context.trace_state().header();
-			Some(ActorInvocationSpanContext {
-				trace_id: span_context.trace_id().to_string(),
-				span_id: span_context.span_id().to_string(),
-				trace_flags: span_context.trace_flags().to_u8(),
-				tracestate: if tracestate.is_empty() {
-					None
-				} else {
-					Some(tracestate)
-				},
-			})
+			w3c_span_context(context_span.span_context())
 		});
 
 		Some(ActorInvocationTraceContext {
@@ -285,18 +384,30 @@ impl ActorInvocationTelemetry {
 		})
 	}
 
-	pub(crate) fn start_sqlite(&self, operation: SqliteOperation) -> Option<SqliteOperationSpan> {
-		let parent = {
-			let state = self.inner.state.lock();
-			if state.finished && state.pending_work == 0 {
-				return None;
-			}
-			state.span.clone()?
+	/// Trace context that work caused by this invocation records: the invocation's
+	/// ray ID, and the application span active in the host runtime at that
+	/// moment, or the invocation span when there was none. Work that links
+	/// back to it then points at the code that caused it rather than at the
+	/// whole invocation around that code.
+	pub(crate) fn incoming_trace_context(&self) -> IncomingTraceContext {
+		let Some(parent) = self.parent_context() else {
+			return IncomingTraceContext::default();
 		};
+		let parent_span = parent.span();
+		let headers = w3c_trace_headers(parent_span.span_context());
+		IncomingTraceContext {
+			ray_id: self.inner.ray_id.clone(),
+			traceparent: headers.traceparent,
+			tracestate: headers.tracestate,
+		}
+	}
+
+	pub(crate) fn start_sqlite(&self, operation: SqliteOperation) -> Option<SqliteOperationSpan> {
+		let parent = self.parent_context()?;
 		let (span_name, operation_name) = operation.names();
 		let span = tracing::info_span!(
 			target: "rivetkit::telemetry",
-			parent: &parent,
+			parent: None,
 			"rivet.sqlite.operation",
 			otel.name = span_name,
 			otel.kind = "internal",
@@ -309,6 +420,7 @@ impl ActorInvocationTelemetry {
 			otel.status_code = tracing::field::Empty,
 			error.type = tracing::field::Empty,
 		);
+		span.set_parent(parent);
 		Some(SqliteOperationSpan { span: Some(span) })
 	}
 
@@ -374,6 +486,55 @@ impl Drop for SqliteOperationSpan {
 	}
 }
 
+fn otel_span_context_of(span: &tracing::Span) -> Option<SpanContext> {
+	let context = span.context();
+	let context_span = context.span();
+	let span_context = context_span.span_context();
+	if span_context.is_valid() {
+		Some(span_context.clone())
+	} else {
+		None
+	}
+}
+
+/// W3C fields of a span context, or nothing when it is not valid and so
+/// carries nothing worth propagating.
+fn w3c_span_context(span_context: &SpanContext) -> Option<ActorInvocationSpanContext> {
+	if !span_context.is_valid() {
+		return None;
+	}
+	let tracestate = span_context.trace_state().header();
+	Some(ActorInvocationSpanContext {
+		trace_id: span_context.trace_id().to_string(),
+		span_id: span_context.span_id().to_string(),
+		trace_flags: span_context.trace_flags().to_u8(),
+		tracestate: if tracestate.is_empty() {
+			None
+		} else {
+			Some(tracestate)
+		},
+	})
+}
+
+fn w3c_trace_headers(span_context: &SpanContext) -> OwnedTraceHeaders {
+	if !span_context.is_valid() {
+		return OwnedTraceHeaders::default();
+	}
+	let context = Context::new().with_remote_span_context(span_context.clone());
+	let mut headers = OwnedTraceHeaders::default();
+	TraceContextPropagator::new().inject_context(&context, &mut headers);
+	headers
+}
+
+/// An action is entered from outside the actor; a scheduled fire originates
+/// inside it.
+fn otel_kind(invocation_type: InvocationType) -> &'static str {
+	match invocation_type {
+		InvocationType::Action => "server",
+		InvocationType::Scheduled => "internal",
+	}
+}
+
 /// Records the terminal status and error identity of a finished span.
 fn record_outcome(span: &tracing::Span, error: Option<&anyhow::Error>) {
 	span.record(
@@ -403,6 +564,22 @@ fn parse_remote_parent(traceparent: Option<&str>, tracestate: Option<&str>) -> O
 struct TraceHeaders<'a> {
 	traceparent: Option<&'a str>,
 	tracestate: Option<&'a str>,
+}
+
+#[derive(Default)]
+struct OwnedTraceHeaders {
+	traceparent: Option<String>,
+	tracestate: Option<String>,
+}
+
+impl Injector for OwnedTraceHeaders {
+	fn set(&mut self, key: &str, value: String) {
+		match key {
+			"traceparent" => self.traceparent = Some(value),
+			"tracestate" if !value.is_empty() => self.tracestate = Some(value),
+			_ => {}
+		}
+	}
 }
 
 impl Extractor for TraceHeaders<'_> {
