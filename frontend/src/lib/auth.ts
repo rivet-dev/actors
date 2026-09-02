@@ -1,4 +1,4 @@
-import { notFound, redirect } from "@tanstack/react-router";
+import { redirect } from "@tanstack/react-router";
 import { oauthProviderClient } from "@better-auth/oauth-provider/client";
 import { adminClient, organizationClient } from "better-auth/client/plugins";
 import { createAuthClient } from "better-auth/react";
@@ -40,34 +40,25 @@ export const redirectToOrganization = async ({
 			throw redirect({ to: from });
 		}
 
-		if (session.data.session.activeOrganizationId) {
-			const org = await authClient.organization.getFullOrganization({
-				query: {
-					organizationId: session.data.session.activeOrganizationId,
-				},
-			});
-
-			if (org.error) {
-				throw notFound();
-			}
-
-			throw redirect({
-				to: "/orgs/$organization",
-				params: { organization: org.data.slug },
-			});
-		}
+		const activeOrganizationId = session.data.session.activeOrganizationId;
 		const orgs = await authClient.organization.list();
+		const org =
+			orgs.data?.find((o) => o.id === activeOrganizationId) ??
+			orgs.data?.[0];
 
-		if (!orgs.data?.[0]) {
+		if (!org) {
 			return false;
 		}
 
-		await authClient.organization.setActive({
-			organizationId: orgs.data[0].id,
-		});
+		if (org.id !== activeOrganizationId) {
+			await authClient.organization.setActive({
+				organizationId: org.id,
+			});
+		}
+
 		throw redirect({
 			to: "/orgs/$organization",
-			params: { organization: orgs.data[0].slug },
+			params: { organization: org.slug },
 		});
 	}
 

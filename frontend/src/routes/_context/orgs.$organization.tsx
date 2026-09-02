@@ -20,19 +20,23 @@ export const Route = createFileRoute("/_context/orgs/$organization")({
 			query: { organizationSlug: params.organization },
 		});
 
-		// If the slug is unknown to the auth backend (stale URL, deleted org,
-		// user not a member anymore), redirect to root rather than throwing
-		// notFound(). notFound() leaves descendant matches stuck in `pending`
-		// while their layout components keep rendering, which crashes
-		// useCloudDataProvider() / useCloudProjectDataProvider() consumers.
+		// Redirect instead of throwing notFound(). notFound() leaves descendant
+		// matches stuck in `pending` while their layout components keep
+		// rendering, which crashes useCloudDataProvider() /
+		// useCloudProjectDataProvider() consumers. The destination must not
+		// resolve an organization itself, or an unresolvable slug ping-pongs
+		// between the two routes forever.
 		if (org.error) {
-			throw redirect({ to: "/" });
+			if (org.error.status === 403 || org.error.status === 404) {
+				throw redirect({ to: "/new-org" });
+			}
+			throw new Error(org.error.message ?? "Failed to load organization");
 		}
 
 		const session = await authClient.getSession();
 		if (session.data?.session.activeOrganizationId !== org.data.id) {
 			await authClient.organization.setActive({
-				organizationSlug: params.organization,
+				organizationId: org.data.id,
 			});
 		}
 

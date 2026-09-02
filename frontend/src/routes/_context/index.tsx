@@ -10,7 +10,7 @@ export const Route = createFileRoute("/_context/")({
 	beforeLoad: async ({ context, search }) => {
 		if (features.platform) {
 			if (!(await redirectToOrganization(search))) {
-				throw redirect({ to: "/login", search: true });
+				throw redirect({ to: "/new-org" });
 			}
 			return;
 		}
