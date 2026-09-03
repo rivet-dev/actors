@@ -7,6 +7,8 @@ fn request_abort_counts_detail_utf8_bytes() {
 	let detail = "client failed: café".to_owned();
 	let message =
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(protocol::ToEnvoyRequestAbort {
+			actor_id: None,
+			actor_generation: None,
 			reason: protocol::HttpStreamAbortReason {
 				kind: protocol::HttpStreamAbortReasonKind::Cancelled,
 				detail: Some(detail.clone()),
@@ -23,6 +25,8 @@ fn request_abort_counts_detail_utf8_bytes() {
 fn request_abort_without_detail_has_no_inner_payload() {
 	let message =
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(protocol::ToEnvoyRequestAbort {
+			actor_id: None,
+			actor_generation: None,
 			reason: protocol::HttpStreamAbortReason {
 				kind: protocol::HttpStreamAbortReasonKind::Cancelled,
 				detail: None,

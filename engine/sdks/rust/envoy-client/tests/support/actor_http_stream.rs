@@ -50,6 +50,7 @@ fn empty_envoy_context(shared: Arc<crate::context::SharedContext>) -> EnvoyConte
 		request_to_actor: BufferMap::new(),
 		http_request_routes: BufferMap::new(),
 		http_message_indices: BufferMap::new(),
+		http_request_cancellations: HashMap::new(),
 		buffered_messages: Vec::new(),
 		processed_command_idx: HashMap::new(),
 	}
@@ -209,8 +210,27 @@ async fn stale_request_generation_is_rejected_without_actor_dispatch() {
 	};
 	assert_eq!(response.status, 503);
 	assert_eq!(
+		response.headers.get("content-type").map(String::as_str),
+		Some("application/json"),
+	);
+	assert_eq!(
 		response.headers.get("x-rivet-error").map(String::as_str),
 		Some("envoy.actor_generation_mismatch"),
+	);
+	assert_eq!(
+		serde_json::from_slice::<serde_json::Value>(
+			response.body.as_deref().expect("error response body"),
+		)
+		.expect("decode canonical error response"),
+		serde_json::json!({
+			"group": "envoy",
+			"code": "actor_generation_mismatch",
+			"message": "Actor generation does not match",
+			"actor": {
+				"actorId": "test-actor",
+				"generation": 1,
+			},
+		}),
 	);
 	assert!(current_actor.try_recv().is_err());
 	assert!(
@@ -218,6 +238,152 @@ async fn stale_request_generation_is_rejected_without_actor_dispatch() {
 			.get(&[&message_id().gateway_id, &message_id().request_id])
 			.is_none()
 	);
+}
+
+#[tokio::test]
+async fn missing_request_actor_returns_a_canonical_error_without_dispatch() {
+	let (mut ctx, session, mut ws_rx) = tunnel_context().await;
+
+	crate::tunnel::handle_tunnel_message(
+		&mut ctx,
+		session,
+		protocol::ToEnvoyTunnelMessage {
+			message_id: message_id(),
+			message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
+				request_start(),
+			),
+		},
+	)
+	.await;
+
+	let response = recv_ws_tunnel_msg(&mut ws_rx).await;
+	let protocol::ToRivetTunnelMessageKind::ToRivetResponseStart(response) = response.message_kind
+	else {
+		panic!("expected actor-not-found response");
+	};
+	assert_eq!(response.status, 503);
+	assert_eq!(
+		response.headers.get("content-type").map(String::as_str),
+		Some("application/json"),
+	);
+	assert_eq!(
+		response.headers.get("x-rivet-error").map(String::as_str),
+		Some("envoy.actor_not_found"),
+	);
+	assert_eq!(
+		serde_json::from_slice::<serde_json::Value>(
+			response.body.as_deref().expect("error response body"),
+		)
+		.expect("decode canonical error response"),
+		serde_json::json!({
+			"group": "envoy",
+			"code": "actor_not_found",
+			"message": "Actor not found",
+			"actor": {
+				"actorId": "test-actor",
+				"generation": 1,
+			},
+		}),
+	);
+	assert!(
+		ctx.http_request_routes
+			.get(&[&message_id().gateway_id, &message_id().request_id])
+			.is_none()
+	);
+	assert!(
+		ctx.http_message_indices
+			.get(&[&message_id().gateway_id, &message_id().request_id])
+			.is_none()
+	);
+}
+
+#[tokio::test]
+async fn cancellation_before_delayed_request_start_prevents_actor_dispatch() {
+	let (mut ctx, session, mut ws_rx) = tunnel_context().await;
+	let mut actor_rx = insert_tunnel_actor(&mut ctx, "test-actor", 1);
+	let mut abort_id = message_id();
+	abort_id.message_index = 1;
+	let abort = protocol::ToEnvoyTunnelMessage {
+		message_id: abort_id,
+		message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(
+			protocol::ToEnvoyRequestAbort {
+				actor_id: Some("test-actor".to_owned()),
+				actor_generation: Some(1),
+				reason: protocol::HttpStreamAbortReason {
+					kind: protocol::HttpStreamAbortReasonKind::Cancelled,
+					detail: Some("request start delivery was indeterminate".to_owned()),
+				},
+			},
+		),
+	};
+
+	crate::tunnel::handle_tunnel_message(&mut ctx, session, abort.clone()).await;
+	crate::tunnel::handle_tunnel_message(&mut ctx, session, abort).await;
+	crate::tunnel::handle_tunnel_message(
+		&mut ctx,
+		session,
+		protocol::ToEnvoyTunnelMessage {
+			message_id: message_id(),
+			message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
+				request_start(),
+			),
+		},
+	)
+	.await;
+
+	assert!(actor_rx.try_recv().is_err());
+	assert!(ws_rx.try_recv().is_err());
+	assert!(
+		ctx.http_request_routes
+			.get(&[&message_id().gateway_id, &message_id().request_id])
+			.is_none()
+	);
+	assert_eq!(ctx.http_request_cancellations.len(), 1);
+}
+
+#[tokio::test]
+async fn cancellation_tombstone_suppresses_a_replayed_admitted_request_start() {
+	let (mut ctx, session, mut ws_rx) = tunnel_context().await;
+	let mut actor_rx = insert_tunnel_actor(&mut ctx, "test-actor", 1);
+	let start = protocol::ToEnvoyTunnelMessage {
+		message_id: message_id(),
+		message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(request_start()),
+	};
+
+	crate::tunnel::handle_tunnel_message(&mut ctx, session, start.clone()).await;
+	assert!(matches!(
+		recv_actor_message(&mut actor_rx).await,
+		ToActor::ReqStart { .. }
+	));
+
+	let mut abort_id = message_id();
+	abort_id.message_index = 1;
+	crate::tunnel::handle_tunnel_message(
+		&mut ctx,
+		session,
+		protocol::ToEnvoyTunnelMessage {
+			message_id: abort_id,
+			message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(
+				protocol::ToEnvoyRequestAbort {
+					actor_id: Some("test-actor".to_owned()),
+					actor_generation: Some(1),
+					reason: protocol::HttpStreamAbortReason {
+						kind: protocol::HttpStreamAbortReasonKind::Cancelled,
+						detail: None,
+					},
+				},
+			),
+		},
+	)
+	.await;
+	assert!(matches!(
+		recv_actor_message(&mut actor_rx).await,
+		ToActor::ReqAbort { .. }
+	));
+
+	crate::tunnel::handle_tunnel_message(&mut ctx, session, start).await;
+	assert!(actor_rx.try_recv().is_err());
+	assert!(ws_rx.try_recv().is_err());
 }
 
 #[tokio::test]
@@ -586,6 +752,8 @@ async fn admitted_exact_generation_routes_continue_during_actor_stop() {
 			message_id: abort_id,
 			message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(
 				protocol::ToEnvoyRequestAbort {
+					actor_id: Some("test-actor".to_owned()),
+					actor_generation: Some(1),
 					reason: protocol::HttpStreamAbortReason {
 						kind: protocol::HttpStreamAbortReasonKind::Cancelled,
 						detail: None,

@@ -2255,17 +2255,38 @@ export function writeHttpStreamAbortReason(bc: bare.ByteCursor, x: HttpStreamAbo
     write17(bc, x.detail)
 }
 
+function read24(bc: bare.ByteCursor): Id | null {
+    return bare.readBool(bc) ? readId(bc) : null
+}
+
+function write24(bc: bare.ByteCursor, x: Id | null): void {
+    bare.writeBool(bc, x != null)
+    if (x != null) {
+        writeId(bc, x)
+    }
+}
+
 export type ToEnvoyRequestAbort = {
+    /**
+     * Exact admission identity. Gateway 3 always sets both fields so Envoy can
+     * suppress a delayed RequestStart after an indeterminate handoff.
+     */
+    readonly actorId: Id | null
+    readonly actorGeneration: u32 | null
     readonly reason: HttpStreamAbortReason
 }
 
 export function readToEnvoyRequestAbort(bc: bare.ByteCursor): ToEnvoyRequestAbort {
     return {
+        actorId: read24(bc),
+        actorGeneration: read22(bc),
         reason: readHttpStreamAbortReason(bc),
     }
 }
 
 export function writeToEnvoyRequestAbort(bc: bare.ByteCursor, x: ToEnvoyRequestAbort): void {
+    write24(bc, x.actorId)
+    write22(bc, x.actorGeneration)
     writeHttpStreamAbortReason(bc, x.reason)
 }
 
@@ -2393,11 +2414,11 @@ export function writeToEnvoyWebSocketMessage(bc: bare.ByteCursor, x: ToEnvoyWebS
     bare.writeBool(bc, x.binary)
 }
 
-function read24(bc: bare.ByteCursor): u16 | null {
+function read25(bc: bare.ByteCursor): u16 | null {
     return bare.readBool(bc) ? bare.readU16(bc) : null
 }
 
-function write24(bc: bare.ByteCursor, x: u16 | null): void {
+function write25(bc: bare.ByteCursor, x: u16 | null): void {
     bare.writeBool(bc, x != null)
     if (x != null) {
         bare.writeU16(bc, x)
@@ -2411,13 +2432,13 @@ export type ToEnvoyWebSocketClose = {
 
 export function readToEnvoyWebSocketClose(bc: bare.ByteCursor): ToEnvoyWebSocketClose {
     return {
-        code: read24(bc),
+        code: read25(bc),
         reason: read17(bc),
     }
 }
 
 export function writeToEnvoyWebSocketClose(bc: bare.ByteCursor, x: ToEnvoyWebSocketClose): void {
-    write24(bc, x.code)
+    write25(bc, x.code)
     write17(bc, x.reason)
 }
 
@@ -2474,14 +2495,14 @@ export type ToRivetWebSocketClose = {
 
 export function readToRivetWebSocketClose(bc: bare.ByteCursor): ToRivetWebSocketClose {
     return {
-        code: read24(bc),
+        code: read25(bc),
         reason: read17(bc),
         hibernate: bare.readBool(bc),
     }
 }
 
 export function writeToRivetWebSocketClose(bc: bare.ByteCursor, x: ToRivetWebSocketClose): void {
-    write24(bc, x.code)
+    write25(bc, x.code)
     write17(bc, x.reason)
     bare.writeBool(bc, x.hibernate)
 }
@@ -2722,7 +2743,7 @@ export function writeToEnvoyPing(bc: bare.ByteCursor, x: ToEnvoyPing): void {
     bare.writeI64(bc, x.ts)
 }
 
-function read25(bc: bare.ByteCursor): ReadonlyMap<string, ActorName> {
+function read26(bc: bare.ByteCursor): ReadonlyMap<string, ActorName> {
     const len = bare.readUintSafe(bc)
     const result = new Map<string, ActorName>()
     for (let i = 0; i < len; i++) {
@@ -2737,7 +2758,7 @@ function read25(bc: bare.ByteCursor): ReadonlyMap<string, ActorName> {
     return result
 }
 
-function write25(bc: bare.ByteCursor, x: ReadonlyMap<string, ActorName>): void {
+function write26(bc: bare.ByteCursor, x: ReadonlyMap<string, ActorName>): void {
     bare.writeUintSafe(bc, x.size)
     for (const kv of x) {
         bare.writeString(bc, kv[0])
@@ -2745,22 +2766,22 @@ function write25(bc: bare.ByteCursor, x: ReadonlyMap<string, ActorName>): void {
     }
 }
 
-function read26(bc: bare.ByteCursor): ReadonlyMap<string, ActorName> | null {
-    return bare.readBool(bc) ? read25(bc) : null
+function read27(bc: bare.ByteCursor): ReadonlyMap<string, ActorName> | null {
+    return bare.readBool(bc) ? read26(bc) : null
 }
 
-function write26(bc: bare.ByteCursor, x: ReadonlyMap<string, ActorName> | null): void {
+function write27(bc: bare.ByteCursor, x: ReadonlyMap<string, ActorName> | null): void {
     bare.writeBool(bc, x != null)
     if (x != null) {
-        write25(bc, x)
+        write26(bc, x)
     }
 }
 
-function read27(bc: bare.ByteCursor): Json | null {
+function read28(bc: bare.ByteCursor): Json | null {
     return bare.readBool(bc) ? readJson(bc) : null
 }
 
-function write27(bc: bare.ByteCursor, x: Json | null): void {
+function write28(bc: bare.ByteCursor, x: Json | null): void {
     bare.writeBool(bc, x != null)
     if (x != null) {
         writeJson(bc, x)
@@ -2777,14 +2798,14 @@ export type ToRivetMetadata = {
 
 export function readToRivetMetadata(bc: bare.ByteCursor): ToRivetMetadata {
     return {
-        prepopulateActorNames: read26(bc),
-        metadata: read27(bc),
+        prepopulateActorNames: read27(bc),
+        metadata: read28(bc),
     }
 }
 
 export function writeToRivetMetadata(bc: bare.ByteCursor, x: ToRivetMetadata): void {
-    write26(bc, x.prepopulateActorNames)
-    write27(bc, x.metadata)
+    write27(bc, x.prepopulateActorNames)
+    write28(bc, x.metadata)
 }
 
 export type ToRivetEvents = readonly EventWrapper[]
@@ -2808,7 +2829,7 @@ export function writeToRivetEvents(bc: bare.ByteCursor, x: ToRivetEvents): void 
     }
 }
 
-function read28(bc: bare.ByteCursor): readonly ActorCheckpoint[] {
+function read29(bc: bare.ByteCursor): readonly ActorCheckpoint[] {
     const len = bare.readUintSafe(bc)
     if (len === 0) {
         return []
@@ -2820,7 +2841,7 @@ function read28(bc: bare.ByteCursor): readonly ActorCheckpoint[] {
     return result
 }
 
-function write28(bc: bare.ByteCursor, x: readonly ActorCheckpoint[]): void {
+function write29(bc: bare.ByteCursor, x: readonly ActorCheckpoint[]): void {
     bare.writeUintSafe(bc, x.length)
     for (let i = 0; i < x.length; i++) {
         writeActorCheckpoint(bc, x[i])
@@ -2833,12 +2854,12 @@ export type ToRivetAckCommands = {
 
 export function readToRivetAckCommands(bc: bare.ByteCursor): ToRivetAckCommands {
     return {
-        lastCommandCheckpoints: read28(bc),
+        lastCommandCheckpoints: read29(bc),
     }
 }
 
 export function writeToRivetAckCommands(bc: bare.ByteCursor, x: ToRivetAckCommands): void {
-    write28(bc, x.lastCommandCheckpoints)
+    write29(bc, x.lastCommandCheckpoints)
 }
 
 export type ToRivetStopping = null
@@ -3158,12 +3179,12 @@ export type ToEnvoyAckEvents = {
 
 export function readToEnvoyAckEvents(bc: bare.ByteCursor): ToEnvoyAckEvents {
     return {
-        lastEventCheckpoints: read28(bc),
+        lastEventCheckpoints: read29(bc),
     }
 }
 
 export function writeToEnvoyAckEvents(bc: bare.ByteCursor, x: ToEnvoyAckEvents): void {
-    write28(bc, x.lastEventCheckpoints)
+    write29(bc, x.lastEventCheckpoints)
 }
 
 export type ToEnvoyKvResponse = {

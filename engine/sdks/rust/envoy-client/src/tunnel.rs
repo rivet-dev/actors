@@ -1,8 +1,54 @@
 use rivet_envoy_protocol as protocol;
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::connection::ws_send;
 use crate::envoy::{BufferedActorMessage, EnvoyContext, HttpRequestRoute, WebSocketRoute};
+
+const HTTP_REQUEST_CANCELLATION_TTL: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct HttpRequestCancellationKey {
+	gateway_id: protocol::GatewayId,
+	request_id: protocol::RequestId,
+	actor_id: String,
+	actor_generation: u32,
+}
+
+fn request_cancellation_key(
+	message_id: &protocol::MessageId,
+	actor_id: &str,
+	actor_generation: u32,
+) -> HttpRequestCancellationKey {
+	HttpRequestCancellationKey {
+		gateway_id: message_id.gateway_id,
+		request_id: message_id.request_id,
+		actor_id: actor_id.to_owned(),
+		actor_generation,
+	}
+}
+
+fn request_abort_cancellation_key(
+	message_id: &protocol::MessageId,
+	abort: &protocol::ToEnvoyRequestAbort,
+) -> Result<Option<HttpRequestCancellationKey>, &'static str> {
+	match (&abort.actor_id, abort.actor_generation) {
+		(Some(actor_id), Some(actor_generation)) => Ok(Some(request_cancellation_key(
+			message_id,
+			actor_id,
+			actor_generation,
+		))),
+		(None, None) => Ok(None),
+		_ => Err("HTTP request abort must include both actor id and generation"),
+	}
+}
+
+fn prune_http_request_cancellations(ctx: &mut EnvoyContext) {
+	let now = crate::time::Instant::now();
+	ctx.http_request_cancellations.retain(|_, cancelled_at| {
+		now.duration_since(*cancelled_at) < HTTP_REQUEST_CANCELLATION_TTL
+	});
+}
 
 pub(crate) fn make_ws_key(
 	gateway_id: &protocol::GatewayId,
@@ -90,15 +136,51 @@ pub async fn handle_tunnel_message(
 			}
 		}
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(abort) => {
-			if advance_http_message_index(ctx, &message_id) {
-				handle_request_abort(ctx, message_id, abort.reason);
+			let cancellation_key = match request_abort_cancellation_key(&message_id, &abort) {
+				Ok(key) => key,
+				Err(detail) => {
+					handle_http_protocol_violation(
+						ctx,
+						connection_session,
+						message_id,
+						detail,
+					)
+					.await;
+					return;
+				}
+			};
+			if let Some(cancellation_key) = cancellation_key {
+				let route = ctx
+					.http_request_routes
+					.get(&[&message_id.gateway_id, &message_id.request_id])
+					.map(|route| (route.actor_id.clone(), route.actor_generation));
+				if let Some((route_actor_id, route_actor_generation)) = route
+					&& (cancellation_key.actor_id != route_actor_id
+						|| Some(cancellation_key.actor_generation) != route_actor_generation)
+				{
+					handle_http_protocol_violation(
+						ctx,
+						connection_session,
+						message_id,
+						"HTTP request abort actor identity does not match request start",
+					)
+					.await;
+				} else {
+					// Exact-generation cancellation is intentionally out of band from the
+					// ordered body stream. It must work after an ambiguous message handoff,
+					// when Gateway cannot know which message index Envoy accepted.
+					handle_request_abort(ctx, message_id, abort, Some(cancellation_key));
+				}
+			} else if advance_http_message_index(ctx, &message_id) {
+				// V6 cancellation has no actor identity, so preserve its ordered behavior.
+				handle_request_abort(ctx, message_id, abort, None);
 			} else {
-				handle_http_protocol_violation(
-					ctx,
-					connection_session,
-					message_id,
-					"invalid HTTP request-abort sequence",
-				)
+					handle_http_protocol_violation(
+						ctx,
+						connection_session,
+						message_id,
+						"invalid HTTP request-abort sequence",
+					)
 				.await;
 			}
 		}
@@ -275,6 +357,24 @@ async fn handle_request_start(
 		.await;
 		return;
 	}
+	prune_http_request_cancellations(ctx);
+	if let Some(actor_generation) = actor_generation {
+		let cancellation_key =
+			request_cancellation_key(&message_id, &actor_id, actor_generation);
+		if ctx
+			.http_request_cancellations
+			.contains_key(&cancellation_key)
+		{
+			tracing::debug!(
+				%actor_id,
+				actor_generation,
+				gateway_id = ?message_id.gateway_id,
+				request_id = ?message_id.request_id,
+				"discarding HTTP request start cancelled before delivery"
+			);
+			return;
+		}
+	}
 	if let Some(existing) = ctx.http_request_routes.get(&key) {
 		let same_session = existing.session == connection_session;
 		handle_http_protocol_violation(
@@ -319,7 +419,7 @@ async fn handle_request_start(
 			ctx.http_request_routes.insert(
 				&key,
 				HttpRequestRoute {
-					actor_id,
+					actor_id: actor_id.clone(),
 					actor_generation,
 					actor_admitted: false,
 					session: connection_session,
@@ -335,6 +435,7 @@ async fn handle_request_start(
 			message_id.request_id,
 			error_code,
 			message,
+			actor_generation.map(|generation| (actor_id.as_str(), generation)),
 		)
 		.await;
 		return;
@@ -373,6 +474,7 @@ async fn handle_request_start(
 			message_id.request_id,
 			"envoy.actor_not_found",
 			"Actor stopped before accepting request",
+			actor_generation.map(|generation| (actor_id.as_str(), generation)),
 		)
 		.await;
 	}
@@ -426,6 +528,7 @@ async fn handle_request_chunk(
 			message_id.request_id,
 			"envoy.request_not_found",
 			"Request start was not delivered",
+			None,
 		)
 		.await;
 	}
@@ -434,7 +537,8 @@ async fn handle_request_chunk(
 fn handle_request_abort(
 	ctx: &mut EnvoyContext,
 	message_id: protocol::MessageId,
-	reason: protocol::HttpStreamAbortReason,
+	abort: protocol::ToEnvoyRequestAbort,
+	cancellation_key: Option<HttpRequestCancellationKey>,
 ) {
 	let route = ctx
 		.http_request_routes
@@ -450,9 +554,19 @@ fn handle_request_abort(
 		if let Some(actor) = ctx.get_actor(actor_id, *actor_generation) {
 			let _ = actor.handle.send(crate::actor::ToActor::ReqAbort {
 				message_id: message_id.clone(),
-				reason,
+				reason: abort.reason,
 			});
 		}
+	}
+	if let Some(cancellation_key) = cancellation_key {
+		prune_http_request_cancellations(ctx);
+		ctx.http_request_cancellations
+			.insert(cancellation_key, crate::time::Instant::now());
+		tracing::debug!(
+			gateway_id = ?message_id.gateway_id,
+			request_id = ?message_id.request_id,
+			"recorded exact HTTP request cancellation"
+		);
 	}
 
 	ctx.http_request_routes
@@ -685,10 +799,24 @@ async fn send_error_response(
 	request_id: protocol::RequestId,
 	error_code: &str,
 	message: &str,
+	actor: Option<(&str, u32)>,
 ) {
-	let body = message.as_bytes().to_vec();
+	let code = error_code.strip_prefix("envoy.").unwrap_or(error_code);
+	let mut error = serde_json::json!({
+		"group": "envoy",
+		"code": code,
+		"message": message,
+	});
+	if let Some((actor_id, generation)) = actor {
+		error["actor"] = serde_json::json!({
+			"actorId": actor_id,
+			"generation": generation,
+		});
+	}
+	let body = serde_json::to_vec(&error).expect("serialize canonical HTTP error response");
 	let mut headers = HashMap::new();
 	headers.insert("x-rivet-error".to_string(), error_code.to_owned());
+	headers.insert("content-type".to_string(), "application/json".to_owned());
 	headers.insert("content-length".to_string(), body.len().to_string());
 
 	let response = protocol::ToRivet::ToRivetTunnelMessage(protocol::ToRivetTunnelMessage {

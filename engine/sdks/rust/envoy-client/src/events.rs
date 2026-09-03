@@ -198,6 +198,7 @@ mod tests {
 				request_to_actor: crate::utils::BufferMap::new(),
 				http_request_routes: crate::utils::BufferMap::new(),
 				http_message_indices: crate::utils::BufferMap::new(),
+				http_request_cancellations: HashMap::new(),
 				buffered_messages: Vec::new(),
 				processed_command_idx: HashMap::new(),
 			},

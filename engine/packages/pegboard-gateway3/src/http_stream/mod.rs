@@ -20,14 +20,16 @@ pub(super) async fn send_http_request_abort(
 	kind: protocol::HttpStreamAbortReasonKind,
 	detail: impl Into<Option<String>>,
 ) {
-	if !in_flight_req.mark_abort_sent().await {
+	let Some((actor_id, actor_generation)) = in_flight_req.begin_http_abort().await else {
 		return;
-	}
+	};
 	crate::metrics::HTTP_STREAM_ABORT_TOTAL
 		.with_label_values(&["request", "gateway", abort_kind_label(&kind)])
 		.inc();
 	let message =
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(protocol::ToEnvoyRequestAbort {
+			actor_id: Some(actor_id),
+			actor_generation,
 			reason: protocol::HttpStreamAbortReason {
 				kind,
 				detail: detail.into(),

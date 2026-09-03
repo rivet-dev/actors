@@ -847,6 +847,8 @@ pub fn convert_to_envoy_tunnel_message_kind_v6_to_v7(
 		}
 		v6::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort => {
 			v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(v7::ToEnvoyRequestAbort {
+				actor_id: None,
+				actor_generation: None,
 				reason: v7::HttpStreamAbortReason {
 					kind: v7::HttpStreamAbortReasonKind::Unknown,
 					detail: None,

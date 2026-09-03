@@ -1,0 +1,5 @@
+{
+  "code": "request_delivery_indeterminate",
+  "group": "guard",
+  "message": "Actor request delivery could not be confirmed."
+}

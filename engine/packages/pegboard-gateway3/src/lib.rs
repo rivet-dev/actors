@@ -156,6 +156,7 @@ impl PegboardGateway3 {
 			.shared_state
 			.create_or_wake_in_flight_request(
 				self.namespace_id,
+				self.actor_id,
 				self.pool_name.as_str(),
 				self.actor_key.clone(),
 				Some(actor_generation),

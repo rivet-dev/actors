@@ -18,4 +18,16 @@ describe("lifecycle error retry classification", () => {
 			),
 		).toBe(true);
 	});
+
+	test("does not retry indeterminate request delivery", () => {
+		expect(
+			isRetryableLifecycleRequestError(
+				new ActorError(
+					"guard",
+					"request_delivery_indeterminate",
+					"request delivery could not be confirmed",
+				),
+			),
+		).toBe(false);
+	});
 });

@@ -444,6 +444,10 @@ type HttpStreamAbortReason struct {
 }
 
 type ToEnvoyRequestAbort struct {
+	# Exact admission identity. Gateway 3 always sets both fields so Envoy can
+	# suppress a delayed RequestStart after an indeterminate handoff.
+	actorId: optional<Id>
+	actorGeneration: optional<u32>
 	reason: HttpStreamAbortReason
 }
 

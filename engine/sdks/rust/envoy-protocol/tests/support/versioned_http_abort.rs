@@ -5,8 +5,9 @@ use super::{ToEnvoy, ToRivet};
 use crate::generated::{v6, v7};
 
 const REQUEST_ABORT_GOLDEN: &[u8] = &[
-	4, 1, 1, 1, 1, 7, 7, 7, 7, 1, 0, 2, 1, 1, 24, 99, 108, 105, 101, 110, 116, 32, 99, 108, 111,
-	115, 101, 100, 32, 99, 111, 110, 110, 101, 99, 116, 105, 111, 110,
+	4, 1, 1, 1, 1, 7, 7, 7, 7, 1, 0, 2, 1, 7, 97, 99, 116, 111, 114, 45, 49, 1, 7, 0, 0, 0,
+	1, 1, 24, 99, 108, 105, 101, 110, 116, 32, 99, 108, 111, 115, 101, 100, 32, 99, 111, 110,
+	110, 101, 99, 116, 105, 111, 110,
 ];
 
 #[test]
@@ -46,6 +47,8 @@ fn v7_request_abort_serializes_to_v6_void_abort() -> Result<()> {
 			},
 			message_kind: v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(
 				v7::ToEnvoyRequestAbort {
+					actor_id: None,
+					actor_generation: None,
 					reason: v7::HttpStreamAbortReason {
 						kind: v7::HttpStreamAbortReasonKind::Cancelled,
 						detail: Some("client closed connection".into()),
@@ -68,6 +71,32 @@ fn v7_request_abort_serializes_to_v6_void_abort() -> Result<()> {
 }
 
 #[test]
+fn generation_routed_v7_request_abort_cannot_downgrade_to_v6() {
+	let result = ToEnvoy::wrap_latest(v7::ToEnvoy::ToEnvoyTunnelMessage(
+		v7::ToEnvoyTunnelMessage {
+			message_id: v7::MessageId {
+				gateway_id: [1; 4],
+				request_id: [7; 4],
+				message_index: 1,
+			},
+			message_kind: v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(
+				v7::ToEnvoyRequestAbort {
+					actor_id: Some("actor-1".to_owned()),
+					actor_generation: Some(7),
+					reason: v7::HttpStreamAbortReason {
+						kind: v7::HttpStreamAbortReasonKind::Cancelled,
+						detail: None,
+					},
+				},
+			),
+		},
+	))
+	.serialize(6);
+
+	assert!(result.is_err());
+}
+
+#[test]
 fn request_abort_matches_cross_language_golden_bytes() -> Result<()> {
 	let encoded = serde_bare::to_vec(&v7::ToEnvoy::ToEnvoyTunnelMessage(
 		v7::ToEnvoyTunnelMessage {
@@ -78,6 +107,8 @@ fn request_abort_matches_cross_language_golden_bytes() -> Result<()> {
 			},
 			message_kind: v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(
 				v7::ToEnvoyRequestAbort {
+					actor_id: Some("actor-1".to_owned()),
+					actor_generation: Some(7),
 					reason: v7::HttpStreamAbortReason {
 						kind: v7::HttpStreamAbortReasonKind::Cancelled,
 						detail: Some("client closed connection".into()),

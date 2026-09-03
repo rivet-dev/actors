@@ -33,3 +33,45 @@ fn skips_non_service_unavailable_with_rivet_error_header() {
 
 	assert!(!should_retry_request_inner(StatusCode::NOT_FOUND, &headers));
 }
+
+#[test]
+fn does_not_retry_indeterminate_request_delivery() {
+	let error = crate::errors::RequestDeliveryIndeterminate {
+		phase: "request_start".to_owned(),
+		reason: "envoy_handoff_ack_timeout".to_owned(),
+	}
+	.build();
+
+	assert!(!should_retry_error(&error));
+}
+
+#[test]
+fn retries_a_definitive_no_responders_request_start_failure() {
+	let error = crate::errors::TunnelMessageTimeout {
+		phase: "request_start".to_owned(),
+		reason: "no_responders_after_retry_budget_exhausted".to_owned(),
+	}
+	.build();
+
+	assert!(should_retry_error(&error));
+}
+
+#[test]
+fn structured_error_responses_include_the_matching_error_header() {
+	let response = err_into_response(
+		crate::errors::RequestDeliveryIndeterminate {
+			phase: "request_start".to_owned(),
+			reason: "envoy_handoff_ack_timeout".to_owned(),
+		}
+		.build(),
+	)
+	.expect("build error response");
+
+	assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+	assert_eq!(
+		response.headers().get(X_RIVET_ERROR),
+		Some(&HeaderValue::from_static(
+			"guard.request_delivery_indeterminate"
+		)),
+	);
+}

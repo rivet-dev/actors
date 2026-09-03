@@ -852,7 +852,10 @@ pub fn convert_to_envoy_tunnel_message_kind_v7_to_v6(
 				convert_to_envoy_request_chunk_v7_to_v6(v)?,
 			)
 		}
-		v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(_) => {
+		v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(abort) => {
+			if abort.actor_id.is_some() || abort.actor_generation.is_some() {
+				bail!("exact HTTP cancellation identity requires envoy protocol v7");
+			}
 			v6::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort
 		}
 		v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestBodyCancel => {

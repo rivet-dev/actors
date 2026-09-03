@@ -59,7 +59,31 @@ export const rawHttpActor = actor({
 					},
 				}),
 				{
-					headers: { "Content-Type": "text/event-stream" },
+					headers: {
+						"Content-Type": "text/event-stream",
+						"Cache-Control": "no-cache, no-transform",
+					},
+				},
+			);
+		}
+
+		if (url.pathname === "/api/error-response-stream") {
+			const encoder = new TextEncoder();
+			return new Response(
+				new ReadableStream<Uint8Array>({
+					async start(controller) {
+						controller.enqueue(encoder.encode("data: ready\n\n"));
+						await new Promise((resolve) =>
+							setTimeout(resolve, 100),
+						);
+						controller.error(new Error("stream handler failed"));
+					},
+				}),
+				{
+					headers: {
+						"Content-Type": "text/event-stream",
+						"Cache-Control": "no-cache, no-transform",
+					},
 				},
 			);
 		}

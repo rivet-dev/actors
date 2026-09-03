@@ -1,7 +1,8 @@
 import { createServer } from "node:http";
 import { describe, expect, test } from "vitest";
+import { SLEEP_TIMEOUT } from "../../fixtures/driver-test-suite/sleep";
 import { describeDriverMatrix } from "./shared-matrix";
-import { setupDriverTest } from "./shared-utils";
+import { setupDriverTest, waitFor } from "./shared-utils";
 import { parseEventStream, runSseContractTests } from "./sse-contract-harness";
 
 function delay(ms: number): Promise<"timeout"> {
@@ -18,7 +19,9 @@ describeDriverMatrix(
 					driverTestConfig,
 				);
 				if (!metricsEndpoint) {
-					throw new Error("driver did not expose the engine metrics endpoint");
+					throw new Error(
+						"driver did not expose the engine metrics endpoint",
+					);
 				}
 				const actor = client.rawHttpActor.getOrCreate([
 					"gateway3-route-proof",
@@ -28,7 +31,9 @@ describeDriverMatrix(
 				const metrics = await (await fetch(metricsEndpoint)).text();
 				const gatewayRouteMetrics = metrics
 					.split("\n")
-					.filter((line) => line.includes("pegboard_gateway_route_total{"));
+					.filter((line) =>
+						line.includes("pegboard_gateway_route_total{"),
+					);
 				const selectedGateway3 = gatewayRouteMetrics.find(
 					(line) =>
 						line.includes('gateway="gateway3"') &&
@@ -37,7 +42,10 @@ describeDriverMatrix(
 						line.includes('mode="on"') &&
 						line.includes('decision="sampled_in"'),
 				);
-				expect(selectedGateway3, gatewayRouteMetrics.join("\n")).toBeDefined();
+				expect(
+					selectedGateway3,
+					gatewayRouteMetrics.join("\n"),
+				).toBeDefined();
 			});
 
 			test("streams response chunks before the body completes", async (c) => {
@@ -50,6 +58,9 @@ describeDriverMatrix(
 				expect(response.ok).toBe(true);
 				expect(response.headers.get("content-type")).toContain(
 					"text/event-stream",
+				);
+				expect(response.headers.get("cache-control")).toBe(
+					"no-cache, no-transform",
 				);
 
 				const reader = response.body?.getReader();
@@ -71,6 +82,23 @@ describeDriverMatrix(
 					done: true,
 					value: undefined,
 				});
+			});
+
+			test("fails the response body when the handler errors after headers", async (c) => {
+				const { client } = await setupDriverTest(c, driverTestConfig);
+				const actor = client.rawHttpActor.getOrCreate([
+					"error-response-stream",
+				]);
+
+				const response = await actor.fetch("api/error-response-stream");
+				expect(response.status).toBe(200);
+				const reader = response.body?.getReader();
+				if (!reader) throw new Error("response body is missing");
+				const first = await reader.read();
+				expect(new TextDecoder().decode(first.value)).toBe(
+					"data: ready\n\n",
+				);
+				await expect(reader.read()).rejects.toThrow();
 			});
 
 			test("keeps the request connection alive through the response stream", async (c) => {
@@ -153,7 +181,9 @@ describeDriverMatrix(
 					driverTestConfig,
 				);
 				if (!hardCrashRuntime) {
-					throw new Error("native driver did not expose runtime crash control");
+					throw new Error(
+						"native driver did not expose runtime crash control",
+					);
 				}
 				const actor = client.rawHttpActor.getOrCreate([
 					"envoy-disconnect-after-headers",
@@ -179,7 +209,9 @@ describeDriverMatrix(
 					driverTestConfig,
 				);
 				if (!hardCrashRuntime) {
-					throw new Error("native driver did not expose runtime crash control");
+					throw new Error(
+						"native driver did not expose runtime crash control",
+					);
 				}
 				const actor = client.rawHttpActor.getOrCreate([
 					"envoy-disconnect-before-headers",
@@ -194,6 +226,37 @@ describeDriverMatrix(
 				expect(await Promise.race([terminal, delay(8_000)])).toBe(
 					"terminal",
 				);
+			}, 15_000);
+
+			test("routes skipReadyWait without crossing actor generations", async (c) => {
+				const { client } = await setupDriverTest(c, driverTestConfig);
+				const actor = client.sleepWithRawHttp.getOrCreate();
+				expect((await actor.getCounts()).startCount).toBe(1);
+				await waitFor(driverTestConfig, SLEEP_TIMEOUT + 250);
+
+				const response = await actor.fetch("long-request?duration=1", {
+					skipReadyWait: true,
+				});
+				let expectedRequestCount: number;
+				if (response.ok) {
+					expect(await response.json()).toEqual({ completed: true });
+					expectedRequestCount = 1;
+				} else {
+					expect(response.status).toBe(503);
+					const errorCode = response.headers.get("x-rivet-error");
+					expect([
+						"envoy.actor_not_found",
+						"envoy.actor_generation_mismatch",
+					]).toContain(errorCode);
+					expect(await response.json()).toMatchObject({
+						group: "envoy",
+						code: errorCode?.slice("envoy.".length),
+					});
+					expectedRequestCount = 0;
+				}
+
+				const counts = await actor.getCounts();
+				expect(counts.requestCount).toBe(expectedRequestCount);
 			}, 15_000);
 
 			test("exposes gateway-chunked request bodies as Request streams", async (c) => {
@@ -237,7 +300,8 @@ describeDriverMatrix(
 				});
 				expect(response.ok).toBe(true);
 				expect(
-					((await response.json()) as { totalBytes: number }).totalBytes,
+					((await response.json()) as { totalBytes: number })
+						.totalBytes,
 				).toBe(requestBody.byteLength);
 			}, 30_000);
 

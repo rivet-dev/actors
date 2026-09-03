@@ -240,6 +240,7 @@ When the user asks to track something in a note, store it in `~/.agents/notes/` 
 ## WebSocket Rejection
 
 - Reject WebSocket connections (auth failures, routing errors, any rejection reason) by accepting the upgrade and sending a close frame with a meaningful close code and `<group>.<code>` reason. Do not reject with an HTTP status before the upgrade. Browser clients cannot surface HTTP status on a failed upgrade; they only see `CloseEvent.code` / `.reason`, so pre-upgrade rejection leaves them with no diagnostic. Use close code `1008` (policy violation) for auth failures, matching the `inspector.unauthorized` convention.
+- HTTP responses intended to surface as RivetKit client errors must use the canonical `HttpResponseError` body with a matching `Content-Type` and `x-rivet-error`; plain-text error bodies are not parsed as structured client errors.
 
 ## Fail-By-Default Runtime
 

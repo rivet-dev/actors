@@ -36,8 +36,8 @@ use crate::sqlite::{
 	process_unsent_remote_sqlite_requests, process_unsent_sqlite_requests,
 };
 use crate::tunnel::{
-	handle_tunnel_message, make_ws_key, resend_buffered_tunnel_messages,
-	send_hibernatable_ws_message_ack,
+	HttpRequestCancellationKey, handle_tunnel_message, make_ws_key,
+	resend_buffered_tunnel_messages, send_hibernatable_ws_message_ack,
 };
 use crate::utils::{BufferMap, EnvoyShutdownError, SleepFuture, boxed_sleep, spawn_detached};
 
@@ -61,6 +61,9 @@ pub struct EnvoyContext {
 	pub request_to_actor: BufferMap<WebSocketRoute>,
 	pub http_request_routes: BufferMap<HttpRequestRoute>,
 	pub http_message_indices: BufferMap<protocol::MessageIndex>,
+	/// Recently cancelled exact-generation requests. This prevents a delayed
+	/// `RequestStart` from reaching the actor after its cancellation arrived.
+	pub http_request_cancellations: HashMap<HttpRequestCancellationKey, crate::time::Instant>,
 	pub buffered_messages: Vec<protocol::ToRivetTunnelMessage>,
 	/// Highest command index processed per `(actor_id, generation)`, used to
 	/// drop replayed commands from `pegboard-envoy` after a reconnect. Persists
@@ -421,6 +424,7 @@ fn start_envoy_sync_inner(config: EnvoyConfig) -> EnvoyHandle {
 		request_to_actor: BufferMap::new(),
 		http_request_routes: BufferMap::new(),
 		http_message_indices: BufferMap::new(),
+		http_request_cancellations: HashMap::new(),
 		buffered_messages: Vec::new(),
 		processed_command_idx: HashMap::new(),
 	};

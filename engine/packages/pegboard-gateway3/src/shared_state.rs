@@ -2,7 +2,9 @@ use anyhow::Result;
 use gas::prelude::*;
 use pegboard::pubsub_subjects::GatewayReceiverSubject;
 use rivet_envoy_protocol::{self as protocol, PROTOCOL_VERSION, versioned};
-use rivet_guard_core::errors::{TunnelMessageTimeout, WebSocketTunnelPingTimeout};
+use rivet_guard_core::errors::{
+	RequestDeliveryIndeterminate, TunnelMessageTimeout, WebSocketTunnelPingTimeout,
+};
 use scc::{HashMap, hash_map::Entry};
 use std::{
 	fmt,
@@ -393,6 +395,7 @@ impl SharedState {
 	pub async fn create_or_wake_in_flight_request(
 		&self,
 		namespace_id: Id,
+		actor_id: Id,
 		pool_name: &str,
 		actor_key: Option<String>,
 		actor_generation: Option<u32>,
@@ -428,6 +431,7 @@ impl SharedState {
 				let (upload_cancel_tx, _) = watch::channel(false);
 				entry.insert_entry(InFlightRequest {
 					namespace_id,
+					actor_id,
 					pool_name: pool_name.to_string(),
 					actor_key,
 					actor_generation,
@@ -467,6 +471,7 @@ impl SharedState {
 				let request_body_window = entry.request_body_window.clone();
 				let upload_cancel_tx = entry.upload_cancel_tx.clone();
 				entry.http_response_abort_tx = http_response_abort_tx;
+				entry.actor_id = actor_id;
 				entry.actor_key = actor_key;
 				entry.actor_generation = actor_generation;
 				entry.envoy_protocol_version = envoy_protocol_version;
@@ -766,20 +771,20 @@ pub struct InFlightRequestHandle {
 }
 
 impl InFlightRequestHandle {
-	pub(crate) async fn mark_abort_sent(&self) -> bool {
+	pub(crate) async fn begin_http_abort(&self) -> Option<(String, Option<u32>)> {
 		let Some(mut request) = self
 			.shared_state
 			.in_flight_requests
 			.get_async(&self.request_id)
 			.await
 		else {
-			return false;
+			return None;
 		};
 		if request.abort_sent {
-			return false;
+			return None;
 		}
 		request.abort_sent = true;
-		true
+		Some((request.actor_id.to_string(), request.actor_generation))
 	}
 
 	#[tracing::instrument(skip_all, fields(request_id=%display_id(&self.request_id)))]
@@ -836,12 +841,17 @@ impl InFlightRequestHandle {
 			&message_kind,
 			protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(_)
 		);
+		let is_request_abort = matches!(
+			&message_kind,
+			protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(_)
+		);
 		ensure!(
 			!is_http
 				|| match req.http_send_state {
 					HttpSendState::PreCommit => is_request_start,
 					HttpSendState::Committed => !is_request_start,
-					HttpSendState::Terminal => false,
+					HttpSendState::Indeterminate => is_request_abort,
+					HttpSendState::Terminal => is_request_abort,
 				},
 			"HTTP tunnel message is invalid for the current send state"
 		);
@@ -1000,6 +1010,16 @@ impl InFlightRequestHandle {
 			{
 				Ok(Ok(res)) => res,
 				Ok(Err(error)) => {
+					if is_request_start {
+						self.mark_request_start_indeterminate(current_message_index)
+							.await?;
+					tracing::warn!(?error, "request start handoff failed with unknown delivery status");
+						return Err(RequestDeliveryIndeterminate {
+							phase: "request_start".to_owned(),
+							reason: "envoy_handoff_error".to_owned(),
+						}
+						.build());
+					}
 					if is_http && !is_request_start {
 						metrics::HTTP_POST_COMMIT_FAILURE_TOTAL
 							.with_label_values(&["ups_error"])
@@ -1017,6 +1037,15 @@ impl InFlightRequestHandle {
 					return Err(error.into());
 				}
 				Err(_) => {
+					if is_request_start {
+						self.mark_request_start_indeterminate(current_message_index)
+							.await?;
+						return Err(RequestDeliveryIndeterminate {
+							phase: "request_start".to_owned(),
+							reason: "envoy_handoff_ack_timeout".to_owned(),
+						}
+						.build());
+					}
 					if is_http && !is_request_start {
 						metrics::HTTP_POST_COMMIT_FAILURE_TOTAL
 							.with_label_values(&["handoff_timeout"])
@@ -1045,6 +1074,15 @@ impl InFlightRequestHandle {
 			};
 
 			if matches!(res, NextOutput::Unsubscribed) {
+				if is_request_start {
+					self.mark_request_start_indeterminate(current_message_index)
+						.await?;
+					return Err(RequestDeliveryIndeterminate {
+						phase: "request_start".to_owned(),
+						reason: "envoy_handoff_subscription_closed".to_owned(),
+					}
+					.build());
+				}
 				if is_http && !is_request_start {
 					metrics::HTTP_POST_COMMIT_FAILURE_TOTAL
 						.with_label_values(&["subscription_closed"])
@@ -1160,6 +1198,8 @@ impl InFlightRequestHandle {
 					req.message_index = req.message_index.wrapping_add(1);
 					if is_request_start {
 						req.http_send_state = HttpSendState::Committed;
+					} else if is_request_abort {
+						req.http_send_state = HttpSendState::Terminal;
 					}
 				}
 				tracing::trace!(
@@ -1200,7 +1240,37 @@ impl InFlightRequestHandle {
 				break;
 			}
 		}
+		if is_http && is_request_abort {
+			if let Some(mut req) = self
+				.shared_state
+				.in_flight_requests
+				.get_async(&self.request_id)
+				.await
+			{
+				req.http_send_state = HttpSendState::Terminal;
+			}
+		}
 
+		Ok(())
+	}
+
+	async fn mark_request_start_indeterminate(
+		&self,
+		current_message_index: protocol::MessageIndex,
+	) -> Result<()> {
+		let mut request = self
+			.shared_state
+			.in_flight_requests
+			.get_async(&self.request_id)
+			.await
+			.context("request removed during indeterminate HTTP handoff")?;
+		ensure!(
+			request.http_send_state == HttpSendState::PreCommit
+				&& request.message_index == current_message_index,
+			"HTTP request changed during indeterminate start handoff"
+		);
+		request.message_index = request.message_index.wrapping_add(1);
+		request.http_send_state = HttpSendState::Indeterminate;
 		Ok(())
 	}
 
@@ -1513,6 +1583,9 @@ fn attempt_bucket(attempt: u32) -> &'static str {
 mod tests {
 	use std::time::Duration;
 
+	use rivet_error::RivetError;
+	use universalpubsub::driver::memory::MemoryDriver;
+
 	use super::*;
 
 	fn request_start() -> protocol::ToEnvoyTunnelMessageKind {
@@ -1547,6 +1620,8 @@ mod tests {
 			RequestProtocol::Http,
 			&protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(
 				protocol::ToEnvoyRequestAbort {
+					actor_id: Some("test-actor".to_owned()),
+					actor_generation: Some(1),
 					reason: protocol::HttpStreamAbortReason {
 						kind: protocol::HttpStreamAbortReasonKind::Cancelled,
 						detail: None,
@@ -1567,6 +1642,128 @@ mod tests {
 				},
 			),
 		));
+	}
+
+	#[tokio::test]
+	async fn delivered_request_start_ack_timeout_is_indeterminate_and_sends_exact_abort() {
+		let ups = PubSub::new(Arc::new(MemoryDriver::new(
+			"gateway3-indeterminate-request-start".to_owned(),
+		)));
+		let receiver_subject = "test.envoy.receiver".to_owned();
+		let actor_id = Id::new_v1(2);
+		let expected_actor_id = actor_id.to_string();
+		let mut receiver = ups
+			.subscribe(&receiver_subject)
+			.await
+			.expect("subscribe test Envoy receiver");
+		let observer = tokio::spawn(async move {
+			let NextOutput::Message(start) = receiver
+				.next()
+				.await
+				.expect("receive request start")
+			else {
+				panic!("expected request start");
+			};
+			let start = versioned::ToEnvoyConn::deserialize_with_embedded_version(&start.payload)
+				.expect("decode request start");
+			assert!(matches!(
+				start,
+				protocol::ToEnvoyConn::ToEnvoyTunnelMessage(
+					protocol::ToEnvoyTunnelMessage {
+						message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(_),
+						..
+					}
+				)
+			));
+			// Deliberately drop this handoff acknowledgement after observing delivery.
+
+			let NextOutput::Message(abort_message) = receiver
+				.next()
+				.await
+				.expect("receive cancellation")
+			else {
+				panic!("expected request cancellation");
+			};
+			let decoded = versioned::ToEnvoyConn::deserialize_with_embedded_version(
+				&abort_message.payload,
+			)
+			.expect("decode request cancellation");
+			let protocol::ToEnvoyConn::ToEnvoyTunnelMessage(protocol::ToEnvoyTunnelMessage {
+				message_id,
+				message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(abort),
+			}) = decoded
+			else {
+				panic!("expected exact request cancellation");
+			};
+			assert_eq!(message_id.message_index, 1);
+			assert_eq!(abort.actor_id.as_deref(), Some(expected_actor_id.as_str()));
+			assert_eq!(abort.actor_generation, Some(1));
+			abort_message
+				.reply(&[])
+				.await
+				.expect("acknowledge request cancellation");
+		});
+
+		let mut root = rivet_config::config::Root::default();
+		root.pegboard = Some(rivet_config::config::Pegboard {
+			gateway_tunnel_ping_timeout_ms: Some(20),
+			..Default::default()
+		});
+		let config = rivet_config::Config::from_root(root);
+		let shared_state = SharedState::new(&config, ups);
+		let request_id = [9, 8, 7, 6];
+		let InFlightRequestCtx { handle, .. } = shared_state
+			.create_or_wake_in_flight_request(
+				Id::new_v1(1),
+				actor_id,
+				"test-pool",
+				Some("test-key".to_owned()),
+				Some(1),
+				Some(7),
+				RequestProtocol::Http,
+				receiver_subject,
+				request_id,
+				rivet_guard_core::metrics::PegboardGatewayLifecycle::new(
+					rivet_guard_core::metrics::PegboardGatewayVersion::V3,
+					Some(7),
+					rivet_guard_core::metrics::PegboardGatewayRequestKind::Http,
+				),
+				false,
+			)
+			.await
+			.expect("create in-flight request");
+
+		let error = handle
+			.send_message(request_start(), false)
+			.await
+			.expect_err("lost handoff acknowledgement must fail");
+		let error = RivetError::extract(&error);
+		assert_eq!(error.group(), "guard");
+		assert_eq!(error.code(), "request_delivery_indeterminate");
+
+		crate::http_stream::send_http_request_abort(
+			&handle,
+			protocol::HttpStreamAbortReasonKind::Cancelled,
+			Some("request start delivery was indeterminate".to_owned()),
+		)
+		.await;
+
+		observer.await.expect("join Envoy observer");
+		let request = shared_state
+			.in_flight_requests
+			.get_async(&request_id)
+			.await
+			.expect("request remains until handler cleanup");
+		assert_eq!(request.http_send_state, HttpSendState::Terminal);
+		drop(request);
+		handle.stop(RequestStopResult::EnvoyError).await;
+		assert!(
+			shared_state
+				.in_flight_requests
+				.get_async(&request_id)
+				.await
+				.is_none()
+		);
 	}
 
 	#[tokio::test]
@@ -1635,6 +1832,7 @@ mod tests {
 		};
 		let mut request = InFlightRequest {
 			namespace_id: Id::new_v1(1),
+			actor_id: Id::new_v1(2),
 			pool_name: "test".to_owned(),
 			actor_key: Some("actor".to_owned()),
 			actor_generation: Some(1),
@@ -1696,6 +1894,7 @@ mod tests {
 
 struct InFlightRequest {
 	namespace_id: Id,
+	actor_id: Id,
 	pool_name: String,
 	actor_key: Option<String>,
 	actor_generation: Option<u32>,
@@ -1720,6 +1919,7 @@ struct InFlightRequest {
 enum HttpSendState {
 	PreCommit,
 	Committed,
+	Indeterminate,
 	Terminal,
 }
 

@@ -30,7 +30,10 @@ See also the [raw fetch handler example](https://github.com/rivet-dev/rivet/tree
 
 Return a `Response` with a `ReadableStream` body to stream data as it becomes available. For server-sent events (SSE), set `Content-Type` to `text/event-stream` and format each event as one or more fields followed by a blank line.
 
-<CodeSnippet file="examples/docs/actors-request-handler/sse.ts" />
+<CodeGroup>
+<CodeSnippet file="examples/docs/actors-request-handler/sse.ts" title="actor.ts" />
+<CodeSnippet file="examples/docs/actors-request-handler/sse-client.ts" title="client.ts" />
+</CodeGroup>
 
 Rivet keeps the actor and request lifecycle active until the response stream closes, errors, or the client disconnects. The request's `AbortSignal` is aborted when the downstream client disconnects, so stop producers and release request-scoped resources when `request.signal` fires. Also implement the stream's `cancel()` callback for cleanup.
 

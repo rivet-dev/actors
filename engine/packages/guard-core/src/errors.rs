@@ -163,6 +163,18 @@ pub struct TunnelMessageTimeout {
 #[derive(RivetError, Serialize, Deserialize)]
 #[error(
 	"guard",
+	"request_delivery_indeterminate",
+	"Actor request delivery could not be confirmed.",
+	"Actor request delivery became indeterminate during {phase}: {reason}."
+)]
+pub struct RequestDeliveryIndeterminate {
+	pub phase: String,
+	pub reason: String,
+}
+
+#[derive(RivetError, Serialize, Deserialize)]
+#[error(
+	"guard",
 	"tunnel_response_closed",
 	"Actor tunnel closed before sending a response.",
 	"Actor tunnel closed before sending a response during {phase}."

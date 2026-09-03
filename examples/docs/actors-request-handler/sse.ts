@@ -4,33 +4,18 @@ const encoder = new TextEncoder();
 
 export const notificationsActor = actor({
 	state: {},
-	onRequest: (_c, request) => {
-		let heartbeat: ReturnType<typeof setInterval> | undefined;
-		const stopHeartbeat = () => {
-			if (heartbeat !== undefined) {
-				clearInterval(heartbeat);
-				heartbeat = undefined;
-			}
-		};
-
+	onRequest: () => {
 		const stream = new ReadableStream<Uint8Array>({
-			start(controller) {
+			async start(controller) {
 				controller.enqueue(
-					encoder.encode(
-						'retry: 5000\nid: 1\nevent: ready\ndata: {"connected":true}\n\n',
-					),
+					encoder.encode('event: status\ndata: {"ready":true}\n\n'),
 				);
-
-				// SSE comments keep intermediary proxies from closing an idle stream.
-				heartbeat = setInterval(() => {
-					controller.enqueue(encoder.encode(": keepalive\n\n"));
-				}, 15_000);
-
-				request.signal.addEventListener("abort", stopHeartbeat, {
-					once: true,
-				});
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				controller.enqueue(
+					encoder.encode('event: status\ndata: {"ready":false}\n\n'),
+				);
+				controller.close();
 			},
-			cancel: stopHeartbeat,
 		});
 
 		return new Response(stream, {
