@@ -37,12 +37,6 @@ Return a `Response` with a `ReadableStream` body to stream data as it becomes av
 
 Rivet keeps the actor and request lifecycle active until the response stream closes, errors, or the client disconnects. The request's `AbortSignal` is aborted when the downstream client disconnects, so stop producers and release request-scoped resources when `request.signal` fires. Also implement the stream's `cancel()` callback for cleanup.
 
-Streaming responses have no fixed total duration and no response-chunk idle timeout by default. Send periodic SSE comment heartbeats, such as `: keepalive\n\n`, because browsers, proxies, hosting platforms, and mobile networks may impose their own idle timeouts. Clients should reconnect and use SSE event IDs when they need resumable delivery.
-
-SSE requests should include `Accept: text/event-stream`. The browser's `EventSource` API sends this automatically; when consuming SSE with `fetch`, set it explicitly.
-
-Rivet Cloud manages streaming request routing automatically. On self-hosted deployments, set `features.guard_gateway_v3.mode` to `opportunistic` or `on` and set `features.guard_gateway_v3.percentage` to `100` to guarantee coverage for workers that support protocol v7. Lower percentages deterministically sample actors, older workers stay on the buffered request path, and the default mode is `off`.
-
 ## Sending Requests To Actors
 
 ### Via RivetKit Client
