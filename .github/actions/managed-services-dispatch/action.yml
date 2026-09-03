@@ -1,0 +1,55 @@
+name: Dispatch managed-services dependency bump
+description: Notify the private managed-services repository after a downstream release
+
+inputs:
+  product:
+    description: Released product (agentos or dynamic-apps)
+    required: true
+  version:
+    description: Released semantic version without a leading v
+    required: true
+  sha:
+    description: Full Git commit SHA for the release
+    required: true
+  token:
+    description: Token with contents write access to rivet-dev/managed-services
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Dispatch downstream release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        PRODUCT: ${{ inputs.product }}
+        VERSION: ${{ inputs.version }}
+        SHA: ${{ inputs.sha }}
+      run: |
+        set -euo pipefail
+
+        case "$PRODUCT" in
+          agentos|dynamic-apps) ;;
+          *) echo "unsupported product: $PRODUCT" >&2; exit 2 ;;
+        esac
+        if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+          echo "invalid version: $VERSION" >&2
+          exit 2
+        fi
+        if ! [[ "$SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+          echo "invalid Git SHA" >&2
+          exit 2
+        fi
+
+        payload=$(jq -n \
+          --arg product "$PRODUCT" \
+          --arg version "$VERSION" \
+          --arg sha "$SHA" \
+          '{event_type: "downstream-release", client_payload: {product: $product, version: $version, sha: $sha}}')
+        curl --fail-with-body --silent --show-error \
+          --request POST \
+          --header "Accept: application/vnd.github+json" \
+          --header "Authorization: Bearer ${GH_TOKEN}" \
+          --header "X-GitHub-Api-Version: 2022-11-28" \
+          https://api.github.com/repos/rivet-dev/managed-services/dispatches \
+          --data "$payload"
