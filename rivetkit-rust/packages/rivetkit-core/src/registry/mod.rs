@@ -47,7 +47,7 @@ use crate::actor::task::{
 };
 use crate::actor::task_types::ShutdownKind;
 #[cfg(feature = "native-runtime")]
-use crate::engine_process::{EngineProcessManager, EngineResolverConfig};
+use crate::development_process::DevelopmentProcessManager;
 use crate::error::{ActorLifecycle as ActorLifecycleError, ActorRuntime};
 use crate::inspector::protocol::{
 	self as inspector_protocol, ServerMessage as InspectorServerMessage,
@@ -194,6 +194,8 @@ struct ServeSettings {
 	namespace: String,
 	pool_name: String,
 	engine_binary_path: Option<PathBuf>,
+	start_services: bool,
+	services_binary_path: Option<PathBuf>,
 	engine_host: Option<String>,
 	engine_port: Option<u16>,
 	engine_spawn: EngineSpawnMode,
@@ -234,6 +236,8 @@ pub struct ServeConfig {
 	pub namespace: String,
 	pub pool_name: String,
 	pub engine_binary_path: Option<PathBuf>,
+	pub start_services: bool,
+	pub services_binary_path: Option<PathBuf>,
 	pub engine_host: Option<String>,
 	pub engine_port: Option<u16>,
 	pub engine_spawn: EngineSpawnMode,
@@ -589,23 +593,15 @@ impl CoreRegistry {
 		);
 
 		let dispatcher = self.into_dispatcher(&config);
+		let manage_engine = should_manage_engine(&config.endpoint, config.engine_spawn)?;
 		#[cfg(feature = "native-runtime")]
-		let _engine_process = if should_manage_engine(&config.endpoint, config.engine_spawn)? {
-			Some(
-				EngineProcessManager::start_or_reuse(EngineResolverConfig::from_parts(
-					&config.endpoint,
-					config.engine_binary_path.clone(),
-					config.engine_host.clone(),
-					config.engine_port,
-					config.engine_auto_download,
-				))
-				.await?,
-			)
+		let development_processes = if manage_engine {
+			Some(DevelopmentProcessManager::start(&config).await?)
 		} else {
 			None
 		};
 		#[cfg(not(feature = "native-runtime"))]
-		if should_manage_engine(&config.endpoint, config.engine_spawn)? {
+		if manage_engine {
 			anyhow::bail!("engine process spawning requires the `native-runtime` feature");
 		}
 
@@ -644,29 +640,41 @@ impl CoreRegistry {
 		// trip the `shutdown` token instead.
 		shutdown.cancelled().await;
 
-		// TODO: Move into envoy-client since timing out has to do with protocol compliance
-		// Read threshold from protocol metadata, fall back to 30 min
-		let stop_threshold = handle
-			.get_protocol_metadata()
+		let shutdown_envoy = async {
+			// TODO: Move into envoy-client since timing out has to do with protocol compliance
+			// Read threshold from protocol metadata, fall back to 30 min
+			let stop_threshold = handle
+				.get_protocol_metadata()
+				.await
+				.map(|x| x.actor_stop_threshold)
+				.unwrap_or(30 * 60 * 1000);
+			// Bounded drain. If envoy cannot reach the engine (reconnect loop stuck),
+			// we fall back to immediate `Stop` rather than hanging indefinitely.
+			// The outer host (TS signal handler / Rust binary) is the backstop.
+			match timeout(
+				Duration::from_millis(stop_threshold as u64),
+				handle.shutdown_and_wait(false),
+			)
 			.await
-			.map(|x| x.actor_stop_threshold)
-			.unwrap_or(30 * 60 * 1000);
-		// Bounded drain. If envoy cannot reach the engine (reconnect loop stuck),
-		// we fall back to immediate `Stop` rather than hanging indefinitely.
-		// The outer host (TS signal handler / Rust binary) is the backstop.
-		match timeout(
-			Duration::from_millis(stop_threshold as u64),
-			handle.shutdown_and_wait(false),
-		)
-		.await
-		{
-			Ok(()) => {}
-			Err(_) => {
-				tracing::warn!("envoy shutdown drain exceeded timeout; forcing immediate stop");
-				handle.shutdown(true);
-				handle.wait_stopped().await;
+			{
+				Ok(()) => {}
+				Err(_) => {
+					tracing::warn!("envoy shutdown drain exceeded timeout; forcing immediate stop");
+					handle.shutdown(true);
+					handle.wait_stopped().await;
+				}
 			}
-		}
+		};
+		#[cfg(feature = "native-runtime")]
+		let shutdown_development_processes = async move {
+			if let Some(development_processes) = development_processes {
+				development_processes.shutdown().await;
+			}
+		};
+		#[cfg(feature = "native-runtime")]
+		tokio::join!(shutdown_envoy, shutdown_development_processes);
+		#[cfg(not(feature = "native-runtime"))]
+		shutdown_envoy.await;
 
 		Ok(())
 	}

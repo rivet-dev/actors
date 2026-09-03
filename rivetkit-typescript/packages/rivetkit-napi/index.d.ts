@@ -208,6 +208,8 @@ export interface JsServeConfig {
   namespace: string
   poolName: string
   engineBinaryPath?: string
+  startServices?: boolean
+  servicesBinaryPath?: string
   engineHost?: string
   enginePort?: number
   handleInspectorHttpInRuntime?: boolean

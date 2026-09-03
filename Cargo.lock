@@ -6237,6 +6237,7 @@ dependencies = [
  "rivetkit-shared-types",
  "rusqlite",
  "scc",
+ "semver",
  "serde",
  "serde_bare",
  "serde_bytes",

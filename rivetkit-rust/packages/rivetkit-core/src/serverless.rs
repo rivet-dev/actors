@@ -20,7 +20,7 @@ use url::Url;
 
 use crate::actor::factory::ActorFactory;
 #[cfg(feature = "native-runtime")]
-use crate::engine_process::{EngineProcessManager, EngineResolverConfig};
+use crate::development_process::DevelopmentProcessManager;
 use crate::registry::{
 	CoreEnvoyHandle, CoreEnvoyStatus, RegistryCallbacks, RegistryDispatcher, ServeConfig,
 	should_manage_engine,
@@ -43,7 +43,7 @@ pub struct CoreServerlessRuntime {
 	dispatcher: Arc<RegistryDispatcher>,
 	envoy: Arc<TokioMutex<Option<EnvoyHandle>>>,
 	#[cfg(feature = "native-runtime")]
-	_engine_process: Arc<TokioMutex<Option<EngineProcessManager>>>,
+	development_processes: Arc<TokioMutex<Option<DevelopmentProcessManager>>>,
 	shutting_down: Arc<AtomicBool>,
 }
 
@@ -156,23 +156,15 @@ impl CoreServerlessRuntime {
 		factories: HashMap<String, Arc<ActorFactory>>,
 		config: ServeConfig,
 	) -> Result<Self> {
+		let manage_engine = should_manage_engine(&config.endpoint, config.engine_spawn)?;
 		#[cfg(feature = "native-runtime")]
-		let engine_process = if should_manage_engine(&config.endpoint, config.engine_spawn)? {
-			Some(
-				EngineProcessManager::start_or_reuse(EngineResolverConfig::from_parts(
-					&config.endpoint,
-					config.engine_binary_path.clone(),
-					config.engine_host.clone(),
-					config.engine_port,
-					config.engine_auto_download,
-				))
-				.await?,
-			)
+		let development_processes = if manage_engine {
+			Some(DevelopmentProcessManager::start(&config).await?)
 		} else {
 			None
 		};
 		#[cfg(not(feature = "native-runtime"))]
-		if should_manage_engine(&config.endpoint, config.engine_spawn)? {
+		if manage_engine {
 			anyhow::bail!("engine process spawning requires the `native-runtime` feature");
 		}
 
@@ -205,7 +197,7 @@ impl CoreServerlessRuntime {
 			dispatcher,
 			envoy: Arc::new(TokioMutex::new(None)),
 			#[cfg(feature = "native-runtime")]
-			_engine_process: Arc::new(TokioMutex::new(engine_process)),
+			development_processes: Arc::new(TokioMutex::new(development_processes)),
 			shutting_down: Arc::new(AtomicBool::new(false)),
 		})
 	}
@@ -219,17 +211,32 @@ impl CoreServerlessRuntime {
 	pub async fn shutdown(&self) {
 		self.shutting_down.store(true, Ordering::Release);
 		let handle = { self.envoy.lock().await.take() };
-		let Some(handle) = handle else { return };
-		match timeout(SHUTDOWN_DRAIN_TIMEOUT, handle.shutdown_and_wait(false)).await {
-			Ok(()) => {}
-			Err(_) => {
-				tracing::warn!(
-					"serverless runtime envoy drain exceeded timeout; forcing immediate stop"
-				);
-				handle.shutdown(true);
-				handle.wait_stopped().await;
+		#[cfg(feature = "native-runtime")]
+		let development_processes = { self.development_processes.lock().await.take() };
+		let shutdown_envoy = async move {
+			if let Some(handle) = handle {
+				match timeout(SHUTDOWN_DRAIN_TIMEOUT, handle.shutdown_and_wait(false)).await {
+					Ok(()) => {}
+					Err(_) => {
+						tracing::warn!(
+							"serverless runtime envoy drain exceeded timeout; forcing immediate stop"
+						);
+						handle.shutdown(true);
+						handle.wait_stopped().await;
+					}
+				}
 			}
-		}
+		};
+		#[cfg(feature = "native-runtime")]
+		let shutdown_development_processes = async move {
+			if let Some(development_processes) = development_processes {
+				development_processes.shutdown().await;
+			}
+		};
+		#[cfg(feature = "native-runtime")]
+		tokio::join!(shutdown_envoy, shutdown_development_processes);
+		#[cfg(not(feature = "native-runtime"))]
+		shutdown_envoy.await;
 	}
 
 	/// Wait (bounded) for active actors to reach zero, so an in-flight actor's `Stopped`
@@ -238,7 +245,11 @@ impl CoreServerlessRuntime {
 	pub async fn wait_actors_drained(&self, timeout_dur: Duration) {
 		let handle = { self.envoy.lock().await.as_ref().cloned() };
 		let Some(handle) = handle else { return };
-		let _ = timeout(timeout_dur, CoreEnvoyHandle::new(handle).wait_actors_drained()).await;
+		let _ = timeout(
+			timeout_dur,
+			CoreEnvoyHandle::new(handle).wait_actors_drained(),
+		)
+		.await;
 	}
 
 	pub async fn active_envoy_actor_count(&self) -> Option<usize> {

@@ -30,6 +30,10 @@ export const getRivetRunEnginePort = (): number | undefined => {
 };
 export const getRivetRunEngineVersion = (): string | undefined =>
 	getEnvUniversal("RIVET_RUN_ENGINE_VERSION");
+export const getRivetRunServices = (): boolean | undefined => {
+	const value = getEnvUniversal("RIVET_RUN_SERVICES");
+	return value === undefined ? undefined : value === "1";
+};
 export const getRivetEnvoyKind = (): string | undefined =>
 	getEnvUniversal("RIVET_ENVOY_KIND");
 export const getRivetEnvoyVersion = (): number | undefined => {

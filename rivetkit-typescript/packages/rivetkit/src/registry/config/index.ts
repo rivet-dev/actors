@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { getRunMetadata } from "@/actor/config";
 import type { AnyActorDefinition } from "@/actor/definition";
-import { buildEngineEndpoint, ENGINE_HOST, ENGINE_PORT } from "@/common/engine";
+import {
+	buildEngineEndpoint,
+	ENGINE_HOST,
+	ENGINE_PORT,
+	isLocalEngineEndpoint,
+} from "@/common/engine";
 import { type Logger, LogLevelSchema } from "@/common/log";
 import { VERSION } from "@/utils";
 import { tryParseEndpoint } from "@/utils/endpoint-parser";
@@ -14,6 +19,7 @@ import {
 	getRivetRunEngineHost,
 	getRivetRunEnginePort,
 	getRivetRunEngineVersion,
+	getRivetRunServices,
 	getRivetToken,
 	isDev,
 } from "@/utils/env-vars";
@@ -244,6 +250,12 @@ export const RegistryConfigSchema = z
 			.optional()
 			.default(() => getRivetRunEngineVersion() ?? VERSION),
 		/**
+		 * Starts the first-party managed services actor host when RivetKit manages
+		 * a local engine. Defaults to the local-engine decision. Set
+		 * RIVET_RUN_SERVICES=0 or 1 to override it.
+		 */
+		startServices: z.boolean().optional(),
+		/**
 		 * @experimental
 		 *
 		 * Automatically configure serverless envoys in the engine.
@@ -354,6 +366,13 @@ export const RegistryConfigSchema = z
 			? localEngineEndpoint
 			: (parsedEndpoint?.endpoint ??
 				(isDevEnv ? localEngineEndpoint : undefined));
+		// Managed services is another local development actor host. Its default
+		// follows the same local-endpoint decision that causes core to manage the
+		// Engine, while explicit config and RIVET_RUN_SERVICES take precedence.
+		const startServices =
+			config.startServices ??
+			getRivetRunServices() ??
+			Boolean(endpoint && isLocalEngineEndpoint(endpoint));
 		const validateServerlessEndpoint = Boolean(
 			config.startEngine || parsedEndpoint,
 		);
@@ -398,6 +417,7 @@ export const RegistryConfigSchema = z
 			...config,
 			sqlite,
 			endpoint,
+			startServices,
 			namespace,
 			token,
 			publicEndpoint,
@@ -628,6 +648,12 @@ export const DocRegistryConfigSchema = z
 			.optional()
 			.describe(
 				"Version of the local engine package to use. Defaults to the current RivetKit version.",
+			),
+		startServices: z
+			.boolean()
+			.optional()
+			.describe(
+				"Starts Rivet managed services when RivetKit manages a local engine. Defaults to the local-engine decision. Set RIVET_RUN_SERVICES=0 or 1 to override.",
 			),
 		configurePool: DocConfigurePoolSchema.describe(
 			"Automatically configure serverless runners in the engine.",

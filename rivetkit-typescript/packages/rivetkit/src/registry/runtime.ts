@@ -343,6 +343,8 @@ export interface RuntimeServeConfig {
 	namespace: string;
 	poolName: string;
 	engineBinaryPath?: string;
+	startServices?: boolean;
+	servicesBinaryPath?: string;
 	engineHost?: string;
 	enginePort?: number;
 	handleInspectorHttpInRuntime?: boolean;
@@ -804,6 +806,7 @@ export async function buildServeConfig(
 	config: RegistryConfig,
 	loadEnginePath: () => Promise<string>,
 	version: string,
+	loadServicesPath: () => Promise<string>,
 ): Promise<RuntimeServeConfig> {
 	if (!config.endpoint) {
 		throw new Error("registry endpoint is required");
@@ -815,6 +818,7 @@ export async function buildServeConfig(
 		token: config.token,
 		namespace: config.namespace,
 		poolName: config.envoy.poolName,
+		startServices: config.startServices,
 		handleInspectorHttpInRuntime: true,
 		serverlessBasePath: config.serverless.basePath,
 		serverlessPackageVersion: version,
@@ -841,6 +845,16 @@ export async function buildServeConfig(
 			msg: "could not resolve a local engine binary; if a local engine must be spawned it will fail with engine.binary_unavailable — set RIVET_ENGINE_BINARY_PATH or install the @rivetkit/engine-cli platform package",
 			error: stringifyError(error),
 		});
+	}
+	if (config.startServices) {
+		try {
+			serveConfig.servicesBinaryPath = await loadServicesPath();
+		} catch (error) {
+			logger().warn({
+				msg: "could not resolve the managed services binary; a local engine will fail with services.binary_unavailable — set RIVET_RUN_SERVICES=0 to disable managed services or RIVET_SERVICES_BINARY to a local rivet-services binary",
+				error: stringifyError(error),
+			});
+		}
 	}
 	serveConfig.engineHost = config.engineHost;
 	serveConfig.enginePort = config.enginePort;

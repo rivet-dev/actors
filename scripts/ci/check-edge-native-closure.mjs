@@ -1,6 +1,7 @@
 // Guard: keep the Supabase edge adapter free of the native packages the wasm
 // runtime never uses (`@rivetkit/rivetkit-napi`, `@rivetkit/engine-cli`,
-// `@rivet-dev/agent-os-core`). A Supabase Edge Function deploy (Deno eszip)
+// `@rivet-dev/managed-services`, `@rivet-dev/agent-os-core`). A Supabase Edge
+// Function deploy (Deno eszip)
 // snapshots the whole declared npm closure AND statically resolves literal
 // dynamic imports, so either can silently re-bloat the deploy by hundreds of MB
 // and 413.
@@ -27,6 +28,7 @@ const ADAPTER = "@rivetkit/supabase";
 const FORBIDDEN = [
 	"@rivetkit/rivetkit-napi",
 	"@rivetkit/engine-cli",
+	"@rivet-dev/managed-services",
 	"@rivet-dev/agent-os-core",
 ];
 

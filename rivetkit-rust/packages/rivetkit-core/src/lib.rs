@@ -5,10 +5,14 @@ compile_error!(
 
 pub mod actor;
 #[cfg(feature = "native-runtime")]
+mod development_process;
+#[cfg(feature = "native-runtime")]
 pub mod engine_process;
 pub mod error;
 pub mod inspector;
 pub mod inspector_bundle;
+#[cfg(feature = "native-runtime")]
+mod services_process;
 pub mod metrics_endpoint;
 pub mod registry;
 pub mod runtime;

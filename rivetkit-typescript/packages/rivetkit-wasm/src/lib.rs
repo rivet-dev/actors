@@ -150,6 +150,8 @@ impl From<WasmServeConfig> for ServeConfig {
 			namespace: config.namespace,
 			pool_name: config.pool_name,
 			engine_binary_path: config.engine_binary_path.map(PathBuf::from),
+			start_services: false,
+			services_binary_path: None,
 			engine_host: None,
 			engine_port: None,
 			engine_spawn: EngineSpawnMode::Never,

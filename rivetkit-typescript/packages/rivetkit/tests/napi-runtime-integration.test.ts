@@ -1,4 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import getPort from "get-port";
@@ -9,14 +11,41 @@ const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_PATH = join(TEST_DIR, "fixtures", "napi-runtime-server.ts");
 const NAMESPACE = "default";
 const TOKEN = "dev";
+const SERVICES_POOL_NAME = "services";
 let runtimeLogs = {
 	stdout: "",
 	stderr: "",
 };
+let engineEndpoint: string | undefined;
+let storagePath: string | undefined;
 
 function childOutput(child: ChildProcess): string {
 	void child;
 	return [runtimeLogs.stdout, runtimeLogs.stderr].filter(Boolean).join("\n");
+}
+
+async function engineOutput(): Promise<string> {
+	if (!storagePath) return "";
+	const logsPath = join(
+		storagePath,
+		".rivetkit",
+		"var",
+		"logs",
+		"rivet-engine",
+	);
+	try {
+		const files = await readdir(logsPath);
+		return (
+			await Promise.all(
+				files.map(
+					async (file) =>
+						`${file}:\n${await readFile(join(logsPath, file), "utf8")}`,
+				),
+			)
+		).join("\n");
+	} catch {
+		return "";
+	}
 }
 
 async function waitForHealth(
@@ -29,7 +58,7 @@ async function waitForHealth(
 	while (Date.now() < deadline) {
 		if (child.exitCode !== null) {
 			throw new Error(
-				`native runtime exited before health check passed:\n${childOutput(child)}`,
+				`native runtime exited before health check passed:\n${childOutput(child)}\n${await engineOutput()}`,
 			);
 		}
 
@@ -44,7 +73,7 @@ async function waitForHealth(
 	}
 
 	throw new Error(
-		`timed out waiting for native runtime health:\n${childOutput(child)}`,
+		`timed out waiting for native runtime health:\n${childOutput(child)}\n${await engineOutput()}`,
 	);
 }
 
@@ -165,6 +194,124 @@ async function waitForEnvoy(
 	);
 }
 
+function servicesPid(): number {
+	const match = runtimeLogs.stdout.match(
+		/managed services process is ready[^\n]*\bpid=(\d+)/,
+	);
+	if (!match) {
+		throw new Error("managed services readiness log did not include a pid");
+	}
+	return Number(match[1]);
+}
+
+async function waitForProcessExit(
+	pid: number,
+	timeoutMs: number,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	let lastState: string | undefined;
+	while (Date.now() < deadline) {
+		try {
+			process.kill(pid, 0);
+		} catch {
+			return;
+		}
+		try {
+			const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+			lastState = stat.slice(stat.lastIndexOf(") ") + 2).charAt(0);
+			if (lastState === "Z") return;
+		} catch {
+			// `/proc` is Linux-specific; process.kill remains the portable check.
+		}
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+	throw new Error(
+		`timed out waiting for process ${pid} to stop (state ${lastState ?? "unknown"})`,
+	);
+}
+
+async function expectNormalRunnerConfig(
+	endpoint: string,
+	poolName: string,
+): Promise<void> {
+	const response = await fetch(
+		`${endpoint}/runner-configs?namespace=${encodeURIComponent(NAMESPACE)}&runner_name=${encodeURIComponent(poolName)}`,
+		{
+			headers: { Authorization: `Bearer ${TOKEN}` },
+		},
+	);
+	expect(response.ok).toBe(true);
+	const body = (await response.json()) as {
+		runner_configs: Record<
+			string,
+			{ datacenters: Record<string, { normal?: unknown }> }
+		>;
+	};
+	const runnerConfig = body.runner_configs[poolName];
+	expect(runnerConfig).toBeDefined();
+	expect(
+		Object.values(runnerConfig?.datacenters ?? {}).some(
+			(datacenter) => datacenter.normal !== undefined,
+		),
+	).toBe(true);
+}
+
+async function createServicesActor(endpoint: string): Promise<string> {
+	const response = await fetch(
+		`${endpoint}/actors?namespace=${encodeURIComponent(NAMESPACE)}`,
+		{
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${TOKEN}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				name: "services",
+				key: `integration-${crypto.randomUUID()}`,
+				runner_name_selector: SERVICES_POOL_NAME,
+				crash_policy: "destroy",
+			}),
+		},
+	);
+	if (!response.ok) {
+		throw new Error(
+			`failed to create managed services actor: ${response.status} ${await response.text()}`,
+		);
+	}
+	const body = (await response.json()) as { actor: { actor_id: string } };
+	return body.actor.actor_id;
+}
+
+async function waitForActorStarted(
+	endpoint: string,
+	actorId: string,
+	timeoutMs: number,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		const response = await fetch(
+			`${endpoint}/actors?actor_ids=${encodeURIComponent(actorId)}&namespace=${encodeURIComponent(NAMESPACE)}`,
+			{
+				headers: { Authorization: `Bearer ${TOKEN}` },
+			},
+		);
+		if (response.ok) {
+			const body = (await response.json()) as {
+				actors: Array<{ start_ts?: number | null; error?: unknown }>;
+			};
+			const actor = body.actors[0];
+			if (actor?.error) {
+				throw new Error(
+					`managed services actor failed: ${JSON.stringify(actor.error)}`,
+				);
+			}
+			if (actor?.start_ts) return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 250));
+	}
+	throw new Error(`timed out waiting for managed services actor ${actorId}`);
+}
+
 async function upsertNormalRunnerConfig(
 	child: ChildProcess,
 	endpoint: string,
@@ -235,13 +382,56 @@ async function stopRuntime(child: ChildProcess): Promise<void> {
 			if (child.exitCode === null) {
 				child.kill("SIGKILL");
 			}
-		}, 5_000);
+		}, 10_000);
 
 		child.once("exit", () => {
 			clearTimeout(timeout);
 			resolve();
 		});
 	});
+}
+
+async function stopTestEngine(): Promise<void> {
+	if (!storagePath || !engineEndpoint) return;
+	const stampPath = join(
+		storagePath,
+		".rivetkit",
+		"var",
+		"engine",
+		"runtime.json",
+	);
+	try {
+		const stamp = JSON.parse(await readFile(stampPath, "utf8")) as {
+			pid: number;
+			endpoint: string;
+		};
+		if (new URL(stamp.endpoint).href !== new URL(engineEndpoint).href) {
+			throw new Error(
+				`refusing to stop Engine for unexpected endpoint ${stamp.endpoint}`,
+			);
+		}
+		process.kill(stamp.pid, "SIGTERM");
+		const deadline = Date.now() + 5_000;
+		while (Date.now() < deadline) {
+			try {
+				process.kill(stamp.pid, 0);
+			} catch {
+				return;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		process.kill(stamp.pid, "SIGKILL");
+	} catch (error) {
+		if (
+			!(
+				error instanceof Error &&
+				"code" in error &&
+				error.code === "ENOENT"
+			)
+		) {
+			throw error;
+		}
+	}
 }
 
 describe.sequential("native NAPI runtime integration", () => {
@@ -252,12 +442,22 @@ describe.sequential("native NAPI runtime integration", () => {
 			await stopRuntime(runtime);
 			runtime = undefined;
 		}
+		await stopTestEngine();
+		if (storagePath) {
+			await rm(storagePath, { recursive: true, force: true });
+			storagePath = undefined;
+		}
+		engineEndpoint = undefined;
 	}, 30_000);
 
 	test("runs a TS actor through registry, NAPI, core, envoy, and engine", async () => {
 		const poolName = "default";
 		const port = await getPort({ host: "127.0.0.1" });
 		const endpoint = `http://127.0.0.1:${port}`;
+		engineEndpoint = endpoint;
+		storagePath = await mkdtemp(
+			join(tmpdir(), "rivetkit-managed-services-"),
+		);
 		runtimeLogs = { stdout: "", stderr: "" };
 		runtime = spawn(process.execPath, ["--import", "tsx", FIXTURE_PATH], {
 			cwd: dirname(TEST_DIR),
@@ -265,8 +465,11 @@ describe.sequential("native NAPI runtime integration", () => {
 				...process.env,
 				RIVET_TOKEN: TOKEN,
 				RIVET_NAMESPACE: NAMESPACE,
+				RIVET_RUN_ENGINE_HOST: "127.0.0.1",
+				RIVET_RUN_ENGINE_PORT: String(port),
 				RIVETKIT_TEST_ENDPOINT: endpoint,
 				RIVETKIT_TEST_POOL_NAME: poolName,
+				RIVETKIT_STORAGE_PATH: storagePath,
 			},
 			stdio: ["ignore", "pipe", "pipe"],
 		});
@@ -280,6 +483,10 @@ describe.sequential("native NAPI runtime integration", () => {
 		await waitForHealth(runtime, endpoint, 90_000);
 		await upsertNormalRunnerConfig(runtime, endpoint, poolName);
 		await waitForEnvoy(runtime, endpoint, poolName, 30_000);
+		await waitForEnvoy(runtime, endpoint, SERVICES_POOL_NAME, 30_000);
+		await expectNormalRunnerConfig(endpoint, SERVICES_POOL_NAME);
+		const servicesActorId = await createServicesActor(endpoint);
+		await waitForActorStarted(endpoint, servicesActorId, 30_000);
 
 		const client = createClient<any>({
 			endpoint,
@@ -291,9 +498,12 @@ describe.sequential("native NAPI runtime integration", () => {
 
 		const handle = await waitForActorReady(
 			() =>
-				client.integrationActor.create([
-					`napi-runtime-${crypto.randomUUID()}`,
-				]),
+				client.integrationActor.create(
+					[`napi-runtime-${crypto.randomUUID()}`],
+					{
+						params: { userId: "integration-test" },
+					},
+				),
 			30_000,
 		);
 		const actorId = await handle.resolve();
@@ -384,10 +594,15 @@ describe.sequential("native NAPI runtime integration", () => {
 			},
 		});
 		await expect(handle.throwUntypedError()).rejects.toMatchObject({
-			group: "core",
+			group: "rivetkit",
 			code: "internal_error",
 			message: "An internal error occurred",
 		});
 		await client.dispose();
+
+		const processId = servicesPid();
+		await stopRuntime(runtime);
+		runtime = undefined;
+		await waitForProcessExit(processId, 5_000);
 	}, 120_000);
 });

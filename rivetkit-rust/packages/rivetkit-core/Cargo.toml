@@ -16,6 +16,7 @@ native-runtime = [
 	"dep:nix",
 	"dep:reqwest",
 	"dep:rivetkit-engine-process",
+	"dep:semver",
 	"dep:axum",
 	"dep:bytes",
 	"dep:http-body-util",
@@ -47,7 +48,7 @@ futures.workspace = true
 http.workspace = true
 http-body-util = { workspace = true, optional = true }
 include_dir = { workspace = true }
-nix = { workspace = true, optional = true }
+nix = { workspace = true, optional = true, features = ["process"] }
 parking_lot.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, optional = true }
@@ -61,6 +62,7 @@ rivetkit-actor-persist.workspace = true
 rivetkit-client-protocol.workspace = true
 rivetkit-engine-process = { workspace = true, optional = true }
 rivetkit-inspector-protocol.workspace = true
+semver = { workspace = true, optional = true }
 depot-client-types.workspace = true
 depot-client = { workspace = true, optional = true }
 scc.workspace = true

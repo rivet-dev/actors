@@ -4,8 +4,8 @@ import { defineConfig } from "tsup";
 // Pre-bundle the rivetkit wasm-path runtime into this adapter's own dist. A
 // Supabase Edge Function deploy (Deno eszip) snapshots the entire declared npm
 // dependency closure, so a package that declares `rivetkit` as a runtime
-// dependency drags in rivetkit's native packages (engine-cli, rivetkit-napi,
-// agent-os secure-exec) that the wasm runtime never executes. By bundling
+// dependency drags in rivetkit's native packages (engine-cli, managed services,
+// rivetkit-napi, agent-os secure-exec) that the wasm runtime never executes. By bundling
 // rivetkit here and not declaring it as a runtime dependency, and by having the
 // Supabase function's import map point `rivetkit` at this adapter, the deploy
 // ships only the code the wasm path actually uses. Only @rivetkit/rivetkit-wasm
@@ -32,6 +32,7 @@ export default defineConfig({
 		// Native packages the wasm path never executes.
 		"@rivetkit/rivetkit-napi",
 		"@rivetkit/engine-cli",
+		"@rivet-dev/managed-services",
 		"@rivet-dev/agent-os-core",
 		// Node CommonJS libs with dynamic require() that esbuild cannot bundle
 		// into ESM for Deno; Deno's node compat loads them at runtime. Declared

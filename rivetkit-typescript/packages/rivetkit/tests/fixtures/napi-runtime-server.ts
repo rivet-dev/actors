@@ -7,7 +7,6 @@ import { db } from "../../src/db/mod";
 import { actor, event, queue, setup, UserError } from "../../src/mod";
 import { buildNativeRegistry } from "../../src/registry/native";
 
-const textDecoder = new TextDecoder();
 const fixtureDir = dirname(fileURLToPath(import.meta.url));
 const repoEngineBinary = resolve(
 	fixtureDir,
@@ -79,9 +78,10 @@ const integrationActor = actor({
 			await c.db.execute(
 				"CREATE TABLE IF NOT EXISTS increments (value INTEGER NOT NULL)",
 			);
-			await c.db.execute("INSERT INTO increments (value) VALUES (?)", [
+			await c.db.execute(
+				"INSERT INTO increments (value) VALUES (?)",
 				c.state.count,
-			]);
+			);
 
 			const rows = await c.db.execute<{ value: number }>(
 				"SELECT value FROM increments ORDER BY rowid ASC",
@@ -102,7 +102,7 @@ const integrationActor = actor({
 
 			return {
 				count: c.state.count,
-				kvCount: kvValue ? Number(textDecoder.decode(kvValue)) : null,
+				kvCount: kvValue ? Number(kvValue) : null,
 				sqliteValues: rows.map(({ value }) => Number(value)),
 			};
 		},
@@ -117,12 +117,16 @@ const integrationActor = actor({
 			const kvValue = await c.kv.get("count");
 			return {
 				count: c.state.count,
-				kvCount: kvValue ? Number(textDecoder.decode(kvValue)) : null,
+				kvCount: kvValue ? Number(kvValue) : null,
 			};
 		},
 		getCountViaClient: async (c) => {
 			const client = c.client<any>();
-			return await client.integrationActor.getForId(c.actorId).getCount();
+			return await client.integrationActor
+				.getForId(c.actorId, {
+					params: { userId: "internal-integration-test" },
+				})
+				.getCount();
 		},
 		throwTypedError: async () => {
 			throw new UserError("native typed error", {
@@ -154,9 +158,21 @@ const registry = setup({
 	},
 });
 
-const { registry: nativeRegistry, serveConfig } = await buildNativeRegistry(
-	registry.parseConfig(),
-);
+const {
+	runtime: nativeRuntime,
+	registry: nativeRegistry,
+	serveConfig,
+} = await buildNativeRegistry(registry.parseConfig());
 serveConfig.engineBinaryPath = resolveEngineBinaryPath();
 
-await nativeRegistry.serve(serveConfig);
+const shutdown = () => {
+	void nativeRuntime.shutdownRegistry(nativeRegistry);
+};
+process.once("SIGINT", shutdown);
+process.once("SIGTERM", shutdown);
+try {
+	await nativeRuntime.serveRegistry(nativeRegistry, serveConfig);
+} finally {
+	process.removeListener("SIGINT", shutdown);
+	process.removeListener("SIGTERM", shutdown);
+}

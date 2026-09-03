@@ -347,6 +347,8 @@ mod moved_tests {
 			namespace: "default".to_owned(),
 			pool_name: "default".to_owned(),
 			engine_binary_path: None,
+			start_services: false,
+			services_binary_path: None,
 			engine_host: None,
 			engine_port: None,
 			engine_spawn: EngineSpawnMode::Never,

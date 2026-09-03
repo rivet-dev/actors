@@ -1,0 +1,5 @@
+{
+  "code": "protocol_mismatch",
+  "group": "services",
+  "message": "Managed services is newer than the local Engine protocol."
+}
