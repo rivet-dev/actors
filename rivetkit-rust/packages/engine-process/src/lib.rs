@@ -435,11 +435,11 @@ pub fn engine_env(config: &EngineResolverConfig) -> Result<Vec<(String, String)>
 			"1000".to_owned(),
 		),
 		(
-			"RIVET__PEGBOARD__GATEWAY3__MODE".to_owned(),
+			"RIVET__FEATURES__GUARD_GATEWAY_V3__MODE".to_owned(),
 			"on".to_owned(),
 		),
 		(
-			"RIVET__PEGBOARD__GATEWAY3__ROLLOUT_PERCENT".to_owned(),
+			"RIVET__FEATURES__GUARD_GATEWAY_V3__PERCENTAGE".to_owned(),
 			"100".to_owned(),
 		),
 		(
@@ -1058,9 +1058,9 @@ mod tests {
 		assert_eq!(env["RIVET__PEGBOARD__ENVOY_ELIGIBLE_THRESHOLD"], "5000");
 		assert_eq!(env["RIVET__PEGBOARD__ENVOY_LOST_THRESHOLD"], "7000");
 		assert_eq!(env["RIVET__PEGBOARD__MIN_METADATA_POLL_INTERVAL"], "1000");
-		assert_eq!(env["RIVET__PEGBOARD__GATEWAY3__MODE"], "on");
+		assert_eq!(env["RIVET__FEATURES__GUARD_GATEWAY_V3__MODE"], "on");
 		assert_eq!(
-			env["RIVET__PEGBOARD__GATEWAY3__ROLLOUT_PERCENT"],
+			env["RIVET__FEATURES__GUARD_GATEWAY_V3__PERCENTAGE"],
 			"100"
 		);
 		assert_eq!(env["RIVET__RUNTIME__WORKER_SHUTDOWN_DURATION"], "1");

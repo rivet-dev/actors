@@ -8,6 +8,7 @@ pub mod auth;
 pub mod cache;
 pub mod clickhouse;
 pub mod db;
+pub mod features;
 pub mod guard;
 pub mod logs;
 pub mod metrics;
@@ -24,6 +25,7 @@ pub use auth::*;
 pub use cache::*;
 pub use clickhouse::*;
 pub use db::Database;
+pub use features::*;
 pub use guard::*;
 pub use logs::*;
 pub use metrics::*;
@@ -79,6 +81,9 @@ pub struct Root {
 	pub pegboard: Option<Pegboard>,
 
 	#[serde(default)]
+	pub features: Option<Features>,
+
+	#[serde(default)]
 	pub logs: Option<Logs>,
 
 	#[serde(default)]
@@ -119,6 +124,7 @@ impl Default for Root {
 			guard: None,
 			api_peer: None,
 			pegboard: None,
+			features: None,
 			logs: None,
 			topology: None,
 			database: None,
@@ -148,6 +154,11 @@ impl Root {
 	pub fn pegboard(&self) -> &Pegboard {
 		static DEFAULT: LazyLock<Pegboard> = LazyLock::new(Pegboard::default);
 		self.pegboard.as_ref().unwrap_or(&DEFAULT)
+	}
+
+	pub fn features(&self) -> &Features {
+		static DEFAULT: LazyLock<Features> = LazyLock::new(Features::default);
+		self.features.as_ref().unwrap_or(&DEFAULT)
 	}
 
 	pub fn logs(&self) -> &Logs {
@@ -196,6 +207,7 @@ impl Root {
 		}
 
 		self.pegboard().validate()?;
+		self.features().validate()?;
 
 		// Validate that all datacenters have valid_hosts configured when there's more than one datacenter
 		let topology = self.topology();

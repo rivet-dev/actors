@@ -73,6 +73,17 @@
         }
       ]
     },
+    "features": {
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Features"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "guard": {
       "default": null,
       "anyOf": [
@@ -465,6 +476,24 @@
         }
       ]
     },
+    "Features": {
+      "type": "object",
+      "properties": {
+        "guard_gateway_v3": {
+          "description": "Controls routing to the streaming Guard Gateway V3 implementation.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GuardGatewayV3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "FileSystem": {
       "type": "object",
       "required": [
@@ -476,35 +505,6 @@
         }
       },
       "additionalProperties": false
-    },
-    "Gateway3": {
-      "type": "object",
-      "properties": {
-        "mode": {
-          "default": "off",
-          "allOf": [
-            {
-              "$ref": "#/definitions/Gateway3Mode"
-            }
-          ]
-        },
-        "rollout_percent": {
-          "default": 0,
-          "type": "integer",
-          "format": "uint8",
-          "maximum": 100.0,
-          "minimum": 0.0
-        }
-      },
-      "additionalProperties": false
-    },
-    "Gateway3Mode": {
-      "type": "string",
-      "enum": [
-        "off",
-        "opportunistic",
-        "on"
-      ]
     },
     "Guard": {
       "type": "object",
@@ -703,6 +703,35 @@
         }
       },
       "additionalProperties": false
+    },
+    "GuardGatewayV3": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "default": "off",
+          "allOf": [
+            {
+              "$ref": "#/definitions/GuardGatewayV3Mode"
+            }
+          ]
+        },
+        "percentage": {
+          "default": 0,
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 100.0,
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "GuardGatewayV3Mode": {
+      "type": "string",
+      "enum": [
+        "off",
+        "opportunistic",
+        "on"
+      ]
     },
     "Https": {
       "type": "object",
@@ -1018,17 +1047,6 @@
           ],
           "format": "uint64",
           "minimum": 0.0
-        },
-        "gateway3": {
-          "description": "Controls routing to the streaming Gateway 3 implementation.",
-          "anyOf": [
-            {
-              "$ref": "#/definitions/Gateway3"
-            },
-            {
-              "type": "null"
-            }
-          ]
         },
         "gateway_gc_interval_ms": {
           "description": "GC interval for in-flight requests in milliseconds.",

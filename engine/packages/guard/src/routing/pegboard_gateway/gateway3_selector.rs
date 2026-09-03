@@ -1,6 +1,6 @@
 use hyper::HeaderMap;
 use hyper::header::ACCEPT;
-use rivet_config::config::pegboard::{Gateway3, Gateway3Mode};
+use rivet_config::config::features::{GuardGatewayV3, GuardGatewayV3Mode};
 use rivet_envoy_protocol::PROTOCOL_VERSION;
 use rivet_guard_core::request_context::RequestContext;
 use rivet_util::Id;
@@ -63,7 +63,7 @@ impl Decision {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct GatewaySelection {
 	request_kind: RequestKind,
-	mode: Gateway3Mode,
+	mode: GuardGatewayV3Mode,
 	protocol_version: Option<u16>,
 	decision: Decision,
 }
@@ -85,9 +85,9 @@ impl GatewaySelection {
 			Some(_) => "streaming",
 		};
 		let mode = match self.mode {
-			Gateway3Mode::Off => "off",
-			Gateway3Mode::Opportunistic => "opportunistic",
-			Gateway3Mode::On => "on",
+			GuardGatewayV3Mode::Off => "off",
+			GuardGatewayV3Mode::Opportunistic => "opportunistic",
+			GuardGatewayV3Mode::On => "on",
 		};
 
 		metrics::PEGBOARD_GATEWAY_ROUTE_TOTAL
@@ -120,7 +120,7 @@ impl GatewaySelection {
 }
 
 pub(super) fn select_gateway(
-	config: &Gateway3,
+	config: &GuardGatewayV3,
 	req_ctx: &RequestContext,
 	namespace_id: Id,
 	actor_id: Id,
@@ -137,13 +137,13 @@ pub(super) fn select_gateway(
 }
 
 fn select_gateway_from_parts(
-	config: &Gateway3,
+	config: &GuardGatewayV3,
 	request_kind: RequestKind,
 	namespace_id: Id,
 	actor_id: Id,
 	protocol_version: Option<u16>,
 ) -> GatewaySelection {
-	let decision = if config.mode == Gateway3Mode::Off {
+	let decision = if config.mode == GuardGatewayV3Mode::Off {
 		Decision::Disabled
 	} else if request_kind == RequestKind::WebSocket {
 		Decision::WebSocket
@@ -153,11 +153,11 @@ fn select_gateway_from_parts(
 		(MIN_GATEWAY3_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&version)
 	}) {
 		Decision::ProtocolIncompatible
-	} else if config.mode == Gateway3Mode::Opportunistic
+	} else if config.mode == GuardGatewayV3Mode::Opportunistic
 		&& !request_kind.is_opportunistic_candidate()
 	{
 		Decision::NotCandidate
-	} else if sampled_in(namespace_id, actor_id, config.rollout_percent) {
+	} else if sampled_in(namespace_id, actor_id, config.percentage) {
 		Decision::SampledIn
 	} else {
 		Decision::SampledOut
@@ -228,8 +228,8 @@ fn accepts_event_stream(headers: &HeaderMap) -> bool {
 		})
 }
 
-fn sampled_in(namespace_id: Id, actor_id: Id, rollout_percent: u8) -> bool {
-	match rollout_percent {
+fn sampled_in(namespace_id: Id, actor_id: Id, percentage: u8) -> bool {
+	match percentage {
 		0 => false,
 		100 => true,
 		percent => sample_bucket(namespace_id, actor_id) < u128::from(percent) * 100,
@@ -258,21 +258,21 @@ mod tests {
 		Id::from_slice(&bytes).unwrap()
 	}
 
-	fn config(mode: Gateway3Mode, rollout_percent: u8) -> Gateway3 {
-		Gateway3 {
+	fn config(mode: GuardGatewayV3Mode, percentage: u8) -> GuardGatewayV3 {
+		GuardGatewayV3 {
 			mode,
-			rollout_percent,
+			percentage,
 		}
 	}
 
 	fn decision(
-		mode: Gateway3Mode,
-		rollout_percent: u8,
+		mode: GuardGatewayV3Mode,
+		percentage: u8,
 		request_kind: RequestKind,
 		protocol_version: Option<u16>,
 	) -> Decision {
 		select_gateway_from_parts(
-			&config(mode, rollout_percent),
+			&config(mode, percentage),
 			request_kind,
 			Id::nil(),
 			Id::nil(),
@@ -301,24 +301,24 @@ mod tests {
 	#[test]
 	fn mode_protocol_and_websocket_gates_are_ordered() {
 		assert_eq!(
-			decision(Gateway3Mode::Off, 100, RequestKind::HttpSse, Some(7)),
+			decision(GuardGatewayV3Mode::Off, 100, RequestKind::HttpSse, Some(7)),
 			Decision::Disabled
 		);
 		assert_eq!(
-			decision(Gateway3Mode::On, 100, RequestKind::WebSocket, Some(7)),
+			decision(GuardGatewayV3Mode::On, 100, RequestKind::WebSocket, Some(7)),
 			Decision::WebSocket
 		);
 		assert_eq!(
-			decision(Gateway3Mode::On, 100, RequestKind::HttpSse, None),
+			decision(GuardGatewayV3Mode::On, 100, RequestKind::HttpSse, None),
 			Decision::ProtocolUnknown
 		);
 		assert_eq!(
-			decision(Gateway3Mode::On, 100, RequestKind::HttpSse, Some(6)),
+			decision(GuardGatewayV3Mode::On, 100, RequestKind::HttpSse, Some(6)),
 			Decision::ProtocolIncompatible
 		);
 		assert_eq!(
 			decision(
-				Gateway3Mode::On,
+				GuardGatewayV3Mode::On,
 				100,
 				RequestKind::HttpSse,
 				Some(PROTOCOL_VERSION + 1),
@@ -327,7 +327,7 @@ mod tests {
 		);
 		assert_eq!(
 			decision(
-				Gateway3Mode::Opportunistic,
+				GuardGatewayV3Mode::Opportunistic,
 				100,
 				RequestKind::HttpOther,
 				Some(7),
@@ -335,11 +335,11 @@ mod tests {
 			Decision::NotCandidate
 		);
 		assert_eq!(
-			decision(Gateway3Mode::On, 0, RequestKind::HttpOther, Some(7)),
+			decision(GuardGatewayV3Mode::On, 0, RequestKind::HttpOther, Some(7)),
 			Decision::SampledOut
 		);
 		assert_eq!(
-			decision(Gateway3Mode::On, 100, RequestKind::HttpOther, Some(7)),
+			decision(GuardGatewayV3Mode::On, 100, RequestKind::HttpOther, Some(7)),
 			Decision::SampledIn
 		);
 	}

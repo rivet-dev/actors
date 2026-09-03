@@ -654,7 +654,7 @@ async fn handle_actor_v2(
 	);
 
 	let selection = select_gateway(
-		&ctx.config().pegboard().gateway3(),
+		&ctx.config().features().guard_gateway_v3(),
 		req_ctx,
 		actor.namespace_id,
 		actor_id,

@@ -101,8 +101,6 @@ pub struct Pegboard {
 	pub runner_event_demuxer_max_last_seen_ms: Option<u64>,
 
 	// === Gateway Settings ===
-	/// Controls routing to the streaming Gateway 3 implementation.
-	pub gateway3: Option<Gateway3>,
 	/// WebSocket open/handshake timeout in milliseconds.
 	pub gateway_websocket_open_timeout_ms: Option<u64>,
 	/// Timeout for response to start in milliseconds.
@@ -229,10 +227,6 @@ impl Pegboard {
 			bail!("pegboard.envoy_expire_scheduler_max_concurrent_expires must be greater than 0");
 		}
 
-		if let Some(gateway3) = &self.gateway3 {
-			gateway3.validate()?;
-		}
-
 		Ok(())
 	}
 
@@ -311,10 +305,6 @@ impl Pegboard {
 
 	pub fn gateway_websocket_open_timeout_ms(&self) -> u64 {
 		self.gateway_websocket_open_timeout_ms.unwrap_or(15_000)
-	}
-
-	pub fn gateway3(&self) -> Gateway3 {
-		self.gateway3.clone().unwrap_or_default()
 	}
 
 	pub fn gateway_response_start_timeout_ms(&self) -> u64 {
@@ -461,35 +451,6 @@ impl Pegboard {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Gateway3 {
-	#[serde(default)]
-	pub mode: Gateway3Mode,
-	#[serde(default)]
-	#[schemars(range(max = 100))]
-	pub rollout_percent: u8,
-}
-
-impl Gateway3 {
-	fn validate(&self) -> Result<()> {
-		if self.rollout_percent > 100 {
-			bail!("pegboard.gateway3.rollout_percent must be in 0..=100");
-		}
-
-		Ok(())
-	}
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Gateway3Mode {
-	#[default]
-	Off,
-	Opportunistic,
-	On,
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum EnvoyLoadBalancer {
@@ -580,25 +541,4 @@ fn default_max_scan() -> u32 {
 
 fn default_slot_jitter() -> u8 {
 	4
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn gateway3_defaults_to_off() {
-		let config = Pegboard::default().gateway3();
-		assert_eq!(config.mode, Gateway3Mode::Off);
-		assert_eq!(config.rollout_percent, 0);
-	}
-
-	#[test]
-	fn gateway3_rejects_invalid_rollout_percent() {
-		let config = Gateway3 {
-			mode: Gateway3Mode::On,
-			rollout_percent: 101,
-		};
-		assert!(config.validate().is_err());
-	}
 }

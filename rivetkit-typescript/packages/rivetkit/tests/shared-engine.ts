@@ -294,9 +294,13 @@ async function spawnSharedEngine(
 						gateway_update_ping_interval_ms: 250,
 						gateway_tunnel_ping_timeout_ms: 2_000,
 						gateway_response_start_timeout_ms: 3_000,
-						gateway3: {
+					}
+				: undefined,
+			features: options.gateway3
+				? {
+						guard_gateway_v3: {
 							mode: "on",
-							rollout_percent: 100,
+							percentage: 100,
 						},
 					}
 				: undefined,

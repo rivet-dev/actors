@@ -41,7 +41,7 @@ Streaming responses have no fixed total duration and no response-chunk idle time
 
 SSE requests should include `Accept: text/event-stream`. The browser's `EventSource` API sends this automatically; when consuming SSE with `fetch`, set it explicitly.
 
-Rivet Cloud manages streaming request routing automatically. On self-hosted deployments, set `pegboard.gateway3.mode` to `opportunistic` or `on` and set `pegboard.gateway3.rollout_percent` to `100` to guarantee coverage for workers that support protocol v7. Lower percentages deterministically sample actors, older workers stay on the buffered request path, and the default mode is `off`.
+Rivet Cloud manages streaming request routing automatically. On self-hosted deployments, set `features.guard_gateway_v3.mode` to `opportunistic` or `on` and set `features.guard_gateway_v3.percentage` to `100` to guarantee coverage for workers that support protocol v7. Lower percentages deterministically sample actors, older workers stay on the buffered request path, and the default mode is `off`.
 
 ## Sending Requests To Actors
 
