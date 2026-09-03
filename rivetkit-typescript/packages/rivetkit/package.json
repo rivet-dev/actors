@@ -1,6 +1,6 @@
 {
 	"name": "rivetkit",
-	"version": "2.3.11",
+	"version": "2.3.13",
 	"description": "Lightweight libraries for building stateful actors on edge platforms",
 	"license": "Apache-2.0",
 	"keywords": [
@@ -210,7 +210,7 @@
 	"dependencies": {
 		"@hono/zod-openapi": "^1.1.5",
 		"@rivet-dev/agent-os-core": "^0.1.1",
-		"@rivet-dev/services": "^0.1.3",
+		"@rivet-dev/services": "^0.1.5",
 		"@rivetkit/bare-ts": "^0.6.2",
 		"@rivetkit/engine-cli": "workspace:*",
 		"@rivetkit/engine-envoy-protocol": "workspace:*",

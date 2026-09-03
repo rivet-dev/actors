@@ -1,6 +1,6 @@
 {
 	"name": "@rivetkit/react",
-	"version": "2.3.11",
+	"version": "2.3.13",
 	"description": "React hooks and components for RivetKit client applications",
 	"license": "Apache-2.0",
 	"keywords": [

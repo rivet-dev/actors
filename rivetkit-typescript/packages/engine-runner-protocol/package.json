@@ -1,6 +1,6 @@
 {
 	"name": "@rivetkit/engine-runner-protocol",
-	"version": "2.3.11",
+	"version": "2.3.13",
 	"license": "Apache-2.0",
 	"type": "module",
 	"exports": {

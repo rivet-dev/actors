@@ -1,6 +1,6 @@
 {
 	"name": "@rivetkit/engine-test-runner",
-	"version": "2.3.11",
+	"version": "2.3.13",
 	"type": "module",
 	"scripts": {
 		"start": "tsx src/index.ts",

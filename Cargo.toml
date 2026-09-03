@@ -86,7 +86,7 @@ members = [
 ]
 
   [workspace.package]
-  version = "2.3.11"
+  version = "2.3.13"
   edition = "2024"
   authors = [ "Rivet Gaming, LLC <developer@rivet.dev>" ]
   license = "Apache-2.0"
@@ -463,11 +463,11 @@ members = [
 
     [workspace.dependencies.rivet-error]
     path = "engine/packages/error"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.rivet-error-macros]
     path = "engine/packages/error-macros"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.gasoline]
     path = "engine/packages/gasoline"
@@ -493,7 +493,7 @@ members = [
 
     [workspace.dependencies.rivet-metrics]
     path = "engine/packages/metrics"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.rivet-metrics-server]
     path = "engine/packages/metrics-server"
@@ -579,7 +579,7 @@ members = [
 
     [workspace.dependencies.rivet-util-serde]
     path = "engine/packages/util-serde"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.rivet-workflow-worker]
     path = "engine/packages/workflow-worker"
@@ -592,40 +592,40 @@ members = [
 
     [workspace.dependencies.rivet-envoy-client]
     path = "engine/sdks/rust/envoy-client"
-    version = "=2.3.11"
+    version = "=2.3.13"
     default-features = false
 
     [workspace.dependencies.rivet-envoy-protocol]
     path = "engine/sdks/rust/envoy-protocol"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.rivet-actor-runtime-socket-protocol]
     path = "engine/sdks/rust/actor-runtime-socket-protocol"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.rivet-depot-protocol]
     path = "engine/sdks/rust/depot-protocol"
 
     [workspace.dependencies.rivetkit-client-protocol]
     path = "rivetkit-rust/packages/client-protocol"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.rivetkit-client]
     path = "rivetkit-rust/packages/client"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.rivetkit-actor-persist]
     path = "rivetkit-rust/packages/actor-persist"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.rivetkit-inspector-protocol]
     path = "rivetkit-rust/packages/inspector-protocol"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.depot-client]
     package = "rivet-depot-client"
     path = "engine/packages/depot-client"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.depot-client-embedded]
     path = "engine/packages/depot-client-embedded"
@@ -633,23 +633,23 @@ members = [
     [workspace.dependencies.depot-client-types]
     package = "rivet-depot-client-types"
     path = "engine/packages/depot-client-types"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.rivetkit]
     path = "rivetkit-rust/packages/rivetkit"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.rivetkit-core]
     path = "rivetkit-rust/packages/rivetkit-core"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.rivetkit-engine-process]
     path = "rivetkit-rust/packages/engine-process"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.rivetkit-shared-types]
     path = "rivetkit-rust/packages/shared-types"
-    version = "=2.3.11"
+    version = "=2.3.13"
 
     [workspace.dependencies.epoxy-protocol]
     path = "engine/sdks/rust/epoxy-protocol"

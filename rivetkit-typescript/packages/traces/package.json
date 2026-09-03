@@ -1,6 +1,6 @@
 {
 	"name": "@rivetkit/traces",
-	"version": "2.3.11",
+	"version": "2.3.13",
 	"description": "Generic tracing storage and OTLP export for RivetKit",
 	"license": "Apache-2.0",
 	"type": "module",
