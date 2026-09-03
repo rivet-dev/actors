@@ -3,7 +3,7 @@ use gas::prelude::*;
 use pegboard::pubsub_subjects::GatewayReceiverSubject;
 use rivet_envoy_protocol::{self as protocol, PROTOCOL_VERSION, versioned};
 use rivet_guard_core::errors::{
-	RequestDeliveryIndeterminate, TunnelMessageTimeout, WebSocketTunnelPingTimeout,
+	RequestDeliveryUnconfirmed, TunnelMessageTimeout, WebSocketTunnelPingTimeout,
 };
 use scc::{HashMap, hash_map::Entry};
 use std::{
@@ -1014,7 +1014,7 @@ impl InFlightRequestHandle {
 						self.mark_request_start_indeterminate(current_message_index)
 							.await?;
 					tracing::warn!(?error, "request start handoff failed with unknown delivery status");
-						return Err(RequestDeliveryIndeterminate {
+						return Err(RequestDeliveryUnconfirmed {
 							phase: "request_start".to_owned(),
 							reason: "envoy_handoff_error".to_owned(),
 						}
@@ -1040,7 +1040,7 @@ impl InFlightRequestHandle {
 					if is_request_start {
 						self.mark_request_start_indeterminate(current_message_index)
 							.await?;
-						return Err(RequestDeliveryIndeterminate {
+						return Err(RequestDeliveryUnconfirmed {
 							phase: "request_start".to_owned(),
 							reason: "envoy_handoff_ack_timeout".to_owned(),
 						}
@@ -1077,7 +1077,7 @@ impl InFlightRequestHandle {
 				if is_request_start {
 					self.mark_request_start_indeterminate(current_message_index)
 						.await?;
-					return Err(RequestDeliveryIndeterminate {
+					return Err(RequestDeliveryUnconfirmed {
 						phase: "request_start".to_owned(),
 						reason: "envoy_handoff_subscription_closed".to_owned(),
 					}
@@ -1739,7 +1739,7 @@ mod tests {
 			.expect_err("lost handoff acknowledgement must fail");
 		let error = RivetError::extract(&error);
 		assert_eq!(error.group(), "guard");
-		assert_eq!(error.code(), "request_delivery_indeterminate");
+		assert_eq!(error.code(), "request_delivery_unconfirmed");
 
 		crate::http_stream::send_http_request_abort(
 			&handle,

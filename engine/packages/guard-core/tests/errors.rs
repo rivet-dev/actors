@@ -1,7 +1,7 @@
 use rivet_error::RivetError;
 use rivet_guard_core::errors::{
 	ActorStoppedWhileWaitingForWebSocketOpen, ActorWakeRetriesExceeded,
-	RequestDeliveryIndeterminate, TunnelMessageTimeout, WebSocketOpenTimeout,
+	RequestDeliveryUnconfirmed, TunnelMessageTimeout, WebSocketOpenTimeout,
 	WebSocketTargetChanged,
 };
 
@@ -59,8 +59,8 @@ fn tunnel_message_timeout_includes_gc_reason_metadata() {
 }
 
 #[test]
-fn request_delivery_indeterminate_is_a_distinct_error() {
-	let err = RequestDeliveryIndeterminate {
+fn request_delivery_unconfirmed_is_a_distinct_error() {
+	let err = RequestDeliveryUnconfirmed {
 		phase: "request_start".to_owned(),
 		reason: "envoy_handoff_ack_timeout".to_owned(),
 	}
@@ -68,7 +68,7 @@ fn request_delivery_indeterminate_is_a_distinct_error() {
 	let rivet_err = RivetError::extract(&err);
 
 	assert_eq!(rivet_err.group(), "guard");
-	assert_eq!(rivet_err.code(), "request_delivery_indeterminate");
+	assert_eq!(rivet_err.code(), "request_delivery_unconfirmed");
 	let metadata = rivet_err.metadata().expect("metadata should be present");
 	assert_eq!(metadata["phase"], "request_start");
 	assert_eq!(metadata["reason"], "envoy_handoff_ack_timeout");

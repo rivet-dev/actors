@@ -144,7 +144,7 @@ pub(crate) fn err_into_response(err: anyhow::Error) -> Result<Response<ResponseB
 				("guard", "actor_stopped_while_waiting") => StatusCode::SERVICE_UNAVAILABLE,
 				("guard", "tunnel_request_aborted") => StatusCode::SERVICE_UNAVAILABLE,
 				("guard", "tunnel_message_timeout") => StatusCode::GATEWAY_TIMEOUT,
-				("guard", "request_delivery_indeterminate") => StatusCode::SERVICE_UNAVAILABLE,
+				("guard", "request_delivery_unconfirmed") => StatusCode::SERVICE_UNAVAILABLE,
 				("guard", "tunnel_response_closed") => StatusCode::SERVICE_UNAVAILABLE,
 				("guard", "gateway_response_start_timeout") => StatusCode::GATEWAY_TIMEOUT,
 				("guard", "actor_ready_timeout") => StatusCode::SERVICE_UNAVAILABLE,

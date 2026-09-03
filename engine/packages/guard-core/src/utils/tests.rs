@@ -35,8 +35,8 @@ fn skips_non_service_unavailable_with_rivet_error_header() {
 }
 
 #[test]
-fn does_not_retry_indeterminate_request_delivery() {
-	let error = crate::errors::RequestDeliveryIndeterminate {
+fn does_not_retry_unconfirmed_request_delivery() {
+	let error = crate::errors::RequestDeliveryUnconfirmed {
 		phase: "request_start".to_owned(),
 		reason: "envoy_handoff_ack_timeout".to_owned(),
 	}
@@ -59,7 +59,7 @@ fn retries_a_definitive_no_responders_request_start_failure() {
 #[test]
 fn structured_error_responses_include_the_matching_error_header() {
 	let response = err_into_response(
-		crate::errors::RequestDeliveryIndeterminate {
+		crate::errors::RequestDeliveryUnconfirmed {
 			phase: "request_start".to_owned(),
 			reason: "envoy_handoff_ack_timeout".to_owned(),
 		}
@@ -71,7 +71,7 @@ fn structured_error_responses_include_the_matching_error_header() {
 	assert_eq!(
 		response.headers().get(X_RIVET_ERROR),
 		Some(&HeaderValue::from_static(
-			"guard.request_delivery_indeterminate"
+			"guard.request_delivery_unconfirmed"
 		)),
 	);
 }

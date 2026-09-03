@@ -19,13 +19,13 @@ describe("lifecycle error retry classification", () => {
 		).toBe(true);
 	});
 
-	test("does not retry indeterminate request delivery", () => {
+	test("does not retry unconfirmed request delivery", () => {
 		expect(
 			isRetryableLifecycleRequestError(
 				new ActorError(
 					"guard",
-					"request_delivery_indeterminate",
-					"request delivery could not be confirmed",
+					"request_delivery_unconfirmed",
+					"Actor did not respond to request start",
 				),
 			),
 		).toBe(false);
