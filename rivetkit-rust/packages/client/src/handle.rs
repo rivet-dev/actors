@@ -1,14 +1,14 @@
 use crate::{
-	common::{EncodingKind, HEADER_CONN_PARAMS, HEADER_ENCODING, RawWebSocket, TransportKind},
-	connection::{ActorConnection, ActorConnectionInner, start_connection},
+	common::{EncodingKind, RawWebSocket, TransportKind, HEADER_CONN_PARAMS, HEADER_ENCODING},
+	connection::{start_connection, ActorConnection, ActorConnectionInner},
 	protocol::{codec, query::*},
 	remote_manager::{GatewayTarget, RemoteManager},
 };
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use bytes::Bytes;
 use reqwest::{
-	Method, Response,
 	header::{HeaderMap, HeaderValue},
+	Method, Response,
 };
 use serde::Serialize;
 use serde_json::Value as JsonValue;
