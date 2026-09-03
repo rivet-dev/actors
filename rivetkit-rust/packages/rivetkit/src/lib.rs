@@ -35,6 +35,7 @@ pub use rivetkit_core::actor::schedule::{
 	CronFire, ScheduleErrorInfo, ScheduleKind, ScheduledEventInfo, ScheduledFireInfo,
 };
 pub use rivetkit_core::actor::state::OnStateChangeGuard;
+pub use rivetkit_core::inspector::InspectorTabEntry;
 pub use rivetkit_core::metrics_endpoint::RenderedMetrics;
 pub use rivetkit_core::serverless::{
 	CoreServerlessRuntime, ServerlessRequest, ServerlessResponse, ServerlessStreamError,
@@ -46,6 +47,7 @@ pub use rivetkit_core::{
 	HTTP_BODY_STREAM_CHANNEL_CAPACITY, KeepAwakeRegion, ListOpts, QueueMessage as CoreQueueMessage,
 	QueueNextBatchOpts, QueueNextOpts, QueueTryNextBatchOpts, QueueTryNextOpts, QueueWaitOpts,
 	Request, RequestSaveOpts, Response, ResponseChunk, SaveStateOpts, SerializeStateReason,
-	ServeConfig, SqliteDb, StateDelta, StreamingResponse, WebSocket, WsMessage,
+	ServeConfig, SqliteBatchStatement, SqliteDb, SqliteTransaction, StateDelta, StreamingResponse,
+	WebSocket, WsMessage,
 	sqlite::{BindParam, ColumnValue, ExecResult, QueryResult},
 };
