@@ -30,6 +30,7 @@ rivet-data.workspace = true
 rivet-envoy-protocol.workspace = true
 rivet-error.workspace = true
 rivet-metrics.workspace = true
+rivet-outbound-guard.workspace = true
 rivet-pools.workspace = true
 rivet-runner-protocol.workspace = true
 rivet-runtime.workspace = true
@@ -52,6 +53,7 @@ url.workspace = true
 utoipa.workspace = true
 uuid.workspace = true
 vbare.workspace = true
+webhook.workspace = true
 
 [dev-dependencies]
 portpicker.workspace = true

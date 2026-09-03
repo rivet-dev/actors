@@ -299,9 +299,22 @@ async fn outbound_req_inner(
 
 	let endpoint_url = format!("{}/start", url.trim_end_matches('/'));
 
+	// The client only sees this URL as a host to connect to: an address literal never reaches its
+	// resolver, and its redirect policy only runs on later hops. So the scheme, credentials, and a
+	// literal destination have to be checked here, which also re-gates configs stored before this
+	// policy existed.
+	let policy = rivet_pools::reqwest::outbound_policy(ctx.config()).await?;
+	let block_reason = match url::Url::parse(&endpoint_url) {
+		Ok(parsed_url) => policy.check_url(&parsed_url).err(),
+		Err(_) => Some(rivet_outbound_guard::BlockReason::InvalidUrl),
+	};
+	if let Some(reason) = block_reason {
+		return Ok(blocked_destination(ctx, input, reason).await);
+	}
+
 	tracing::debug!(%endpoint_url, "sending outbound req");
 
-	let client = rivet_pools::reqwest::client_no_timeout().await?;
+	let client = rivet_pools::reqwest::guarded_client_no_timeout(ctx.config()).await?;
 	let req = client.get(endpoint_url).headers(headers);
 
 	let conn_started = Instant::now();
@@ -411,11 +424,11 @@ async fn outbound_req_inner(
 						_ => {
 							let wrapped_err = anyhow::Error::from(err);
 
-							report_error(
-								ctx,
-								input.namespace_id,
-								&input.runner_name,
-								RunnerPoolError::ServerlessConnectionError {
+							let error = match rivet_outbound_guard::block_reason(&wrapped_err) {
+								Some(reason) => RunnerPoolError::ServerlessDestinationBlocked {
+									reason: reason.to_string(),
+								},
+								None => RunnerPoolError::ServerlessConnectionError {
 									// Print entire error chain
 									message: wrapped_err
 										.chain()
@@ -423,8 +436,9 @@ async fn outbound_req_inner(
 										.collect::<Vec<_>>()
 										.join("\n"),
 								},
-							)
-							.await;
+							};
+
+							report_error(ctx, input.namespace_id, &input.runner_name, error).await;
 
 							return Err(wrapped_err);
 						}
@@ -482,6 +496,34 @@ async fn outbound_req_inner(
 	}
 
 	Ok(OutboundReqOutput::Draining { drain_sent: true })
+}
+
+/// Report a destination the policy refuses to dial and stop the connection loop.
+///
+/// Retrying cannot help: the config has to change before this URL becomes reachable.
+async fn blocked_destination(
+	ctx: &ActivityCtx,
+	input: &OutboundReqInput,
+	reason: rivet_outbound_guard::BlockReason,
+) -> OutboundReqOutput {
+	tracing::warn!(
+		namespace_id = %input.namespace_id,
+		runner_name = %input.runner_name,
+		%reason,
+		"serverless url is not an allowed destination, ending outbound req"
+	);
+
+	report_error(
+		ctx,
+		input.namespace_id,
+		&input.runner_name,
+		RunnerPoolError::ServerlessDestinationBlocked {
+			reason: reason.to_string(),
+		},
+	)
+	.await;
+
+	OutboundReqOutput::Draining { drain_sent: false }
 }
 
 /// Reads from the adjacent serverless runner wf which is keeping track of signals while this workflow runs

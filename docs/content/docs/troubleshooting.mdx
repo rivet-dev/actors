@@ -97,6 +97,14 @@ Rivet was unable to connect to your serverless endpoint. Check that:
 - Your server is publicly reachable from the internet.
 - There are no DNS or firewall issues blocking the connection.
 
+### `serverless_destination_blocked`
+
+The configured serverless URL points at a destination Rivet is not allowed to reach. Rivet dials serverless endpoints from inside its own network, so by default it refuses any destination that is not publicly routable: private ranges, link-local and cloud metadata addresses, carrier-grade NAT, and other reserved ranges. Check that:
+
+- Your endpoint URL is publicly reachable, and is not an internal hostname or address.
+- The URL scheme is `http` or `https`, and the URL does not embed credentials.
+- If you are self-hosting and intentionally point runners at an address on your own network, set `outbound.allow_private_networks` to `true` in your engine config, or list the specific range in `outbound.allow_cidrs`.
+
 ### `serverless_stream_ended_early`
 
 The connection to your serverless endpoint was terminated before the actor finished. This usually means your serverless function hit its execution time limit. Ensure that your Rivet provider's request lifespan is configured to match the max duration of your serverless platform.

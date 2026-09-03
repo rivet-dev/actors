@@ -37,6 +37,7 @@ tower-http.workspace = true
 tracing.workspace = true
 urlencoding.workspace = true
 utoipa.workspace = true
+webhook.workspace = true
 
 [build-dependencies]
 anyhow.workspace = true

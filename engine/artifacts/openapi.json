@@ -1103,6 +1103,246 @@
           }
         ]
       }
+    },
+    "/webhooks": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "webhooks_list",
+        "parameters": [
+          {
+            "name": "namespace",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhooksListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/webhooks/{webhook_name}": {
+      "put": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "webhooks_upsert",
+        "parameters": [
+          {
+            "name": "webhook_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhooksUpsertRequestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhooksUpsertResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "webhooks_delete",
+        "parameters": [
+          {
+            "name": "webhook_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhooksDeleteResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/webhooks/{webhook_name}/deliveries/{delivery_id}/retry": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "webhooks_retry_delivery",
+        "parameters": [
+          {
+            "name": "webhook_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "delivery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhooksRetryDeliveryResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
+    "/webhooks/{webhook_name}/events": {
+      "get": {
+        "tags": [
+          "webhooks"
+        ],
+        "operationId": "webhooks_events",
+        "parameters": [
+          {
+            "name": "webhook_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhooksEventsResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -2289,6 +2529,133 @@
             }
           }
         },
+        "additionalProperties": false
+      },
+      "WebhookConfig": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebhookEventType"
+            }
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "WebhookEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "create_ts",
+          "status",
+          "event_type",
+          "attempt_count"
+        ],
+        "properties": {
+          "attempt_count": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "create_ts": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "WebhookEventType": {
+        "type": "string",
+        "enum": [
+          "runner_pool.error",
+          "runner_pool.healthy"
+        ]
+      },
+      "WebhooksDeleteResponse": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "WebhooksEventsResponse": {
+        "type": "object",
+        "required": [
+          "events",
+          "pagination"
+        ],
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebhookEvent"
+            }
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/Pagination"
+          }
+        },
+        "additionalProperties": false
+      },
+      "WebhooksListResponse": {
+        "type": "object",
+        "required": [
+          "webhooks",
+          "pagination"
+        ],
+        "properties": {
+          "pagination": {
+            "$ref": "#/components/schemas/Pagination"
+          },
+          "webhooks": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/WebhookConfig"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "WebhooksRetryDeliveryResponse": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "WebhooksUpsertRequestBody": {
+        "$ref": "#/components/schemas/WebhookConfig"
+      },
+      "WebhooksUpsertResponse": {
+        "type": "object",
         "additionalProperties": false
       }
     },

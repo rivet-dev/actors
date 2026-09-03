@@ -17,6 +17,7 @@ pub fn registry() -> Result<Registry> {
 		.merge(epoxy::registry()?)?
 		.merge(gasoline_runtime::registry()?)?
 		.merge(datacenter::registry()?)?
-		.merge(depot::registry()?)
+		.merge(depot::registry()?)?
+		.merge(webhook::registry()?)
 		.map_err(Into::into)
 }

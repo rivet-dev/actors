@@ -43,6 +43,9 @@
 			}
 		}
 	},
+	"outbound": {
+		"allow_private_networks": true
+	},
 	"postgres": {
 		"url": "postgresql://postgres:postgres@postgres-dc-b:5432/rivet_engine"
 	},

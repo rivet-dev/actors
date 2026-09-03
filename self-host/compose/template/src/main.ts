@@ -18,7 +18,7 @@ import { generateDatacenterVectorClient } from "./services/edge/vector-client";
 import { generateDatacenterVectorServer } from "./services/edge/vector-server";
 
 function generateTemplate(templateName: string, config: TemplateConfig) {
-	const outputDir = path.join(__dirname, "../../../", templateName);
+	const outputDir = path.join(__dirname, "../../", templateName);
 
 	// Remove existing directory if it exists
 	if (fs.existsSync(outputDir)) {

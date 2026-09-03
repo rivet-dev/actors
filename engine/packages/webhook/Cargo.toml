@@ -1,0 +1,29 @@
+[package]
+name = "webhook"
+publish = false
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+epoxy.workspace = true
+futures-util.workspace = true
+gas.workspace = true
+namespace.workspace = true
+reqwest.workspace = true
+rivet-data.workspace = true
+rivet-error.workspace = true
+rivet-outbound-guard.workspace = true
+rivet-pools.workspace = true
+rivet-util.workspace = true
+serde.workspace = true
+serde_bare.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+universaldb.workspace = true
+url.workspace = true
+uuid.workspace = true
+vbare.workspace = true

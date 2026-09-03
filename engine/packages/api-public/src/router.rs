@@ -10,6 +10,7 @@ use utoipa::OpenApi;
 
 use crate::{
 	actors, ctx, datacenters, envoys, health, metadata, namespaces, runner_configs, runners, ui,
+	webhooks,
 };
 
 #[derive(OpenApi)]
@@ -33,6 +34,11 @@ use crate::{
 		runner_configs::delete::delete,
 		runner_configs::serverless_health_check::serverless_health_check,
 		runner_configs::refresh_metadata::refresh_metadata,
+		webhooks::list,
+		webhooks::upsert,
+		webhooks::delete,
+		webhooks::retry_delivery,
+		webhooks::events,
 		datacenters::list,
 		health::fanout,
 		metadata::get,
@@ -80,6 +86,24 @@ pub async fn router(
 			.route(
 				"/runner-configs/{runner_name}/refresh-metadata",
 				axum::routing::post(runner_configs::refresh_metadata),
+			)
+			// MARK: Webhooks
+			.route("/webhooks", axum::routing::get(webhooks::list))
+			.route(
+				"/webhooks/{webhook_name}",
+				axum::routing::put(webhooks::upsert),
+			)
+			.route(
+				"/webhooks/{webhook_name}",
+				axum::routing::delete(webhooks::delete),
+			)
+			.route(
+				"/webhooks/{webhook_name}/deliveries/{delivery_id}/retry",
+				axum::routing::post(webhooks::retry_delivery),
+			)
+			.route(
+				"/webhooks/{webhook_name}/events",
+				axum::routing::get(webhooks::events),
 			)
 			// MARK: Actors
 			.route("/actors", axum::routing::get(actors::list::list))

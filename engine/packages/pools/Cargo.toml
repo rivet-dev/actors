@@ -17,6 +17,7 @@ hyper-util.workspace = true
 lazy_static.workspace = true
 reqwest.workspace = true
 rivet-config.workspace = true
+rivet-outbound-guard.workspace = true
 rivet-metrics.workspace = true
 rivet-util.workspace = true
 rustls.workspace = true

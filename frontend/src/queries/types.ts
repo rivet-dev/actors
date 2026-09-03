@@ -35,4 +35,5 @@ export type RivetActorError =
 	| { runner_id: string }
 	| { serverless_http_error: unknown }
 	| { serverless_connection_error: unknown }
+	| { serverless_destination_blocked: unknown }
 	| { serverless_invalid_sse_payload: unknown };

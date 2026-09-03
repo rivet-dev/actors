@@ -1,0 +1,11 @@
+type WebhookEventType enum {
+	RUNNER_POOL_ERROR
+	RUNNER_POOL_HEALTHY
+	ACTOR_HTTP_REQUEST
+}
+
+type Data struct {
+	url: str
+	headers: map<str><str>
+	subscriptions: list<WebhookEventType>
+}

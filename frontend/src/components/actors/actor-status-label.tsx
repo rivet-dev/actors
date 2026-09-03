@@ -103,6 +103,7 @@ export function ActorError({ error }: { error: object | string }) {
 					.or(P.shape({ serverless_http_error: P.any }))
 					.or(P.string)
 					.or(P.shape({ serverless_connection_error: P.any }))
+					.or(P.shape({ serverless_destination_blocked: P.any }))
 					.or(P.shape({ serverless_invalid_sse_payload: P.any })),
 			}),
 			(err) => <RunnerPoolError error={err.runner_pool_error} />,
@@ -217,6 +218,23 @@ export function RunnerPoolError({ error }: { error: RivetActorError }) {
 						{message ? (
 							<ErrorDetailsContent error={message} />
 						) : null}
+					</>
+				);
+			},
+		)
+		.with(
+			P.shape({
+				serverless_destination_blocked: P.shape({ reason: P.string }),
+			}),
+			(errObj) => {
+				const reason = errObj.serverless_destination_blocked?.reason;
+				return (
+					<>
+						<p>
+							Serverless endpoint URL is not an allowed
+							destination
+						</p>
+						{reason ? <ErrorDetailsContent error={reason} /> : null}
 					</>
 				);
 			},

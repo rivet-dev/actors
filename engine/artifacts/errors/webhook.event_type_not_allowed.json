@@ -1,0 +1,5 @@
+{
+  "code": "event_type_not_allowed",
+  "group": "webhook",
+  "message": "Event type cannot be subscribed to by a webhook."
+}

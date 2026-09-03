@@ -1,0 +1,5 @@
+{
+  "code": "conflict",
+  "group": "webhook",
+  "message": "Webhook config changed concurrently."
+}

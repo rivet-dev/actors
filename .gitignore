@@ -37,6 +37,7 @@ frontend/build/
 .idea/
 *.swp
 *.swo
+.envrc
 
 # OS
 .DS_Store

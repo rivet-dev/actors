@@ -11,6 +11,7 @@ pub mod db;
 pub mod guard;
 pub mod logs;
 pub mod metrics;
+pub mod outbound;
 pub mod pegboard;
 pub mod pubsub;
 pub mod pyroscope;
@@ -27,6 +28,7 @@ pub use db::Database;
 pub use guard::*;
 pub use logs::*;
 pub use metrics::*;
+pub use outbound::*;
 pub use pegboard::*;
 pub use pubsub::PubSub;
 pub use pyroscope::*;
@@ -110,6 +112,9 @@ pub struct Root {
 
 	#[serde(default)]
 	pub pyroscope: Option<Pyroscope>,
+
+	#[serde(default)]
+	pub outbound: Option<Outbound>,
 }
 
 impl Default for Root {
@@ -130,6 +135,7 @@ impl Default for Root {
 			sqlite: None,
 			metrics: Default::default(),
 			pyroscope: None,
+			outbound: None,
 		}
 	}
 }
@@ -143,6 +149,11 @@ impl Root {
 	pub fn api_peer(&self) -> &ApiPeer {
 		static DEFAULT: LazyLock<ApiPeer> = LazyLock::new(ApiPeer::default);
 		self.api_peer.as_ref().unwrap_or(&DEFAULT)
+	}
+
+	pub fn outbound(&self) -> &Outbound {
+		static DEFAULT: LazyLock<Outbound> = LazyLock::new(Outbound::default);
+		self.outbound.as_ref().unwrap_or(&DEFAULT)
 	}
 
 	pub fn pegboard(&self) -> &Pegboard {

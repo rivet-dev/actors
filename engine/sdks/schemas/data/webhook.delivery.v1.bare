@@ -1,0 +1,23 @@
+type DeliveryStatus enum {
+	PENDING
+	SUCCEEDED
+	FAILED
+}
+
+# Mirrors the enum in `webhook.config.v1.bare`. BARE schemas cannot reference types across
+# files, so each generated module gets its own copy; both convert to `types::WebhookEventType`.
+type WebhookEventType enum {
+	RUNNER_POOL_ERROR
+	RUNNER_POOL_HEALTHY
+	ACTOR_HTTP_REQUEST
+}
+
+type Data struct {
+	payload: str
+	status: DeliveryStatus
+	attemptCount: u32
+	lastError: optional<str>
+	createdAt: i64
+	eventType: WebhookEventType
+	subject: optional<str>
+}

@@ -10,5 +10,6 @@ pub mod router;
 pub mod runner_configs;
 pub mod runners;
 pub mod ui;
+pub mod webhooks;
 
 pub use router::router;

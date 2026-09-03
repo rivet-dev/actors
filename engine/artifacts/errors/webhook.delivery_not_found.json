@@ -1,0 +1,5 @@
+{
+  "code": "delivery_not_found",
+  "group": "webhook",
+  "message": "Webhook delivery not found."
+}

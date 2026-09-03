@@ -32,6 +32,7 @@ members = [
   "engine/packages/metrics",
   "engine/packages/metrics-server",
   "engine/packages/namespace",
+  "engine/packages/outbound-guard",
   "engine/packages/pegboard",
   "engine/packages/pegboard-envoy",
   "engine/packages/pegboard-gateway",
@@ -56,6 +57,7 @@ members = [
   "engine/packages/universalpubsub",
   "engine/packages/util",
   "engine/packages/util-id",
+  "engine/packages/webhook",
   "engine/packages/util-serde",
   "engine/packages/workflow-worker",
   "engine/sdks/rust/api-full",
@@ -500,6 +502,9 @@ members = [
     [workspace.dependencies.namespace]
     path = "engine/packages/namespace"
 
+    [workspace.dependencies.rivet-outbound-guard]
+    path = "engine/packages/outbound-guard"
+
     [workspace.dependencies.pegboard]
     path = "engine/packages/pegboard"
 
@@ -572,6 +577,9 @@ members = [
 
     [workspace.dependencies.rivet-util-id]
     path = "engine/packages/util-id"
+
+    [workspace.dependencies.webhook]
+    path = "engine/packages/webhook"
 
     [workspace.dependencies.rivet-util-serde]
     path = "engine/packages/util-serde"
