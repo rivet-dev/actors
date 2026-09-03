@@ -17,7 +17,7 @@ use rivetkit_core::error::public_error_status_code;
 use rivetkit_core::inspector::InspectorAuth;
 use rivetkit_core::{
 	ActorConfig, ActorConfigInput, ActorEvent, ActorFactory as CoreActorFactory, ActorStart,
-	ActorWorkKind, BindParam, ColumnValue, CoreRegistry as NativeCoreRegistry,
+	ActorHttpResponse, ActorWorkKind, BindParam, ColumnValue, CoreRegistry as NativeCoreRegistry,
 	CoreServerlessRuntime, EngineSpawnMode, EnqueueAndWaitOpts, KeepAwakeRegion, ListOpts,
 	QueueMessage, QueueNextBatchOpts, QueueSendResult, QueueSendStatus, QueueTryNextBatchOpts,
 	QueueWaitOpts, Request, RequestSaveOpts, Response, RuntimeSpawner, SerializeStateReason,
@@ -873,7 +873,7 @@ async fn dispatch_event(callbacks: &WasmCallbacks, ctx: &WasmActorContext, event
 					)?;
 					set_anyhow(&payload, "request", request_to_js(request)?)?;
 					let value = call_callback(callback, &payload.into()).await?;
-					response_from_js(value)
+					response_from_js(value).map(ActorHttpResponse::from)
 				}
 				.await;
 				if let Err(error) = &result {
