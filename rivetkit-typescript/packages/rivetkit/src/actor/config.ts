@@ -18,7 +18,6 @@ import type {
 } from "./schema";
 
 export const DEFAULT_SLEEP_GRACE_PERIOD = 15_000;
-export const DEFAULT_MAX_ACTIONS = 128;
 
 export const ACTOR_CONTEXT_INTERNAL_SYMBOL = Symbol(
 	"rivetkit.actor_context_internal",
@@ -1230,8 +1229,6 @@ const GlobalActorOptionsBaseSchema = z
 		name: z.string().optional(),
 		/** Icon for the actor in the Inspector UI. Can be an emoji or FontAwesome icon name. */
 		icon: z.string().optional(),
-		/** Maximum number of action handlers that may be defined on this actor. */
-		maxActions: z.number().int().nonnegative().default(DEFAULT_MAX_ACTIONS),
 		/** Enables the experimental Actor Runtime Socket for this actor. */
 		enableActorRuntimeSocket: z.boolean().default(false),
 		/**
@@ -1362,19 +1359,7 @@ export const ActorConfigSchema = z
 			message: "Cannot define both 'vars' and 'createVars'",
 			path: ["vars"],
 		},
-	)
-	.superRefine((data, ctx) => {
-		const actionCount = Object.keys(
-			flattenActionHandlers(data.actions),
-		).length;
-		if (actionCount > data.options.maxActions) {
-			ctx.addIssue({
-				code: "custom",
-				message: `Actor defines ${actionCount} actions, but maxActions is ${data.options.maxActions}`,
-				path: ["actions"],
-			});
-		}
-	});
+	);
 
 // Creates state config
 //
@@ -2174,14 +2159,6 @@ export const DocActorOptionsSchema = z
 			.optional()
 			.describe(
 				"Icon for the actor in the Inspector UI. Can be an emoji (e.g., '🚀') or FontAwesome icon name (e.g., 'rocket').",
-			),
-		maxActions: z
-			.number()
-			.int()
-			.nonnegative()
-			.optional()
-			.describe(
-				`Maximum number of action handlers that may be defined on this actor. Default: ${DEFAULT_MAX_ACTIONS}`,
 			),
 		enableActorRuntimeSocket: z
 			.boolean()

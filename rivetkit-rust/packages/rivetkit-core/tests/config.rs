@@ -3,10 +3,7 @@ use super::*;
 mod moved_tests {
 	use std::time::Duration;
 
-	use super::{
-		ActionDefinition, ActorConfig, ActorConfigInput, SqliteProfilingConfig,
-		SqliteProfilingConfigInput,
-	};
+	use super::{ActorConfig, ActorConfigInput, SqliteProfilingConfig, SqliteProfilingConfigInput};
 
 	#[test]
 	fn actor_config_from_input_applies_overrides() {
@@ -15,7 +12,6 @@ mod moved_tests {
 			on_migrate_timeout_ms: Some(30_000),
 			sleep_grace_period_ms: Some(12_000),
 			max_queue_size: Some(42),
-			max_actions: Some(21),
 			max_schedules: Some(84),
 			..ActorConfigInput::default()
 		});
@@ -25,7 +21,6 @@ mod moved_tests {
 		assert_eq!(config.sleep_grace_period, Duration::from_secs(12));
 		assert!(config.sleep_grace_period_overridden);
 		assert_eq!(config.max_queue_size, 42);
-		assert_eq!(config.max_actions, 21);
 		assert_eq!(config.max_schedules, 84);
 	}
 
@@ -65,7 +60,6 @@ mod moved_tests {
 			default.connection_liveness_interval,
 		);
 		assert_eq!(config.max_queue_size, default.max_queue_size);
-		assert_eq!(config.max_actions, 128);
 		assert_eq!(config.max_schedules, default.max_schedules);
 		assert_eq!(
 			config.max_queue_message_size,
@@ -97,36 +91,6 @@ mod moved_tests {
 		assert_eq!(config.sqlite_profiling.max_get_pages_requests_per_trace, 16);
 		assert_eq!(config.sqlite_profiling.slow_operation_threshold_ms, 10);
 		assert_eq!(config.sqlite_profiling.baseline_sample_rate, 0.001);
-	}
-
-	#[test]
-	fn actor_config_validates_action_count() {
-		let actions = (0..129)
-			.map(|index| ActionDefinition {
-				name: format!("action-{index}"),
-			})
-			.collect();
-		let config = ActorConfig {
-			actions,
-			..ActorConfig::default()
-		};
-
-		let error = config
-			.validate()
-			.expect_err("129 actions should exceed the default");
-		assert!(
-			error
-				.to_string()
-				.contains("actor defines 129 actions, but maxActions is 128")
-		);
-
-		let custom = ActorConfig {
-			max_actions: 129,
-			..config
-		};
-		custom
-			.validate()
-			.expect("custom action limit should be honored");
 	}
 
 	#[test]

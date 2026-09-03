@@ -186,21 +186,14 @@ describe("nested actions", () => {
 		);
 	});
 
-	test("limits the number of flattened actions", () => {
-		const actionEntries = Array.from(
-			{ length: 129 },
-			(_, index) => [`action${index}`, () => index] as const,
+	test("does not impose an action count limit", () => {
+		const actions = Object.fromEntries(
+			Array.from(
+				{ length: 256 },
+				(_, index) => [`action${index}`, () => index] as const,
+			),
 		);
-		const actions = Object.fromEntries(actionEntries);
 
-		expect(() =>
-			actor({ actions: Object.fromEntries(actionEntries.slice(0, 128)) }),
-		).not.toThrow();
-		expect(() => actor({ actions })).toThrow(
-			"Actor defines 129 actions, but maxActions is 128",
-		);
-		expect(() =>
-			actor({ actions, options: { maxActions: 129 } }),
-		).not.toThrow();
+		expect(() => actor({ actions })).not.toThrow();
 	});
 });

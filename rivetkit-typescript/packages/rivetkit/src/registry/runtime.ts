@@ -279,7 +279,6 @@ export interface RuntimeSqlTransactionDatabase {
 export interface RuntimeActorConfig {
 	name?: string;
 	icon?: string;
-	maxActions?: number;
 	hasDatabase?: boolean;
 	remoteSqlite?: boolean;
 	sqliteProfiling?: SqliteProfilingOptions;

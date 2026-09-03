@@ -109,12 +109,6 @@
           "description": "Icon for the actor in the Inspector UI. Can be an emoji (e.g., '🚀') or FontAwesome icon name (e.g., 'rocket').",
           "type": "string"
         },
-        "maxActions": {
-          "description": "Maximum number of action handlers that may be defined on this actor. Default: 128",
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
         "enableActorRuntimeSocket": {
           "description": "Enables the experimental Actor Runtime Socket for this actor. Default: false",
           "type": "boolean"

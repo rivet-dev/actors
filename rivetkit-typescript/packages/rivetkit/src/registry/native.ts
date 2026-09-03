@@ -3828,7 +3828,6 @@ function buildActorConfig(
 	return {
 		name: options.name as string | undefined,
 		icon: options.icon as string | undefined,
-		maxActions: options.maxActions as number | undefined,
 		hasDatabase: true,
 		remoteSqlite: usesRemoteSqlite,
 		sqliteProfiling,
