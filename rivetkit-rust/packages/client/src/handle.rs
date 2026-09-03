@@ -2,7 +2,7 @@ use crate::{
 	common::{EncodingKind, RawWebSocket, TransportKind, HEADER_CONN_PARAMS, HEADER_ENCODING},
 	connection::{start_connection, ActorConnection, ActorConnectionInner},
 	protocol::{codec, query::*},
-	remote_manager::RemoteManager,
+	remote_manager::{GatewayTarget, RemoteManager},
 };
 use anyhow::{anyhow, Result};
 use bytes::Bytes;
@@ -61,8 +61,11 @@ impl ResolvedActorHandle {
 		body: Option<Bytes>,
 	) -> Result<Response> {
 		let path = normalize_fetch_path(path);
+		let target = GatewayTarget::Direct {
+			actor_id: self.actor_id.clone(),
+		};
 		self.remote_manager
-			.send_request(&self.actor_id, &path, method, headers, body)
+			.send_request(&target, &path, method, headers, body)
 			.await
 	}
 }
