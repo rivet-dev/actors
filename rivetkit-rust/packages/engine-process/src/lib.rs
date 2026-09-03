@@ -368,8 +368,8 @@ fn pid_is_alive(_pid: u32) -> bool {
 /// Shared by the spawn path and by callers that exec the engine binary
 /// directly (for example the CLI `engine` proxy) so both operate on the same
 /// database, guard, api-peer, and metrics ports. These callers are local
-/// development processes, so the Engine recovery and shutdown thresholds are
-/// intentionally shorter than the production defaults.
+/// development processes, so they fully exercise Gateway 3 and use shorter
+/// Engine recovery and shutdown thresholds than the production defaults.
 pub fn engine_env(config: &EngineResolverConfig) -> Result<Vec<(String, String)>> {
 	let endpoint = &config.endpoint;
 	let endpoint_url =
@@ -433,6 +433,14 @@ pub fn engine_env(config: &EngineResolverConfig) -> Result<Vec<(String, String)>
 		(
 			"RIVET__PEGBOARD__MIN_METADATA_POLL_INTERVAL".to_owned(),
 			"1000".to_owned(),
+		),
+		(
+			"RIVET__PEGBOARD__GATEWAY3__MODE".to_owned(),
+			"on".to_owned(),
+		),
+		(
+			"RIVET__PEGBOARD__GATEWAY3__ROLLOUT_PERCENT".to_owned(),
+			"100".to_owned(),
 		),
 		(
 			"RIVET__RUNTIME__WORKER_SHUTDOWN_DURATION".to_owned(),
@@ -1038,7 +1046,7 @@ mod tests {
 	}
 
 	#[test]
-	fn engine_env_uses_development_recovery_thresholds() {
+	fn engine_env_uses_development_defaults() {
 		let env = engine_env(&test_config(String::new(), false)).expect("build engine env");
 		let env = env.into_iter().collect::<HashMap<_, _>>();
 
@@ -1050,6 +1058,11 @@ mod tests {
 		assert_eq!(env["RIVET__PEGBOARD__ENVOY_ELIGIBLE_THRESHOLD"], "5000");
 		assert_eq!(env["RIVET__PEGBOARD__ENVOY_LOST_THRESHOLD"], "7000");
 		assert_eq!(env["RIVET__PEGBOARD__MIN_METADATA_POLL_INTERVAL"], "1000");
+		assert_eq!(env["RIVET__PEGBOARD__GATEWAY3__MODE"], "on");
+		assert_eq!(
+			env["RIVET__PEGBOARD__GATEWAY3__ROLLOUT_PERCENT"],
+			"100"
+		);
 		assert_eq!(env["RIVET__RUNTIME__WORKER_SHUTDOWN_DURATION"], "1");
 		assert_eq!(env["RIVET__RUNTIME__GUARD_SHUTDOWN_DURATION"], "1");
 		assert_eq!(env["RIVET__RUNTIME__FORCE_SHUTDOWN_DURATION"], "2");
