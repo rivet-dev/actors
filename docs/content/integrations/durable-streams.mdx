@@ -3,7 +3,7 @@ title: "Durable Streams"
 description: "Run the Durable Streams protocol locally and deploy it with Rivet."
 ---
 
-[Durable Streams](https://github.com/durable-streams/durable-streams) is a protocol for append-only streams with catch-up reads, live updates, and resumable offsets. Rivet provides an implementation backed by Rivet Actors.
+[Durable Streams](https://github.com/durable-streams/durable-streams) is an open standard for real-time streams with durable, replayable history. Rivet provides an implementation backed by Rivet Actors.
 
 ## Quickstart
 
@@ -11,13 +11,27 @@ description: "Run the Durable Streams protocol locally and deploy it with Rivet.
 
 <Step title="Run locally">
 
-Start the local Rivet control plane and Services:
+<Tabs>
+
+<Tab title="Standalone">
+
+Start the local Rivet control plane and the Durable Streams worker:
 
 ```sh
 npx @rivet-dev/services dev
 ```
 
-The command prints the local URL when it is ready. Durable Streams is available at `http://127.0.0.1:8642/durable-streams/v1/stream/<path>`.
+Durable Streams is available at `http://127.0.0.1:8642/durable-streams/v1/stream/<path>`.
+
+</Tab>
+
+<Tab title="RivetKit TypeScript SDK">
+
+Already running Rivet Actors with the RivetKit TypeScript SDK? Durable Streams is already available to you on RivetKit 2.3.12. No separate server needed.
+
+</Tab>
+
+</Tabs>
 
 </Step>
 
@@ -63,7 +77,44 @@ curl 'http://127.0.0.1:8642/durable-streams/v1/stream/demo?offset=-1'
 
 <Step title="Deploy">
 
-Set up the `services` pool in [Rivet Cloud](https://dashboard.rivet.dev/), or follow the [self-hosting guide in the Durable Streams README](https://github.com/rivet-dev/rivet-durable-streams#self-hosted).
+<Tabs>
+
+<Tab title="Rivet Cloud">
+
+1. Sign up at the [Rivet dashboard](https://dashboard.rivet.dev) and create a new project.
+2. When creating the project, choose Durable Streams as the product.
+3. Point your Durable Streams client at the services URL you're given, for example `https://xxxxx.rivet.run/durable-streams/`.
+
+</Tab>
+
+<Tab title="Self-hosted">
+
+Run the Rivet control plane with the required feature flags enabled:
+
+```sh
+docker run -p 6420:6420 \
+  -e RIVET__FEATURES__GUARD_GATEWAY_V3__MODE=on \
+  -e RIVET__FEATURES__GUARD_GATEWAY_V3__PERCENTAGE=100 \
+  rivetdev/engine
+```
+
+See the [self-hosting guides](/actors/self-host/) for other ways to run it.
+
+Run the Durable Streams worker. It runs your streams and connects to the control plane:
+
+```sh
+docker run -p 8642:8642 \
+  --add-host=host.docker.internal:host-gateway \
+  -e RIVET_ENDPOINT=http://host.docker.internal:6420 \
+  -e HOST=0.0.0.0 \
+  rivetdev/services
+```
+
+Your streams are at `http://<host>:8642/durable-streams/v1/stream/<path>`.
+
+</Tab>
+
+</Tabs>
 
 </Step>
 
