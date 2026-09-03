@@ -753,11 +753,11 @@ async function loadEngineCli(): Promise<typeof import("@rivetkit/engine-cli")> {
 }
 
 async function loadServices(): Promise<
-	typeof import("@rivet-dev/managed-services")
+	typeof import("@rivet-dev/services")
 > {
 	// Keep the native binary opaque to edge bundlers for the same reason as
 	// engine-cli above.
-	return import(["@rivet-dev", "managed-services"].join("/"));
+	return import(["@rivet-dev", "services"].join("/"));
 }
 
 function decodeValue<T>(value?: RuntimeBytes | null): T {

@@ -32,7 +32,7 @@ export default defineConfig({
 		// Native packages the wasm path never executes.
 		"@rivetkit/rivetkit-napi",
 		"@rivetkit/engine-cli",
-		"@rivet-dev/managed-services",
+		"@rivet-dev/services",
 		"@rivet-dev/agent-os-core",
 		// Node CommonJS libs with dynamic require() that esbuild cannot bundle
 		// into ESM for Deno; Deno's node compat loads them at runtime. Declared

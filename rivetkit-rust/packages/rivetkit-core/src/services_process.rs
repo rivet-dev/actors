@@ -57,7 +57,7 @@ enum ServicesProcessError {
 	#[error(
 		"binary_unavailable",
 		"Managed services binary is unavailable.",
-		"No managed services binary was provided. Install @rivet-dev/managed-services, set RIVET_SERVICES_BINARY, or set RIVET_RUN_SERVICES=0 to disable managed services."
+		"No managed services binary was provided. Install @rivet-dev/services, set RIVET_SERVICES_BINARY, or set RIVET_RUN_SERVICES=0 to disable managed services."
 	)]
 	BinaryUnavailable,
 
@@ -78,7 +78,7 @@ enum ServicesProcessError {
 	#[error(
 		"protocol_mismatch",
 		"Managed services is newer than the local Engine protocol.",
-		"Managed services uses envoy protocol {services_protocol_version}, but this RivetKit Engine supports {engine_protocol_version}. Upgrade RivetKit or install an older @rivet-dev/managed-services version."
+		"Managed services uses envoy protocol {services_protocol_version}, but this RivetKit Engine supports {engine_protocol_version}. Upgrade RivetKit or install an older @rivet-dev/services version."
 	)]
 	ProtocolMismatch {
 		services_protocol_version: u16,
@@ -88,7 +88,7 @@ enum ServicesProcessError {
 	#[error(
 		"version_mismatch",
 		"Managed services was built against a newer RivetKit version.",
-		"Managed services was built against RivetKit {services_rivetkit_version}, but the host is RivetKit {rivetkit_version}. Upgrade RivetKit or install an older @rivet-dev/managed-services version."
+		"Managed services was built against RivetKit {services_rivetkit_version}, but the host is RivetKit {rivetkit_version}. Upgrade RivetKit or install an older @rivet-dev/services version."
 	)]
 	VersionMismatch {
 		services_rivetkit_version: String,

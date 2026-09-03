@@ -7,7 +7,7 @@ vi.mock("@rivetkit/engine-cli", () => ({
 	getEnginePath: () => "/tmp/rivet-engine",
 }));
 
-vi.mock("@rivet-dev/managed-services", () => ({
+vi.mock("@rivet-dev/services", () => ({
 	getServicesPath: () => "/tmp/rivet-services",
 }));
 
