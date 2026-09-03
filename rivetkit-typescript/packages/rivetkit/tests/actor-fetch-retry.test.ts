@@ -33,24 +33,16 @@ function dynamicHandle(driver: EngineControlClient) {
 }
 
 describe("ActorHandleRaw.fetch", () => {
-	test("replays a Request body after a lifecycle retry", async () => {
+	test("does not replay a Request body after delivery starts", async () => {
 		const bodies: string[] = [];
-		let attempts = 0;
 		const driver = {
-			async getOrCreateWithKey() {
-				return { actorId: "actor-id", name: "example", key: ["key"] };
-			},
 			async sendRequest(_target: GatewayTarget, request: Request) {
 				bodies.push(await request.text());
-				attempts++;
-				if (attempts === 1) {
-					throw new ActorError(
-						"actor",
-						"starting",
-						"actor is starting",
-					);
-				}
-				return Response.json({ ok: true });
+				throw new ActorError(
+					"actor",
+					"starting",
+					"actor is starting",
+				);
 			},
 		} as EngineControlClient;
 		const handle = new ActorHandleRaw(
@@ -66,14 +58,60 @@ describe("ActorHandleRaw.fetch", () => {
 			body: "persistent request body",
 		});
 
-		const response = await handle.fetch(request);
+		await expect(handle.fetch(request)).rejects.toMatchObject({
+			group: "actor",
+			code: "starting",
+		});
+
+		expect(bodies).toEqual(["persistent request body"]);
+		expect(request.bodyUsed).toBe(true);
+	});
+
+	test("does not retry a body provided through init", async () => {
+		let attempts = 0;
+		const driver = {
+			async sendRequest(_target: GatewayTarget, request: Request) {
+				attempts++;
+				expect(await request.text()).toBe("body from init");
+				throw new ActorError(
+					"actor",
+					"starting",
+					"actor is starting",
+				);
+			},
+		} as EngineControlClient;
+		const handle = dynamicHandle(driver);
+
+		await expect(
+			handle.fetch("http://example.test/submit", {
+				method: "POST",
+				body: "body from init",
+			}),
+		).rejects.toMatchObject({ group: "actor", code: "starting" });
+		expect(attempts).toBe(1);
+	});
+
+	test("retains lifecycle retries for bodyless requests", async () => {
+		let attempts = 0;
+		const driver = {
+			async sendRequest() {
+				attempts++;
+				if (attempts === 1) {
+					throw new ActorError(
+						"actor",
+						"starting",
+						"actor is starting",
+					);
+				}
+				return Response.json({ ok: true });
+			},
+		} as EngineControlClient;
+		const handle = dynamicHandle(driver);
+
+		const response = await handle.fetch("http://example.test/status");
 
 		expect(response.ok).toBe(true);
-		expect(bodies).toEqual([
-			"persistent request body",
-			"persistent request body",
-		]);
-		expect(request.bodyUsed).toBe(false);
+		expect(attempts).toBe(2);
 	});
 
 	test.each(

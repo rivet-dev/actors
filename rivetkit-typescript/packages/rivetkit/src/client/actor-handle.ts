@@ -652,10 +652,13 @@ export class ActorHandleRaw {
 		input: string | URL | Request,
 		init?: ActorFetchInit,
 	) {
-		const maxAttempts = this.#getDynamicQueryMaxAttempts();
-		let useQueryTarget = isDynamicActorQuery(this.#actorResolutionState);
-		const retryableRequest = isRequestLike(input) ? input.clone() : undefined;
 		const { skipReadyWait, ...requestInit } = init ?? {};
+		const hasBody =
+			requestInit.body !== undefined
+				? requestInit.body !== null
+				: isRequestLike(input) && input.body !== null;
+		const maxAttempts = hasBody ? 1 : this.#getDynamicQueryMaxAttempts();
+		let useQueryTarget = isDynamicActorQuery(this.#actorResolutionState);
 		const gatewayOptions = resolveActorGatewayOptions(
 			this.#gatewayOptions,
 			{
@@ -675,7 +678,7 @@ export class ActorHandleRaw {
 					this.#driver,
 					target,
 					this.#params,
-					retryableRequest ? retryableRequest.clone() : input,
+					input,
 					requestInit,
 					gatewayOptions,
 				);
