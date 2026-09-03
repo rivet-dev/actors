@@ -5,7 +5,6 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use reqwest::{Client, Url};
 use rivet_error::RivetError;
-use semver::Version;
 use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
 
@@ -29,7 +28,6 @@ pub(crate) struct ServicesProcessConfig {
 	pub namespace: String,
 	pub pool_name: String,
 	pub engine_protocol_version: u16,
-	pub rivetkit_version: String,
 }
 
 #[derive(Debug)]
@@ -83,16 +81,6 @@ enum ServicesProcessError {
 	ProtocolMismatch {
 		services_protocol_version: u16,
 		engine_protocol_version: u16,
-	},
-
-	#[error(
-		"version_mismatch",
-		"Services was built against a newer RivetKit version.",
-		"Services was built against RivetKit {services_rivetkit_version}, but the host is RivetKit {rivetkit_version}. Upgrade RivetKit or install an older @rivet-dev/services version."
-	)]
-	VersionMismatch {
-		services_rivetkit_version: String,
-		rivetkit_version: String,
 	},
 
 	#[error(
@@ -213,10 +201,17 @@ async fn validate_binary_compatibility(
 			output.name
 		)));
 	}
-	Version::parse(&output.version)
-		.map_err(|error| metadata_error(format!("invalid services version: {error}")))?;
-	validate_protocol_version(output.protocol_version, config.engine_protocol_version)?;
-	validate_rivetkit_version(&output.rivetkit_version, &config.rivetkit_version)
+	tracing::debug!(
+		services_version = %output.version,
+		services_rivetkit_version = %output.rivetkit_version,
+		services_protocol_version = output.protocol_version,
+		engine_protocol_version = config.engine_protocol_version,
+		"validated Services binary metadata"
+	);
+	// This protocol comparison is the compatibility safeguard. Services package
+	// semver is diagnostic only and must be bumped whenever its Envoy protocol
+	// version changes so package resolution can select a compatible binary.
+	validate_protocol_version(output.protocol_version, config.engine_protocol_version)
 }
 
 fn validate_protocol_version(services_version: u16, engine_version: u16) -> Result<()> {
@@ -255,21 +250,6 @@ async fn run_metadata_command(binary_path: &Path, argument: &str) -> Result<Stri
 	String::from_utf8(output.stdout)
 		.map(|output| output.trim().to_owned())
 		.map_err(|error| metadata_error(format!("{argument} returned invalid UTF-8: {error}")))
-}
-
-fn validate_rivetkit_version(services_version: &str, host_version: &str) -> Result<()> {
-	let services = Version::parse(services_version.trim_start_matches('v'))
-		.map_err(|error| metadata_error(format!("invalid RivetKit version: {error}")))?;
-	let host = Version::parse(host_version.trim_start_matches('v'))
-		.map_err(|error| metadata_error(format!("invalid host RivetKit version: {error}")))?;
-	if services > host {
-		return Err(ServicesProcessError::VersionMismatch {
-			services_rivetkit_version: services.to_string(),
-			rivetkit_version: host.to_string(),
-		}
-		.build());
-	}
-	Ok(())
 }
 
 fn metadata_error(reason: impl Into<String>) -> anyhow::Error {
@@ -357,7 +337,6 @@ mod tests {
 			namespace: "default".to_owned(),
 			pool_name: SERVICES_POOL_NAME.to_owned(),
 			engine_protocol_version: 7,
-			rivetkit_version: "2.3.11".to_owned(),
 		}
 	}
 
@@ -385,15 +364,6 @@ mod tests {
 	}
 
 	#[test]
-	fn rejects_a_newer_rivetkit_build() {
-		let error = validate_rivetkit_version("2.4.0", "2.3.11")
-			.expect_err("newer Services build should fail");
-		let error = rivet_error::RivetError::extract(&error);
-		assert_eq!(error.group(), "services");
-		assert_eq!(error.code(), "version_mismatch");
-	}
-
-	#[test]
 	fn rejects_a_newer_protocol() {
 		let error =
 			validate_protocol_version(8, 7).expect_err("newer Services protocol should fail");
@@ -403,8 +373,8 @@ mod tests {
 	}
 
 	#[test]
-	fn accepts_an_older_rivetkit_build() {
-		validate_rivetkit_version("v2.3.10", "2.3.11")
-			.expect("older Services build should be compatible");
+	fn accepts_an_equal_or_older_protocol() {
+		validate_protocol_version(7, 7).expect("equal protocol should be compatible");
+		validate_protocol_version(6, 7).expect("older protocol should be compatible");
 	}
 }

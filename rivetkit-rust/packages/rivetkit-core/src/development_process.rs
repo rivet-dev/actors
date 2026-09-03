@@ -38,7 +38,6 @@ impl DevelopmentProcessManager {
 					namespace: config.namespace.clone(),
 					pool_name: SERVICES_POOL_NAME.to_owned(),
 					engine_protocol_version: rivet_envoy_client::protocol::PROTOCOL_VERSION,
-					rivetkit_version: env!("CARGO_PKG_VERSION").to_owned(),
 				})
 				.await?,
 			)
