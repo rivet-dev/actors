@@ -26,6 +26,20 @@ The `onRequest` handler processes HTTP requests sent to your actor. It receives 
 
 See also the [raw fetch handler example](https://github.com/rivet-dev/rivet/tree/main/examples/raw-fetch-handler).
 
+## Streaming Responses & Server-Sent Events
+
+Return a `Response` with a `ReadableStream` body to stream data as it becomes available. For server-sent events (SSE), set `Content-Type` to `text/event-stream` and format each event as one or more fields followed by a blank line.
+
+<CodeSnippet file="examples/docs/actors-request-handler/sse.ts" />
+
+Rivet keeps the actor and request lifecycle active until the response stream closes, errors, or the client disconnects. The request's `AbortSignal` is aborted when the downstream client disconnects, so stop producers and release request-scoped resources when `request.signal` fires. Also implement the stream's `cancel()` callback for cleanup.
+
+Streaming responses have no fixed total duration and no response-chunk idle timeout by default. Send periodic SSE comment heartbeats, such as `: keepalive\n\n`, because browsers, proxies, hosting platforms, and mobile networks may impose their own idle timeouts. Clients should reconnect and use SSE event IDs when they need resumable delivery.
+
+SSE requests should include `Accept: text/event-stream`. The browser's `EventSource` API sends this automatically; when consuming SSE with `fetch`, set it explicitly.
+
+Rivet Cloud manages streaming request routing automatically. On self-hosted deployments, set `pegboard.gateway3.mode` to `opportunistic` or `on` and set `pegboard.gateway3.rollout_percent` to `100` to guarantee coverage for workers that support protocol v7. Lower percentages deterministically sample actors, older workers stay on the buffered request path, and the default mode is `off`.
+
 ## Sending Requests To Actors
 
 ### Via RivetKit Client
@@ -87,7 +101,6 @@ The `onRequest` handler is WinterTC compliant and will work with existing librar
 
 ## Limitations
 
-- Does not support streaming responses & server-sent events at the moment. See the [tracking issue](https://github.com/rivet-dev/rivet/issues/3529).
 - `OPTIONS` requests currently are handled by Rivet and are not passed to `onRequest`
 
 ## Advanced

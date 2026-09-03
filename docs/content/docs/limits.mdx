@@ -53,8 +53,9 @@ These limits affect actions that do not use `.connect()` and [low-level HTTP req
 | Name | Soft Limit | Hard Limit | Description |
 |------|------------|------------|-------------|
 | Max request body size | — | 20 MiB | Maximum size of HTTP request bodies. |
-| Max response body size | — | 20 MiB | Maximum size of HTTP response bodies. |
-| Request timeout | 60 seconds | — | Maximum time for an `onRequest` handler to complete. Defaults to `actionTimeout`; configure with `actionTimeout`. |
+| Max buffered response body size | — | 20 MiB | Maximum size of a non-streaming HTTP response. Streaming responses may transfer more than 20 MiB over their lifetime and are flow controlled instead of buffered in full. |
+| Response start timeout | — | 5 minutes by default | Maximum time for `onRequest` to return response headers. It does not limit the lifetime of a response stream after the headers arrive. Self-hosted operators can configure `pegboard.gateway_response_start_timeout_ms`. |
+| Streaming response idle timeout | — | None by default | Rivet does not close an otherwise healthy stream because no body chunk was produced. Other proxies and hosting platforms may impose their own idle timeouts, so SSE handlers should send periodic comment heartbeats. |
 
 ### Networking
 
@@ -139,7 +140,8 @@ See [Actor Input](/actors/docs/input) for details.
 | Name | Soft Limit | Hard Limit | Description |
 |------|------------|------------|-------------|
 | Action timeout | 60 seconds | — | Timeout for RPC actions. Configurable via `actionTimeout`. |
-| On request timeout | 60 seconds | — | Timeout for raw `onRequest` handlers. Defaults to `actionTimeout`; configure with `actionTimeout`. |
+| Raw HTTP response start timeout | — | 5 minutes by default | Time allowed for a raw `onRequest` handler to return response headers. `actionTimeout` does not apply to raw HTTP handlers, and a streaming response has no fixed total-duration timeout after it starts. Self-hosted operators can configure `pegboard.gateway_response_start_timeout_ms`. |
+| Raw HTTP stream idle timeout | — | None by default | Time allowed between response chunks. Self-hosted operators can configure `pegboard.gateway_response_chunk_idle_timeout_ms`; send SSE heartbeats more frequently than that value when enabled. |
 | On before connect timeout | 5 seconds | — | Timeout for the `onBeforeConnect` hook. Configurable via `onBeforeConnectTimeout`. |
 | Create vars timeout | 5 seconds | — | Timeout for `createVars` hook. Configurable via `createVarsTimeout`. |
 | Create conn state timeout | 5 seconds | — | Timeout for `createConnState` hook. Configurable via `createConnStateTimeout`. |

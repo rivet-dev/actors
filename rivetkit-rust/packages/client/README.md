@@ -32,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
     // Create a client connected to your RivetKit endpoint
     let client = Client::new(
         ClientConfig::new("http://localhost:8080")
-            .transport(TransportKind::Sse)
+            .transport(TransportKind::Ws)
             .encoding(EncodingKind::Json),
     );
 
@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
         ["keys-here"].into(),
         GetOrCreateOptions::default()
     )?.connect();
-    
+
     // Listen for new messages
     chat_room.on_event("newMessage", |args| {
         let username = args[0].as_str().unwrap();
@@ -65,10 +65,11 @@ async fn main() -> anyhow::Result<()> {
 
 ### Supported Transport Methods
 
-The Rust client supports multiple transport methods:
+The Rust client supports WebSocket transport for actor connections:
 
-- `TransportKind::Sse`: Server-Sent Events
 - `TransportKind::Ws`: WebSockets
+
+`TransportKind::Sse` is reserved but is not currently implemented. This limitation only applies to the Rust client's actor-connection transport. Actors can still return raw server-sent event streams from an `onRequest` handler.
 
 ### Supported Encodings
 
