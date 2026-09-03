@@ -199,6 +199,7 @@ export function agentOs<TConnParams = undefined>(
 		options: {
 			sleepGracePeriod: 900_000,
 			actionTimeout: 900_000,
+			...parsedConfig.actorOptions,
 		},
 		createState: async () => ({}),
 		createVars: () => ({
