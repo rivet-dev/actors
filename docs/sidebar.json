@@ -424,6 +424,10 @@
 			"title": "Integrations",
 			"pages": [
 				{
+					"title": "Durable Streams",
+					"href": "/actors/integrations/durable-streams"
+				},
+				{
 					"title": "Flue",
 					"href": "/actors/integrations/flue"
 				},

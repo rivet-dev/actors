@@ -1,0 +1,70 @@
+---
+title: "Durable Streams"
+description: "Run the Durable Streams protocol locally and deploy it with Rivet."
+---
+
+[Durable Streams](https://github.com/durable-streams/durable-streams) is a protocol for append-only streams with catch-up reads, live updates, and resumable offsets. Rivet provides a managed implementation backed by Rivet Actors.
+
+## Quickstart
+
+<Steps>
+
+<Step title="Run locally">
+
+Start the local Rivet control plane and Services:
+
+```sh
+npx @rivet-dev/services dev
+```
+
+The command prints the local URL when it is ready. Durable Streams is available at `http://127.0.0.1:8787/durable-streams/v1/stream/<path>`.
+
+</Step>
+
+<Step title="Connect to a stream">
+
+<Tabs>
+
+<Tab title="TypeScript client">
+
+Install the official client:
+
+```sh
+npm install @durable-streams/client
+```
+
+<CodeSnippet file="examples/docs/actors-integrations-durable-streams/client.ts" title="client.ts" />
+
+</Tab>
+
+<Tab title="HTTP">
+
+Create a stream, append a record, and read its contents:
+
+```sh
+curl -i -X PUT \
+  -H 'content-type: application/json' \
+  --data '[{"message":"hello"}]' \
+  http://127.0.0.1:8787/durable-streams/v1/stream/demo
+
+curl -i -X POST \
+  -H 'content-type: application/json' \
+  --data '{"message":"world"}' \
+  http://127.0.0.1:8787/durable-streams/v1/stream/demo
+
+curl 'http://127.0.0.1:8787/durable-streams/v1/stream/demo?offset=-1'
+```
+
+</Tab>
+
+</Tabs>
+
+</Step>
+
+<Step title="Deploy">
+
+Set up the `services` pool in [Rivet Cloud](https://dashboard.rivet.dev/), or follow the [self-hosting guide in the Durable Streams README](https://github.com/rivet-dev/rivet-durable-streams#self-hosted).
+
+</Step>
+
+</Steps>
