@@ -313,8 +313,11 @@ async fn stop_command_is_acked_immediately() {
 
 	// The stop must be acked right away rather than waiting for the periodic
 	// tick, otherwise the actor entry is gone before the next ack.
-	let checkpoints =
-		decode_ack_checkpoints(ws_rx.try_recv().expect("stop should trigger an immediate ack"));
+	let checkpoints = decode_ack_checkpoints(
+		ws_rx
+			.try_recv()
+			.expect("stop should trigger an immediate ack"),
+	);
 	assert_eq!(checkpoints.len(), 1);
 	assert_eq!(checkpoints[0].actor_id, "actor-a");
 	assert_eq!(checkpoints[0].generation, 1);

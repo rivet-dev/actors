@@ -836,6 +836,9 @@ importers:
       '@ai-sdk/openai':
         specifier: ^3.0.30
         version: 3.0.30(zod@4.3.6)
+      '@durable-streams/client':
+        specifier: ^0.2.6
+        version: 0.2.6
       '@effect/platform-node':
         specifier: 4.0.0-beta.66
         version: 4.0.0-beta.66(effect@4.0.0-beta.66)(ioredis@5.10.1)
@@ -3450,9 +3453,6 @@ importers:
       '@rivet-dev/agent-os-core':
         specifier: ^0.1.1
         version: 0.1.1(pyodide@0.28.3)
-      '@rivet-dev/managed-services':
-        specifier: ^0.1.1
-        version: 0.1.1
       '@rivetkit/bare-ts':
         specifier: ^0.6.2
         version: 0.6.2
@@ -3562,7 +3562,6 @@ importers:
       ws:
         specifier: ^8.18.1
         version: 8.19.0
-
   rivetkit-typescript/packages/rivetkit-napi:
     dependencies:
       '@napi-rs/cli':
@@ -8206,40 +8205,6 @@ packages:
   '@rivet-dev/labs-flue-runtime@1.0.0-beta.9-rivet.1':
     resolution: {integrity: sha512-MCwRS12jbgzIEjVYwHXpHjDrkBU6tjSVCIsepZY8SyBM+1VeZpKAfzLi9zOdMqowHftkOP1bx2Bn8RBr/tSeLQ==}
     engines: {node: '>=22.19.0'}
-
-  '@rivet-dev/managed-services-darwin-arm64@0.1.1':
-    resolution: {integrity: sha512-F7fD+Q2DFTvJIT8rgCXtXNJ4C1VRl+LDwCa9c1jYiwHJw2vwqZKlBgZYBfX7BzTLM56rbIBzi/x0UTC60sNpTA==}
-    engines: {node: '>=20'}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@rivet-dev/managed-services-darwin-x64@0.1.1':
-    resolution: {integrity: sha512-icgetXd33iLjLQDgR2HxnnMR2pGlJfQGukjXTK52H1NZjMNKY7lC1Mbjx+LHUL6e0RfSWwuTscw0c+i0fbXo0g==}
-    engines: {node: '>=20'}
-    cpu: [x64]
-    os: [darwin]
-
-  '@rivet-dev/managed-services-linux-arm64-musl@0.1.1':
-    resolution: {integrity: sha512-p+SX43Ht1YvRVyxoudo+5JyaOqoHeIWxZmLPPh/bgTIYybsu1Hn81Sgst9Ege0Isoi6sFvXf6eXsgiXFCDGIhQ==}
-    engines: {node: '>=20'}
-    cpu: [arm64]
-    os: [linux]
-
-  '@rivet-dev/managed-services-linux-x64-musl@0.1.1':
-    resolution: {integrity: sha512-WlINWf62yrCw3BqCpnylKfaP6UjgZg4pTme2Yev1JpP/x6KaxUqrmuZxfeG+dTt/Th7kpdnhsf/qDKHacSyvCg==}
-    engines: {node: '>=20'}
-    cpu: [x64]
-    os: [linux]
-
-  '@rivet-dev/managed-services-win32-x64@0.1.1':
-    resolution: {integrity: sha512-SsTqAj4vxYB/Fw1R8+k2hrlijRl8b3xDGiU1tk4sxYX8xrkVXdJFU2gs+USika0MBgO8mgDrqR/FxMNL1lrm/A==}
-    engines: {node: '>=20'}
-    cpu: [x64]
-    os: [win32]
-
-  '@rivet-dev/managed-services@0.1.1':
-    resolution: {integrity: sha512-8LOaC0O2SIyChVogYhX0FkQgnz65JLjb4zr1H/ZbLyqsAkyFbeZ2DJ7XAE0yIdiE5ca6aiSazcKYKTQ8DWYuuw==}
-    engines: {node: '>=20'}
 
   '@rivet-gg/cloud@https://pkg.pr.new/rivet-dev/engine-ee/@rivet-gg/cloud@87a84c0':
     resolution: {tarball: https://pkg.pr.new/rivet-dev/engine-ee/@rivet-gg/cloud@87a84c0}
@@ -24285,29 +24250,6 @@ snapshots:
       - zod
       - zod-openapi
       - zod-to-json-schema
-
-  '@rivet-dev/managed-services-darwin-arm64@0.1.1':
-    optional: true
-
-  '@rivet-dev/managed-services-darwin-x64@0.1.1':
-    optional: true
-
-  '@rivet-dev/managed-services-linux-arm64-musl@0.1.1':
-    optional: true
-
-  '@rivet-dev/managed-services-linux-x64-musl@0.1.1':
-    optional: true
-
-  '@rivet-dev/managed-services-win32-x64@0.1.1':
-    optional: true
-
-  '@rivet-dev/managed-services@0.1.1':
-    optionalDependencies:
-      '@rivet-dev/managed-services-darwin-arm64': 0.1.1
-      '@rivet-dev/managed-services-darwin-x64': 0.1.1
-      '@rivet-dev/managed-services-linux-arm64-musl': 0.1.1
-      '@rivet-dev/managed-services-linux-x64-musl': 0.1.1
-      '@rivet-dev/managed-services-win32-x64': 0.1.1
 
   '@rivet-gg/cloud@https://pkg.pr.new/rivet-dev/engine-ee/@rivet-gg/cloud@87a84c0':
     dependencies:

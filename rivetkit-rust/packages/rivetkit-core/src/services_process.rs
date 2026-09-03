@@ -56,29 +56,29 @@ struct ServicesVersionOutput {
 enum ServicesProcessError {
 	#[error(
 		"binary_unavailable",
-		"Managed services binary is unavailable.",
-		"No managed services binary was provided. Install @rivet-dev/services, set RIVET_SERVICES_BINARY, or set RIVET_RUN_SERVICES=0 to disable managed services."
+		"Services binary is unavailable.",
+		"No Services binary was provided. Install @rivet-dev/services, set RIVET_SERVICES_BINARY, or set RIVET_RUN_SERVICES=0 to disable Services."
 	)]
 	BinaryUnavailable,
 
 	#[error(
 		"binary_not_found",
-		"Managed services binary was not found.",
-		"Managed services binary was not found at '{path}'."
+		"Services binary was not found.",
+		"Services binary was not found at '{path}'."
 	)]
 	BinaryNotFound { path: String },
 
 	#[error(
 		"metadata_failed",
-		"Managed services compatibility could not be verified.",
-		"Managed services compatibility could not be verified: {reason}"
+		"Services compatibility could not be verified.",
+		"Services compatibility could not be verified: {reason}"
 	)]
 	MetadataFailed { reason: String },
 
 	#[error(
 		"protocol_mismatch",
-		"Managed services is newer than the local Engine protocol.",
-		"Managed services uses envoy protocol {services_protocol_version}, but this RivetKit Engine supports {engine_protocol_version}. Upgrade RivetKit or install an older @rivet-dev/services version."
+		"Services is newer than the local Engine protocol.",
+		"Services uses Envoy protocol {services_protocol_version}, but this RivetKit Engine supports {engine_protocol_version}. Upgrade RivetKit or install an older @rivet-dev/services version."
 	)]
 	ProtocolMismatch {
 		services_protocol_version: u16,
@@ -87,8 +87,8 @@ enum ServicesProcessError {
 
 	#[error(
 		"version_mismatch",
-		"Managed services was built against a newer RivetKit version.",
-		"Managed services was built against RivetKit {services_rivetkit_version}, but the host is RivetKit {rivetkit_version}. Upgrade RivetKit or install an older @rivet-dev/services version."
+		"Services was built against a newer RivetKit version.",
+		"Services was built against RivetKit {services_rivetkit_version}, but the host is RivetKit {rivetkit_version}. Upgrade RivetKit or install an older @rivet-dev/services version."
 	)]
 	VersionMismatch {
 		services_rivetkit_version: String,
@@ -97,15 +97,15 @@ enum ServicesProcessError {
 
 	#[error(
 		"start_failed",
-		"Managed services failed to start.",
-		"Managed services failed to start: {reason}"
+		"Services failed to start.",
+		"Services failed to start: {reason}"
 	)]
 	StartFailed { reason: String },
 
 	#[error(
 		"readiness_failed",
-		"Managed services did not become ready.",
-		"Managed services did not register in pool '{pool_name}': {reason}"
+		"Services did not become ready.",
+		"Services did not register in pool '{pool_name}': {reason}"
 	)]
 	ReadinessFailed { pool_name: String, reason: String },
 }
@@ -133,7 +133,7 @@ impl ServicesProcessManager {
 			.env("RIVET_POOL_NAME", &config.pool_name)
 			.env("RIVETKIT_ENGINE_SPAWN", "never")
 			// Prevent the child RivetKit registry from recursively starting another
-			// managed-services process.
+			// Services process.
 			.env("RIVET_RUN_SERVICES", "0")
 			.stdin(Stdio::null())
 			.stdout(Stdio::inherit())
@@ -165,7 +165,7 @@ impl ServicesProcessManager {
 			endpoint = %config.endpoint,
 			namespace = %config.namespace,
 			pool_name = %config.pool_name,
-			"managed services process is ready"
+			"Services process is ready"
 		);
 		Ok(Self { child })
 	}
@@ -193,10 +193,7 @@ impl ServicesProcessManager {
 			.await
 			.is_err()
 		{
-			tracing::warn!(
-				pid = self.child.id(),
-				"managed services did not stop; killing it"
-			);
+			tracing::warn!(pid = self.child.id(), "Services did not stop; killing it");
 			let _ = self.child.start_kill();
 			let _ = self.child.wait().await;
 		}
@@ -290,7 +287,7 @@ async fn wait_for_readiness(
 ) -> Result<()> {
 	let client = Client::builder()
 		.build()
-		.context("build managed services readiness client")?;
+		.context("build Services readiness client")?;
 	let mut url = Url::parse(&config.endpoint)
 		.with_context(|| format!("parse Engine endpoint `{}`", config.endpoint))?;
 	url.set_path("/envoys");
@@ -300,7 +297,7 @@ async fn wait_for_readiness(
 		.append_pair("name", &config.pool_name);
 
 	let max_attempts = max_attempts.max(1);
-	let mut last_reason = "the Engine has not listed the managed services envoy".to_owned();
+	let mut last_reason = "the Engine has not listed the Services Envoy".to_owned();
 	for attempt in 1..=max_attempts {
 		if let Some(status) = child.try_wait().map_err(|error| {
 			ServicesProcessError::StartFailed {
@@ -390,7 +387,7 @@ mod tests {
 	#[test]
 	fn rejects_a_newer_rivetkit_build() {
 		let error = validate_rivetkit_version("2.4.0", "2.3.11")
-			.expect_err("newer managed services build should fail");
+			.expect_err("newer Services build should fail");
 		let error = rivet_error::RivetError::extract(&error);
 		assert_eq!(error.group(), "services");
 		assert_eq!(error.code(), "version_mismatch");
@@ -398,8 +395,8 @@ mod tests {
 
 	#[test]
 	fn rejects_a_newer_protocol() {
-		let error = validate_protocol_version(8, 7)
-			.expect_err("newer managed services protocol should fail");
+		let error =
+			validate_protocol_version(8, 7).expect_err("newer Services protocol should fail");
 		let error = rivet_error::RivetError::extract(&error);
 		assert_eq!(error.group(), "services");
 		assert_eq!(error.code(), "protocol_mismatch");
@@ -408,6 +405,6 @@ mod tests {
 	#[test]
 	fn accepts_an_older_rivetkit_build() {
 		validate_rivetkit_version("v2.3.10", "2.3.11")
-			.expect("older managed services build should be compatible");
+			.expect("older Services build should be compatible");
 	}
 }

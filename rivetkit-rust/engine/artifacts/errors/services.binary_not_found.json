@@ -1,5 +1,5 @@
 {
   "code": "binary_not_found",
   "group": "services",
-  "message": "Managed services binary was not found."
+  "message": "Services binary was not found."
 }

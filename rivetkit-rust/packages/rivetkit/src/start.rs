@@ -1264,6 +1264,7 @@ mod tests {
 		));
 
 		request_sleep(&tx).await;
+		drop(tx);
 		actor.await.expect("join run_actor").expect("run actor");
 	}
 
@@ -1314,6 +1315,7 @@ mod tests {
 		.expect("admission release guards should run after reply handoff");
 
 		request_sleep(&tx).await;
+		drop(tx);
 		actor.await.expect("join run_actor").expect("run actor");
 	}
 

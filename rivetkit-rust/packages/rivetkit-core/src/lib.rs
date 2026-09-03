@@ -11,8 +11,6 @@ pub mod engine_process;
 pub mod error;
 pub mod inspector;
 pub mod inspector_bundle;
-#[cfg(feature = "native-runtime")]
-mod services_process;
 pub mod metrics_endpoint;
 pub mod registry;
 pub mod runtime;
@@ -20,6 +18,8 @@ pub(crate) mod serde_metrics;
 pub mod serverless;
 #[cfg(feature = "native-runtime")]
 pub mod serverless_http;
+#[cfg(feature = "native-runtime")]
+mod services_process;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 pub(crate) mod time {

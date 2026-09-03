@@ -752,9 +752,7 @@ async function loadEngineCli(): Promise<typeof import("@rivetkit/engine-cli")> {
 	return import(["@rivetkit", "engine-cli"].join("/"));
 }
 
-async function loadServices(): Promise<
-	typeof import("@rivet-dev/services")
-> {
+async function loadServices(): Promise<typeof import("@rivet-dev/services")> {
 	// Keep the native binary opaque to edge bundlers for the same reason as
 	// engine-cli above.
 	return import(["@rivet-dev", "services"].join("/"));
@@ -5485,7 +5483,7 @@ export async function buildServeConfig(
 			serveConfig.servicesBinaryPath = getServicesPath();
 		} catch (error) {
 			logger().warn({
-				msg: "could not resolve the managed services binary; a local engine will fail with services.binary_unavailable — set RIVET_RUN_SERVICES=0 to disable managed services or RIVET_SERVICES_BINARY to a local rivet-services binary",
+				msg: "could not resolve the Services binary; a local engine will fail with services.binary_unavailable — set RIVET_RUN_SERVICES=0 to disable Services or RIVET_SERVICES_BINARY to a local rivet-services binary",
 				error: stringifyError(error),
 			});
 		}

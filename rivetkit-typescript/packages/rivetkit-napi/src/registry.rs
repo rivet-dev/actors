@@ -8,13 +8,13 @@ use napi::{JsFunction, JsObject};
 use napi_derive::napi;
 use parking_lot::Mutex as ParkingMutex;
 use rivetkit_core::{
-	CoreRegistry as NativeCoreRegistry, CoreServerlessRuntime, EngineSpawnMode, ServeConfig,
-	ServerlessRequest, HTTP_BODY_STREAM_CHANNEL_CAPACITY,
+	CoreRegistry as NativeCoreRegistry, CoreServerlessRuntime, EngineSpawnMode,
+	HTTP_BODY_STREAM_CHANNEL_CAPACITY, ServeConfig, ServerlessRequest,
 	registry::CoreEnvoyHandle,
 	serverless::ServerlessStreamError,
 	serverless_http::{
-		self, ApplicationFetch, ApplicationRequest, ApplicationResponse,
-		ApplicationResponseBody, ListenerConfig,
+		self, ApplicationFetch, ApplicationRequest, ApplicationResponse, ApplicationResponseBody,
+		ListenerConfig,
 	},
 };
 use tokio::sync::{Mutex as TokioMutex, Notify, mpsc};
@@ -733,12 +733,10 @@ fn application_fetch_from_tsfn(callback: ApplicationFetchTsfn) -> ApplicationFet
 		Box::pin(async move {
 			let (body_tx, body_rx) = mpsc::channel(HTTP_BODY_STREAM_CHANNEL_CAPACITY);
 			let promise = callback
-				.call_async::<Promise<JsApplicationResponse>>(Ok(
-					ApplicationFetchPayload {
-						request,
-						response_stream: HttpResponseBodyStream::new(body_tx),
-					},
-				))
+				.call_async::<Promise<JsApplicationResponse>>(Ok(ApplicationFetchPayload {
+					request,
+					response_stream: HttpResponseBodyStream::new(body_tx),
+				}))
 				.await
 				.map_err(|error| anyhow::anyhow!("application fetch callback failed: {error}"))?;
 			let response = promise

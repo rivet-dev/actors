@@ -1,5 +1,3 @@
-use universaldb::prelude::*;
-
 use crate::{
 	compaction::{
 		companion::{CompanionKind, run_companion_loop},

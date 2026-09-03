@@ -21,8 +21,8 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tower_http::services::ServeDir;
 
-use crate::serverless::{CoreServerlessRuntime, ServerlessRequest, ServerlessResponse};
 use crate::ResponseChunk;
+use crate::serverless::{CoreServerlessRuntime, ServerlessRequest, ServerlessResponse};
 
 #[derive(Clone)]
 pub struct ListenerConfig {
@@ -132,14 +132,13 @@ pub async fn serve_application(
 ) -> Result<()> {
 	let host = listener.host.as_deref().unwrap_or("0.0.0.0");
 	let port = listener.port;
-	let forward_service = any(forward_application_request)
-		.with_state((
-			ApplicationState {
-				application,
-				shutdown_token: shutdown.clone(),
-			},
-			max_body_bytes,
-		));
+	let forward_service = any(forward_application_request).with_state((
+		ApplicationState {
+			application,
+			shutdown_token: shutdown.clone(),
+		},
+		max_body_bytes,
+	));
 	let router = match listener.public_dir.as_ref() {
 		Some(dir) => Router::new().fallback_service(
 			ServeDir::new(dir)
@@ -356,37 +355,35 @@ fn into_application_response(
 		ApplicationResponseBody::Buffered(body) => Body::from(body),
 		ApplicationResponseBody::Stream(receiver) => {
 			let stream_token = request_token.clone();
-			let stream = futures::stream::unfold(
-				(receiver, false),
-				move |(mut receiver, finished)| {
+			let stream =
+				futures::stream::unfold((receiver, false), move |(mut receiver, finished)| {
 					let stream_token = stream_token.clone();
 					async move {
-					if finished {
-						return None;
-					}
-					let next = tokio::select! {
-						_ = stream_token.cancelled() => return None,
-						next = receiver.recv() => next,
-					};
-					match next {
-						Some(ResponseChunk::Data { data, finish }) => {
-							if finish && data.is_empty() {
-								None
-							} else {
-								Some((
-									Ok::<Bytes, std::io::Error>(Bytes::from(data)),
-									(receiver, finish),
-								))
-							}
+						if finished {
+							return None;
 						}
-						Some(ResponseChunk::Error(message)) => Some((
-							Err(std::io::Error::other(message)),
-							(receiver, true),
-						)),
-						None => None,
+						let next = tokio::select! {
+							_ = stream_token.cancelled() => return None,
+							next = receiver.recv() => next,
+						};
+						match next {
+							Some(ResponseChunk::Data { data, finish }) => {
+								if finish && data.is_empty() {
+									None
+								} else {
+									Some((
+										Ok::<Bytes, std::io::Error>(Bytes::from(data)),
+										(receiver, finish),
+									))
+								}
+							}
+							Some(ResponseChunk::Error(message)) => {
+								Some((Err(std::io::Error::other(message)), (receiver, true)))
+							}
+							None => None,
+						}
 					}
-				}},
-			);
+				});
 			Body::from_stream(stream)
 		}
 	};

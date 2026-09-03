@@ -172,11 +172,13 @@ pub async fn send_command_ack(ctx: &mut EnvoyContext) {
 fn checkpoints_from(highest: HashMap<(String, u32), i64>) -> Vec<protocol::ActorCheckpoint> {
 	highest
 		.into_iter()
-		.map(|((actor_id, generation), index)| protocol::ActorCheckpoint {
-			actor_id,
-			generation,
-			index,
-		})
+		.map(
+			|((actor_id, generation), index)| protocol::ActorCheckpoint {
+				actor_id,
+				generation,
+				index,
+			},
+		)
 		.collect()
 }
 

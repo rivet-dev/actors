@@ -170,7 +170,12 @@ fn random_duration_up_to(max: Duration) -> Duration {
 /// RIVET_REJECT_SECOND_START (truthy `1`/`true`/`yes`/`on`). Off by default.
 static REJECT_SECOND_START: LazyLock<bool> = LazyLock::new(|| {
 	std::env::var("RIVET_REJECT_SECOND_START")
-		.map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+		.map(|value| {
+			matches!(
+				value.trim().to_ascii_lowercase().as_str(),
+				"1" | "true" | "yes" | "on"
+			)
+		})
 		.unwrap_or(false)
 });
 

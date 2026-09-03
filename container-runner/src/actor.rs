@@ -15,9 +15,9 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::child::{ChildProcess, SpawnSpec, log_prefix};
 use crate::input::{ActorInput, ActorState};
 use crate::{
-	children, drain_grace, effective_stop_grace, exit_token, idle_timeout, idle_timeout_with_jitter,
-	reject_second_start, release_child_port, request_exit, reserve_child_port, runner_config,
-	second_start_grace,
+	children, drain_grace, effective_stop_grace, exit_token, idle_timeout,
+	idle_timeout_with_jitter, reject_second_start, release_child_port, request_exit,
+	reserve_child_port, runner_config, second_start_grace,
 };
 
 /// Live actor contexts keyed by actor id, so the shutdown path can report actors
@@ -114,7 +114,12 @@ impl GameServer {
 			// `on_sleep` skips the drain.
 			if this
 				.idle_state
-				.compare_exchange(IDLE_ARMED, IDLE_SLEEPING, Ordering::SeqCst, Ordering::SeqCst)
+				.compare_exchange(
+					IDLE_ARMED,
+					IDLE_SLEEPING,
+					Ordering::SeqCst,
+					Ordering::SeqCst,
+				)
 				.is_err()
 			{
 				return;
@@ -374,9 +379,11 @@ impl Actor for GameServer {
 	/// in-flight work first. `no_sleep` blocks only idle sleep, not engine-driven sleeps.
 	async fn on_sleep(self: Arc<Self>, ctx: Ctx<Self>) -> Result<()> {
 		if self.idle_state.load(Ordering::SeqCst) == IDLE_SLEEPING {
-			self.stop_child(ctx.actor_id(), "actor sleeping (idle)").await;
+			self.stop_child(ctx.actor_id(), "actor sleeping (idle)")
+				.await;
 		} else {
-			self.drain_then_stop_child(ctx.actor_id(), "actor sleeping").await;
+			self.drain_then_stop_child(ctx.actor_id(), "actor sleeping")
+				.await;
 		}
 		Ok(())
 	}

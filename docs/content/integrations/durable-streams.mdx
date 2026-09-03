@@ -3,7 +3,7 @@ title: "Durable Streams"
 description: "Run the Durable Streams protocol locally and deploy it with Rivet."
 ---
 
-[Durable Streams](https://github.com/durable-streams/durable-streams) is a protocol for append-only streams with catch-up reads, live updates, and resumable offsets. Rivet provides a managed implementation backed by Rivet Actors.
+[Durable Streams](https://github.com/durable-streams/durable-streams) is a protocol for append-only streams with catch-up reads, live updates, and resumable offsets. Rivet provides an implementation backed by Rivet Actors.
 
 ## Quickstart
 
@@ -17,7 +17,7 @@ Start the local Rivet control plane and Services:
 npx @rivet-dev/services dev
 ```
 
-The command prints the local URL when it is ready. Durable Streams is available at `http://127.0.0.1:8787/durable-streams/v1/stream/<path>`.
+The command prints the local URL when it is ready. Durable Streams is available at `http://127.0.0.1:8642/durable-streams/v1/stream/<path>`.
 
 </Step>
 
@@ -45,14 +45,14 @@ Create a stream, append a record, and read its contents:
 curl -i -X PUT \
   -H 'content-type: application/json' \
   --data '[{"message":"hello"}]' \
-  http://127.0.0.1:8787/durable-streams/v1/stream/demo
+  http://127.0.0.1:8642/durable-streams/v1/stream/demo
 
 curl -i -X POST \
   -H 'content-type: application/json' \
   --data '{"message":"world"}' \
-  http://127.0.0.1:8787/durable-streams/v1/stream/demo
+  http://127.0.0.1:8642/durable-streams/v1/stream/demo
 
-curl 'http://127.0.0.1:8787/durable-streams/v1/stream/demo?offset=-1'
+curl 'http://127.0.0.1:8642/durable-streams/v1/stream/demo?offset=-1'
 ```
 
 </Tab>

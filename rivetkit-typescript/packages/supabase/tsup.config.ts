@@ -4,7 +4,7 @@ import { defineConfig } from "tsup";
 // Pre-bundle the rivetkit wasm-path runtime into this adapter's own dist. A
 // Supabase Edge Function deploy (Deno eszip) snapshots the entire declared npm
 // dependency closure, so a package that declares `rivetkit` as a runtime
-// dependency drags in rivetkit's native packages (engine-cli, managed services,
+// dependency drags in rivetkit's native packages (engine-cli, Services,
 // rivetkit-napi, agent-os secure-exec) that the wasm runtime never executes. By bundling
 // rivetkit here and not declaring it as a runtime dependency, and by having the
 // Supabase function's import map point `rivetkit` at this adapter, the deploy

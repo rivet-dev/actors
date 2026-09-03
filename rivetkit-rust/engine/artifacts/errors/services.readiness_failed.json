@@ -1,5 +1,5 @@
 {
   "code": "readiness_failed",
   "group": "services",
-  "message": "Managed services did not become ready."
+  "message": "Services did not become ready."
 }

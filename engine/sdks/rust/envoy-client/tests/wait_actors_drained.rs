@@ -108,7 +108,11 @@ fn build_shared(stopped: bool) -> Arc<SharedContext> {
 
 /// Register a fake actor. The returned receiver must be kept alive so the actor handle
 /// stays open and counts toward `active_actor_count`.
-fn insert_actor(shared: &Arc<SharedContext>, id: &str, generation: u32) -> mpsc::UnboundedReceiver<ToActor> {
+fn insert_actor(
+	shared: &Arc<SharedContext>,
+	id: &str,
+	generation: u32,
+) -> mpsc::UnboundedReceiver<ToActor> {
 	let (tx, rx) = mpsc::unbounded_channel::<ToActor>();
 	shared
 		.actors
@@ -159,7 +163,10 @@ async fn pending_until_actor_removed() {
 
 	let waiter = tokio::spawn(async move { handle.wait_actors_drained().await });
 	tokio::time::sleep(Duration::from_millis(150)).await;
-	assert!(!waiter.is_finished(), "should stay pending while an actor is active");
+	assert!(
+		!waiter.is_finished(),
+		"should stay pending while an actor is active"
+	);
 
 	remove_actor(&shared, "a");
 	tokio::time::timeout(Duration::from_secs(1), waiter)
@@ -180,7 +187,10 @@ async fn pending_until_last_of_multiple_actors_removed() {
 	tokio::time::sleep(Duration::from_millis(100)).await;
 	remove_actor(&shared, "a");
 	tokio::time::sleep(Duration::from_millis(100)).await;
-	assert!(!waiter.is_finished(), "should stay pending while one actor remains");
+	assert!(
+		!waiter.is_finished(),
+		"should stay pending while one actor remains"
+	);
 
 	remove_actor(&shared, "b");
 	tokio::time::timeout(Duration::from_secs(1), waiter)
@@ -197,7 +207,10 @@ async fn returns_when_envoy_stops_mid_wait() {
 
 	let waiter = tokio::spawn(async move { handle.wait_actors_drained().await });
 	tokio::time::sleep(Duration::from_millis(150)).await;
-	assert!(!waiter.is_finished(), "should stay pending while the actor is active");
+	assert!(
+		!waiter.is_finished(),
+		"should stay pending while the actor is active"
+	);
 
 	// Envoy stops while the actor is still registered.
 	shared.stopped_tx.send(true).unwrap();

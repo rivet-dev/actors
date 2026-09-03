@@ -101,7 +101,7 @@ describe("Registry constructor", () => {
 		expect(serveConfig.servicesBinaryPath).toBe("/tmp/rivet-services");
 	});
 
-	test("allows managed services to be disabled", async () => {
+	test("allows Services to be disabled", async () => {
 		const config = RegistryConfigSchema.parse({
 			use: { test: testActor },
 			startEngine: true,
@@ -114,7 +114,7 @@ describe("Registry constructor", () => {
 		expect(serveConfig.servicesBinaryPath).toBeUndefined();
 	});
 
-	test("does not enable managed services for a remote engine by default", () => {
+	test("does not enable Services for a remote Engine by default", () => {
 		const config = RegistryConfigSchema.parse({
 			use: { test: testActor },
 			endpoint: "https://api.rivet.dev",
@@ -133,7 +133,7 @@ describe("Registry constructor", () => {
 		expect(config.startServices).toBe(false);
 	});
 
-	test("does not resolve managed services for the wasm runtime", async () => {
+	test("does not resolve Services for the wasm runtime", async () => {
 		const config = RegistryConfigSchema.parse({
 			use: { test: testActor },
 			endpoint: "https://api.rivet.dev",

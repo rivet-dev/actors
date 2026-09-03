@@ -250,7 +250,7 @@ export const RegistryConfigSchema = z
 			.optional()
 			.default(() => getRivetRunEngineVersion() ?? VERSION),
 		/**
-		 * Starts the first-party managed services actor host when RivetKit manages
+		 * Starts the first-party Services actor host when RivetKit manages
 		 * a local engine. Defaults to the local-engine decision. Set
 		 * RIVET_RUN_SERVICES=0 or 1 to override it.
 		 */
@@ -366,7 +366,7 @@ export const RegistryConfigSchema = z
 			? localEngineEndpoint
 			: (parsedEndpoint?.endpoint ??
 				(isDevEnv ? localEngineEndpoint : undefined));
-		// Managed services is another local development actor host. Its default
+		// Services is another local development actor host. Its default
 		// follows the same local-endpoint decision that causes core to manage the
 		// Engine, while explicit config and RIVET_RUN_SERVICES take precedence.
 		const startServices =
@@ -653,7 +653,7 @@ export const DocRegistryConfigSchema = z
 			.boolean()
 			.optional()
 			.describe(
-				"Starts Rivet managed services when RivetKit manages a local engine. Defaults to the local-engine decision. Set RIVET_RUN_SERVICES=0 or 1 to override.",
+				"Starts Services when RivetKit manages a local Engine. Defaults to the local-Engine decision. Set RIVET_RUN_SERVICES=0 or 1 to override.",
 			),
 		configurePool: DocConfigurePoolSchema.describe(
 			"Automatically configure serverless runners in the engine.",

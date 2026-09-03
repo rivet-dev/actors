@@ -7,7 +7,7 @@ use crate::services_process::{SERVICES_POOL_NAME, ServicesProcessConfig, Service
 /// Owns the processes RivetKit starts for a local development environment.
 ///
 /// The Engine and actor hosts have deliberately different lifetimes: the Engine
-/// is reusable and outlives the application process, while managed services is
+/// is reusable and outlives the application process, while Services is
 /// tied to this host and shuts down with it. Keeping the orchestration here
 /// prevents serverful and serverless runtimes from growing separate startup
 /// behavior without forcing those incompatible lifetime rules into one generic

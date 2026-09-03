@@ -90,7 +90,10 @@ fn new_actor_state_decodes_into_legacy_bare_input() {
 		started_once: true,
 	};
 	let decoded: ActorInput = cbor_round_trip(&state).unwrap();
-	assert_eq!(decoded.command.as_deref(), Some(&["./GameServer".to_string()][..]));
+	assert_eq!(
+		decoded.command.as_deref(),
+		Some(&["./GameServer".to_string()][..])
+	);
 	assert_eq!(decoded.args, vec!["-x".to_string()]);
 	assert_eq!(decoded.env.get("A").map(String::as_str), Some("1"));
 	assert_eq!(decoded.port, Some(7777));

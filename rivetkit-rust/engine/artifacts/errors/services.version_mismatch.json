@@ -1,5 +1,5 @@
 {
   "code": "version_mismatch",
   "group": "services",
-  "message": "Managed services was built against a newer RivetKit version."
+  "message": "Services was built against a newer RivetKit version."
 }

@@ -196,10 +196,10 @@ async function waitForEnvoy(
 
 function servicesPid(): number {
 	const match = runtimeLogs.stdout.match(
-		/managed services process is ready[^\n]*\bpid=(\d+)/,
+		/Services process is ready[^\n]*\bpid=(\d+)/,
 	);
 	if (!match) {
-		throw new Error("managed services readiness log did not include a pid");
+		throw new Error("Services readiness log did not include a pid");
 	}
 	return Number(match[1]);
 }
@@ -275,7 +275,7 @@ async function createServicesActor(endpoint: string): Promise<string> {
 	);
 	if (!response.ok) {
 		throw new Error(
-			`failed to create managed services actor: ${response.status} ${await response.text()}`,
+			`failed to create Services actor: ${response.status} ${await response.text()}`,
 		);
 	}
 	const body = (await response.json()) as { actor: { actor_id: string } };
@@ -302,14 +302,14 @@ async function waitForActorStarted(
 			const actor = body.actors[0];
 			if (actor?.error) {
 				throw new Error(
-					`managed services actor failed: ${JSON.stringify(actor.error)}`,
+					`Services actor failed: ${JSON.stringify(actor.error)}`,
 				);
 			}
 			if (actor?.start_ts) return;
 		}
 		await new Promise((resolve) => setTimeout(resolve, 250));
 	}
-	throw new Error(`timed out waiting for managed services actor ${actorId}`);
+	throw new Error(`timed out waiting for Services actor ${actorId}`);
 }
 
 async function upsertNormalRunnerConfig(
@@ -455,9 +455,7 @@ describe.sequential("native NAPI runtime integration", () => {
 		const port = await getPort({ host: "127.0.0.1" });
 		const endpoint = `http://127.0.0.1:${port}`;
 		engineEndpoint = endpoint;
-		storagePath = await mkdtemp(
-			join(tmpdir(), "rivetkit-managed-services-"),
-		);
+		storagePath = await mkdtemp(join(tmpdir(), "rivetkit-services-"));
 		runtimeLogs = { stdout: "", stderr: "" };
 		runtime = spawn(process.execPath, ["--import", "tsx", FIXTURE_PATH], {
 			cwd: dirname(TEST_DIR),
