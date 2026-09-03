@@ -1,4 +1,5 @@
 use std::any::{Any, TypeId};
+use std::future::Future;
 use std::io::Cursor;
 use std::marker::PhantomData;
 use std::panic::AssertUnwindSafe;
@@ -11,12 +12,12 @@ use rivetkit_core::actor::ShutdownKind;
 use rivetkit_core::error::{ActorLifecycle, ActorRuntime, action_not_found};
 use rivetkit_core::{ActorEvent, ActorEvents, ActorStart, QueueSendResult, QueueSendStatus, Reply};
 use serde::de::DeserializeOwned;
-use tokio::task::JoinHandle;
+use tokio::{sync::OwnedSemaphorePermit, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
 	action::ActionSet,
-	actor::Actor,
+	actor::{Actor, HttpCallbackAdmission, HttpCallbackClass},
 	context::{ConnCtx, Ctx},
 	event::RuntimeEvent,
 	queue::QueueSet,
@@ -211,15 +212,58 @@ pub async fn run_actor<A: Actor>(start: Start<A>) -> Result<()> {
 
 	let run_cancel = CancellationToken::new();
 	let run_task = spawn_run_task(actor.clone(), ctx.clone(), run_cancel.clone());
+	let http_pools = HttpCallbackPools::for_actor::<A>();
 
 	while let Some(event) = events.recv_raw().await {
-		let should_stop = handle_actor_event(actor.clone(), ctx.clone(), event).await?;
+		let should_stop =
+			handle_actor_event(actor.clone(), ctx.clone(), http_pools.as_ref(), event).await?;
 		if should_stop {
 			break;
 		}
 	}
 
 	stop_run_task(&ctx, run_cancel, run_task).await
+}
+
+struct HttpCallbackPools {
+	standard: Arc<tokio::sync::Semaphore>,
+	live: Arc<tokio::sync::Semaphore>,
+}
+
+impl HttpCallbackPools {
+	fn for_actor<A: Actor>() -> Option<Self> {
+		A::CONCURRENT_HTTP_CALLBACKS.then(|| Self {
+			standard: Arc::new(tokio::sync::Semaphore::new(
+				A::MAX_CONCURRENT_HTTP_CALLBACKS,
+			)),
+			live: Arc::new(tokio::sync::Semaphore::new(
+				A::MAX_CONCURRENT_LIVE_HTTP_CALLBACK_STARTS,
+			)),
+		})
+	}
+
+	fn try_acquire(&self, class: HttpCallbackClass) -> Option<OwnedSemaphorePermit> {
+		match class {
+			HttpCallbackClass::Standard => self.standard.clone().try_acquire_owned().ok(),
+			HttpCallbackClass::Live => self.live.clone().try_acquire_owned().ok(),
+		}
+	}
+}
+
+struct HttpCallbackAdmissionGuard(Option<Box<dyn FnOnce() + Send + 'static>>);
+
+impl HttpCallbackAdmissionGuard {
+	fn new(release: Option<Box<dyn FnOnce() + Send + 'static>>) -> Self {
+		Self(release)
+	}
+}
+
+impl Drop for HttpCallbackAdmissionGuard {
+	fn drop(&mut self) {
+		if let Some(release) = self.0.take() {
+			release();
+		}
+	}
 }
 
 fn spawn_run_task<A: Actor>(
@@ -285,6 +329,7 @@ async fn stop_run_task<A: Actor>(
 async fn handle_actor_event<A: Actor>(
 	actor: Arc<A>,
 	ctx: Ctx<A>,
+	http_pools: Option<&HttpCallbackPools>,
 	event: ActorEvent,
 ) -> Result<bool> {
 	match event {
@@ -311,12 +356,30 @@ async fn handle_actor_event<A: Actor>(
 			}
 		}
 		ActorEvent::HttpRequest { request, reply } => {
-			reply.send(
-				actor
-					.on_fetch(ctx, request)
-					.await
-					.map(rivetkit_core::ActorHttpResponse::Buffered),
-			);
+			if let Some(http_pools) = http_pools {
+				let class = A::classify_http_request(&request);
+				let Some(permit) = http_pools.try_acquire(class) else {
+					reply.send(
+						rivetkit_core::Response::from_parts(429, Default::default(), Vec::new())
+							.map(rivetkit_core::ActorHttpResponse::Buffered),
+					);
+					return Ok(false);
+				};
+
+				let admission = actor.admit_http_request(&ctx, &request);
+				let release = match admission {
+					HttpCallbackAdmission::Untracked => None,
+					HttpCallbackAdmission::Tracked { release } => Some(release),
+					HttpCallbackAdmission::Reject(error) => {
+						reply.send(Err(error));
+						return Ok(false);
+					}
+				};
+				let future = actor.on_fetch_response(ctx.clone(), request);
+				spawn_http_reply(ctx, reply, future, permit, release);
+			} else {
+				reply.send(actor.on_fetch_response(ctx, request).await);
+			}
 		}
 		ActorEvent::QueueSend {
 			name,
@@ -422,6 +485,20 @@ async fn handle_actor_event<A: Actor>(
 	}
 
 	Ok(false)
+}
+
+fn spawn_http_reply<A: Actor>(
+	ctx: Ctx<A>,
+	reply: Reply<rivetkit_core::ActorHttpResponse>,
+	future: impl Future<Output = Result<rivetkit_core::ActorHttpResponse>> + Send + 'static,
+	permit: OwnedSemaphorePermit,
+	release: Option<Box<dyn FnOnce() + Send + 'static>>,
+) {
+	ctx.register_task(async move {
+		let _permit = permit;
+		let _admission = HttpCallbackAdmissionGuard::new(release);
+		reply.send(future.await);
+	});
 }
 
 fn spawn_action_reply<A: Actor>(
@@ -531,10 +608,13 @@ fn decode_conn_params<A: Actor>(bytes: &[u8]) -> Result<A::ConnParams> {
 mod tests {
 	use std::future::Future;
 	use std::pin::Pin;
-	use std::sync::OnceLock;
+	use std::sync::{
+		OnceLock,
+		atomic::{AtomicUsize, Ordering},
+	};
 
 	use async_trait::async_trait;
-	use rivetkit_core::{ConnHandle, QueueNextOpts, StateDelta, WebSocket};
+	use rivetkit_core::{ConnHandle, QueueNextOpts, Request, Response, StateDelta, WebSocket};
 	use serde::{Deserialize, Serialize};
 	use tokio::sync::mpsc::unbounded_channel;
 	use tokio::sync::{Barrier, oneshot};
@@ -547,6 +627,8 @@ mod tests {
 	static ACTION_BARRIER: OnceLock<Arc<Barrier>> = OnceLock::new();
 	static QUEUE_PULL_DRAINED: OnceLock<parking_lot::Mutex<Option<oneshot::Sender<Vec<u32>>>>> =
 		OnceLock::new();
+	static HTTP_CALLBACK_BARRIER: OnceLock<Arc<Barrier>> = OnceLock::new();
+	static HTTP_RELEASES: OnceLock<Arc<AtomicUsize>> = OnceLock::new();
 
 	struct EmptyActor;
 
@@ -572,6 +654,111 @@ mod tests {
 		type ConnParams = ();
 		type ConnState = ();
 		type Action = action::Raw;
+	}
+
+	struct ConcurrentHttpActor {
+		barrier: Arc<Barrier>,
+		releases: Arc<AtomicUsize>,
+	}
+
+	#[async_trait]
+	impl Actor for ConcurrentHttpActor {
+		type State = ();
+		type Input = ();
+		type Actions = ();
+		type Events = ();
+		type Queue = ();
+		type ConnParams = ();
+		type ConnState = ();
+		type Action = action::Raw;
+
+		const CONCURRENT_HTTP_CALLBACKS: bool = true;
+		const MAX_CONCURRENT_HTTP_CALLBACKS: usize = 1;
+		const MAX_CONCURRENT_LIVE_HTTP_CALLBACK_STARTS: usize = 1;
+
+		async fn create_state(_ctx: &Ctx<Self>, (): Self::Input) -> Result<Self::State> {
+			Ok(())
+		}
+
+		async fn create(_ctx: &Ctx<Self>) -> Result<Self> {
+			Ok(Self {
+				barrier: HTTP_CALLBACK_BARRIER
+					.get()
+					.expect("http callback barrier initialized")
+					.clone(),
+				releases: HTTP_RELEASES
+					.get()
+					.expect("http release counter initialized")
+					.clone(),
+			})
+		}
+
+		fn classify_http_request(request: &Request) -> HttpCallbackClass {
+			if request.uri().path() == "/live" {
+				HttpCallbackClass::Live
+			} else {
+				HttpCallbackClass::Standard
+			}
+		}
+
+		fn admit_http_request(
+			self: &Arc<Self>,
+			_ctx: &Ctx<Self>,
+			_request: &Request,
+		) -> HttpCallbackAdmission {
+			let releases = self.releases.clone();
+			HttpCallbackAdmission::Tracked {
+				release: Box::new(move || {
+					releases.fetch_add(1, Ordering::SeqCst);
+				}),
+			}
+		}
+
+		async fn on_fetch_response(
+			self: Arc<Self>,
+			_ctx: Ctx<Self>,
+			_req: Request,
+		) -> Result<rivetkit_core::ActorHttpResponse> {
+			self.barrier.wait().await;
+			Ok(Response::default().into())
+		}
+	}
+
+	struct StreamingHttpActor;
+
+	#[async_trait]
+	impl Actor for StreamingHttpActor {
+		type State = ();
+		type Input = ();
+		type Actions = ();
+		type Events = ();
+		type Queue = ();
+		type ConnParams = ();
+		type ConnState = ();
+		type Action = action::Raw;
+
+		async fn create_state(_ctx: &Ctx<Self>, (): Self::Input) -> Result<Self::State> {
+			Ok(())
+		}
+
+		async fn create(_ctx: &Ctx<Self>) -> Result<Self> {
+			Ok(Self)
+		}
+
+		async fn on_fetch_response(
+			self: Arc<Self>,
+			_ctx: Ctx<Self>,
+			_req: Request,
+		) -> Result<rivetkit_core::ActorHttpResponse> {
+			let (tx, rx) = tokio::sync::mpsc::channel(1);
+			tx.send(rivetkit_core::ResponseChunk::Data {
+				data: b"hello".to_vec(),
+				finish: true,
+			})
+			.await
+			.expect("stream receiver remains open");
+			Ok(rivetkit_core::StreamingResponse::from_parts(200, Default::default(), rx)?.into())
+		}
 	}
 
 	struct LifecycleActor;
@@ -936,6 +1123,84 @@ mod tests {
 			panic!("default fetch should return buffered response");
 		};
 		assert_eq!(response.status().as_u16(), 404);
+
+		request_sleep(&tx).await;
+		actor.await.expect("join run_actor").expect("run actor");
+	}
+
+	#[tokio::test]
+	async fn run_actor_returns_typed_streaming_response() {
+		let (tx, rx) = unbounded_channel();
+		let (start, _) = unit_start_with_ctx::<StreamingHttpActor>(rx.into());
+		let actor = tokio::spawn(run_actor::<StreamingHttpActor>(start));
+
+		let (reply_tx, reply_rx) = oneshot::channel();
+		tx.send(ActorEvent::HttpRequest {
+			request: Request::default(),
+			reply: reply_tx.into(),
+		})
+		.expect("send http event");
+
+		let response = reply_rx.await.expect("http reply").expect("http response");
+		let rivetkit_core::ActorHttpResponse::Stream(response) = response else {
+			panic!("streaming hook should return a streaming response");
+		};
+		let (status, _, mut body) = response.into_parts();
+		assert_eq!(status, 200);
+		assert!(matches!(
+			body.recv().await,
+			Some(rivetkit_core::ResponseChunk::Data { data, finish: true }) if data == b"hello"
+		));
+
+		request_sleep(&tx).await;
+		actor.await.expect("join run_actor").expect("run actor");
+	}
+
+	#[tokio::test]
+	async fn run_actor_dispatches_standard_and_live_http_concurrently() {
+		let barrier = HTTP_CALLBACK_BARRIER
+			.get_or_init(|| Arc::new(Barrier::new(3)))
+			.clone();
+		let releases = HTTP_RELEASES
+			.get_or_init(|| Arc::new(AtomicUsize::new(0)))
+			.clone();
+		releases.store(0, Ordering::SeqCst);
+
+		let (tx, rx) = unbounded_channel();
+		let (start, _) = unit_start_with_ctx::<ConcurrentHttpActor>(rx.into());
+		let actor = tokio::spawn(run_actor::<ConcurrentHttpActor>(start));
+
+		let (standard_tx, standard_rx) = oneshot::channel();
+		tx.send(ActorEvent::HttpRequest {
+			request: Request::from_parts("GET", "/standard", Default::default(), Vec::new())
+				.expect("standard request"),
+			reply: standard_tx.into(),
+		})
+		.expect("send standard http event");
+		let (live_tx, live_rx) = oneshot::channel();
+		tx.send(ActorEvent::HttpRequest {
+			request: Request::from_parts("GET", "/live", Default::default(), Vec::new())
+				.expect("live request"),
+			reply: live_tx.into(),
+		})
+		.expect("send live http event");
+
+		tokio::time::timeout(Duration::from_secs(1), barrier.wait())
+			.await
+			.expect("standard and live callbacks should enter concurrently");
+		standard_rx
+			.await
+			.expect("standard reply")
+			.expect("standard response");
+		live_rx.await.expect("live reply").expect("live response");
+
+		tokio::time::timeout(Duration::from_secs(1), async {
+			while releases.load(Ordering::SeqCst) != 2 {
+				tokio::task::yield_now().await;
+			}
+		})
+		.await
+		.expect("admission release guards should run after reply handoff");
 
 		request_sleep(&tx).await;
 		actor.await.expect("join run_actor").expect("run actor");

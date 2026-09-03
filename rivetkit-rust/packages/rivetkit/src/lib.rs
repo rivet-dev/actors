@@ -12,7 +12,7 @@ pub mod typed_client;
 
 pub use crate::{
 	action::{Action, ActionEntry, ActionSet, Handles, Raw},
-	actor::Actor,
+	actor::{Actor, HttpCallbackAdmission, HttpCallbackClass},
 	context::{
 		ConnCtx, ConnIter, Cron, CronEveryOptions, CronJobInfo, CronSetOptions, Ctx, Schedule,
 		StateMut, StateRef,
@@ -37,10 +37,11 @@ pub use rivetkit_core::serverless::{
 };
 pub use rivetkit_core::serverless_http;
 pub use rivetkit_core::{
-	ActorConfig, ActorKey, ActorKeySegment, ActorKv, CanHibernateWebSocket,
+	ActorConfig, ActorHttpResponse, ActorKey, ActorKeySegment, ActorKv, CanHibernateWebSocket,
 	CompletableQueueMessage, ConnHandle, ConnId, EngineSpawnMode, EnqueueAndWaitOpts,
-	KeepAwakeRegion, ListOpts, QueueMessage as CoreQueueMessage, QueueNextBatchOpts, QueueNextOpts,
-	QueueTryNextBatchOpts, QueueTryNextOpts, QueueWaitOpts, Request, RequestSaveOpts, Response,
-	SaveStateOpts, SerializeStateReason, ServeConfig, SqliteDb, StateDelta, WebSocket, WsMessage,
+	HTTP_BODY_STREAM_CHANNEL_CAPACITY, KeepAwakeRegion, ListOpts, QueueMessage as CoreQueueMessage,
+	QueueNextBatchOpts, QueueNextOpts, QueueTryNextBatchOpts, QueueTryNextOpts, QueueWaitOpts,
+	Request, RequestSaveOpts, Response, ResponseChunk, SaveStateOpts, SerializeStateReason,
+	ServeConfig, SqliteDb, StateDelta, StreamingResponse, WebSocket, WsMessage,
 	sqlite::{BindParam, ColumnValue, ExecResult, QueryResult},
 };
