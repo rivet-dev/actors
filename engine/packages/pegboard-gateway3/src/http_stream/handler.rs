@@ -39,8 +39,7 @@ const PHASE_PRE_REQUEST: &str = "pre_request";
 pub(crate) struct PreparedHttpRequest {
 	msg_rx: mpsc::UnboundedReceiver<crate::shared_state::InFlightTunnelMessage>,
 	drop_rx: watch::Receiver<Option<crate::shared_state::MsgGcReason>>,
-	http_response_abort_rx:
-		watch::Receiver<Option<protocol::HttpStreamAbortReason>>,
+	http_response_abort_rx: watch::Receiver<Option<protocol::HttpStreamAbortReason>>,
 	in_flight_req: crate::shared_state::InFlightRequestHandle,
 	stopped_sub: message::SubscriptionHandle<pegboard::workflows::actor2::Stopped>,
 	client_disconnect_guard: HttpClientDisconnectGuard,

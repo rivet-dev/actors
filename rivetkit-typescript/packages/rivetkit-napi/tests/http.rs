@@ -82,7 +82,10 @@ mod moved_tests {
 			Some(ResponseChunk::Data { data, finish: true }) if data.is_empty()
 		));
 
-		blocked_write.await.expect("join blocked write").expect("blocked write");
+		blocked_write
+			.await
+			.expect("join blocked write")
+			.expect("blocked write");
 		end.await.expect("join end").expect("end response");
 		assert!(stream.write(vec![3].into()).await.is_err());
 	}
@@ -110,7 +113,9 @@ mod moved_tests {
 			rx.recv().await,
 			Some(ResponseChunk::Data { data, finish: false }) if data == vec![2]
 		));
-		assert!(matches!(rx.recv().await, Some(ResponseChunk::Error(message)) if message == "boom"));
+		assert!(
+			matches!(rx.recv().await, Some(ResponseChunk::Error(message)) if message == "boom")
+		);
 
 		blocked_write.await.unwrap().unwrap();
 		error.await.unwrap().unwrap();
@@ -122,7 +127,10 @@ mod moved_tests {
 		let (tx, mut rx) = mpsc::channel(4);
 		let stream = HttpResponseBodyStream::new(tx);
 		let size = rivetkit_core::HTTP_BODY_MAX_CHUNK_SIZE * 2 + 1;
-		stream.write(vec![7; size].into()).await.expect("large write");
+		stream
+			.write(vec![7; size].into())
+			.await
+			.expect("large write");
 		stream.end().await.expect("end response");
 
 		for expected in [

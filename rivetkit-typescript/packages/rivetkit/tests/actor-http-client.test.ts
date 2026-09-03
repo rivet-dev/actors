@@ -15,9 +15,13 @@ describe("sendHttpRequestToGateway", () => {
 		const gatewayResponse = new Response(
 			new ReadableStream<Uint8Array>({
 				async start(controller) {
-					controller.enqueue(new TextEncoder().encode("data: ready\n\n"));
+					controller.enqueue(
+						new TextEncoder().encode("data: ready\n\n"),
+					);
 					await finishGate;
-					controller.enqueue(new TextEncoder().encode("data: done\n\n"));
+					controller.enqueue(
+						new TextEncoder().encode("data: done\n\n"),
+					);
 					controller.close();
 				},
 			}),
@@ -58,13 +62,13 @@ describe("sendHttpRequestToGateway", () => {
 		await transportReleased;
 		const reader = response.body?.getReader();
 		expect(reader).toBeDefined();
-		expect(
-			new TextDecoder().decode((await reader?.read())?.value),
-		).toBe("data: ready\n\n");
+		expect(new TextDecoder().decode((await reader?.read())?.value)).toBe(
+			"data: ready\n\n",
+		);
 		finish();
-		expect(
-			new TextDecoder().decode((await reader?.read())?.value),
-		).toBe("data: done\n\n");
+		expect(new TextDecoder().decode((await reader?.read())?.value)).toBe(
+			"data: done\n\n",
+		);
 		expect((await reader?.read())?.done).toBe(true);
 	});
 });

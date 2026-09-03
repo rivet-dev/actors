@@ -8,9 +8,7 @@ use rivet_envoy_protocol as protocol;
 use std::collections::HashMap;
 use vbare::OwnedVersionedData;
 
-use crate::context::{
-	HttpConnectionTx, HttpWsTxMessage, SharedContext, WsTxMessage,
-};
+use crate::context::{HttpConnectionTx, HttpWsTxMessage, SharedContext, WsTxMessage};
 #[cfg(any(
 	feature = "native-transport",
 	all(feature = "wasm-transport", target_arch = "wasm32")
@@ -41,8 +39,7 @@ pub(crate) async fn install_connection(
 ) -> u64 {
 	let (http_tx, mut http_rx) =
 		tokio::sync::mpsc::channel::<HttpWsTxMessage>(HTTP_WS_MESSAGE_CAPACITY);
-	let http_byte_budget =
-		std::sync::Arc::new(tokio::sync::Semaphore::new(HTTP_WS_BYTE_CAPACITY));
+	let http_byte_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(HTTP_WS_BYTE_CAPACITY));
 	let relay_tx = tx.clone();
 	tokio::spawn(async move {
 		while let Some(message) = http_rx.recv().await {
@@ -52,13 +49,7 @@ pub(crate) async fn install_connection(
 			let _ = message.written.send(result);
 		}
 	});
-	install_connection_with_http(
-		shared,
-		tx,
-		http_tx,
-		http_byte_budget,
-	)
-	.await
+	install_connection_with_http(shared, tx, http_tx, http_byte_budget).await
 }
 
 pub(crate) async fn install_connection_with_http(
@@ -114,7 +105,10 @@ pub(crate) async fn ws_send_http_for_session(
 	expected_session: u64,
 ) -> WsSendResult {
 	if tracing::enabled!(tracing::Level::DEBUG) {
-		tracing::debug!(data = stringify_to_rivet(&message), "sending HTTP tunnel message");
+		tracing::debug!(
+			data = stringify_to_rivet(&message),
+			"sending HTTP tunnel message"
+		);
 	}
 
 	let encoded = crate::protocol::versioned::ToRivet::wrap_latest(message)
@@ -236,11 +230,7 @@ async fn send_initial_metadata(shared: &SharedContext) {
 	feature = "native-transport",
 	all(feature = "wasm-transport", target_arch = "wasm32")
 ))]
-async fn forward_to_envoy(
-	shared: &SharedContext,
-	session: u64,
-	message: protocol::ToEnvoy,
-) {
+async fn forward_to_envoy(shared: &SharedContext, session: u64, message: protocol::ToEnvoy) {
 	if tracing::enabled!(tracing::Level::DEBUG) {
 		tracing::debug!(data = stringify_to_envoy(&message), "received message");
 	}

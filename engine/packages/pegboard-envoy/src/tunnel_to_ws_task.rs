@@ -289,9 +289,7 @@ fn to_envoy_tunnel_message_kind_name(kind: &protocol::ToEnvoyTunnelMessageKind) 
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(_) => "ToEnvoyRequestStart",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestChunk(_) => "ToEnvoyRequestChunk",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(_) => "ToEnvoyRequestAbort",
-		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestBodyCancel => {
-			"ToEnvoyRequestBodyCancel"
-		}
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestBodyCancel => "ToEnvoyRequestBodyCancel",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyResponseBodyWindowUpdate(_) => {
 			"ToEnvoyResponseBodyWindowUpdate"
 		}

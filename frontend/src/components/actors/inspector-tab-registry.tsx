@@ -185,14 +185,12 @@ export function useAvailableInspectorTabs(
 				.filter((t) => t.hidden === true)
 				.map((t) => t.id),
 		);
-		const builtIns = availableInspectorRegistrations.filter((t) =>
-			t.available(caps),
-		)
+		const builtIns = availableInspectorRegistrations
+			.filter((t) => t.available(caps))
 			.map((t) => t.descriptor)
 			.filter((d) => !hideSet.has(d.id));
-		const customs: InspectorTabDescriptor[] = (__MCP_APP__
-			? []
-			: (tabConfig?.tabs ?? [])
+		const customs: InspectorTabDescriptor[] = (
+			__MCP_APP__ ? [] : (tabConfig?.tabs ?? [])
 		)
 			.filter((t) => t.hidden !== true && typeof t.label === "string")
 			.map((t) => ({

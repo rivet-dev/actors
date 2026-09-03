@@ -1059,10 +1059,7 @@ mod tests {
 		assert_eq!(env["RIVET__PEGBOARD__ENVOY_LOST_THRESHOLD"], "7000");
 		assert_eq!(env["RIVET__PEGBOARD__MIN_METADATA_POLL_INTERVAL"], "1000");
 		assert_eq!(env["RIVET__FEATURES__GUARD_GATEWAY_V3__MODE"], "on");
-		assert_eq!(
-			env["RIVET__FEATURES__GUARD_GATEWAY_V3__PERCENTAGE"],
-			"100"
-		);
+		assert_eq!(env["RIVET__FEATURES__GUARD_GATEWAY_V3__PERCENTAGE"], "100");
 		assert_eq!(env["RIVET__RUNTIME__WORKER_SHUTDOWN_DURATION"], "1");
 		assert_eq!(env["RIVET__RUNTIME__GUARD_SHUTDOWN_DURATION"], "1");
 		assert_eq!(env["RIVET__RUNTIME__FORCE_SHUTDOWN_DURATION"], "2");

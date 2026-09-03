@@ -38,11 +38,7 @@ describe("ActorHandleRaw.fetch", () => {
 		const driver = {
 			async sendRequest(_target: GatewayTarget, request: Request) {
 				bodies.push(await request.text());
-				throw new ActorError(
-					"actor",
-					"starting",
-					"actor is starting",
-				);
+				throw new ActorError("actor", "starting", "actor is starting");
 			},
 		} as EngineControlClient;
 		const handle = new ActorHandleRaw(
@@ -73,11 +69,7 @@ describe("ActorHandleRaw.fetch", () => {
 			async sendRequest(_target: GatewayTarget, request: Request) {
 				attempts++;
 				expect(await request.text()).toBe("body from init");
-				throw new ActorError(
-					"actor",
-					"starting",
-					"actor is starting",
-				);
+				throw new ActorError("actor", "starting", "actor is starting");
 			},
 		} as EngineControlClient;
 		const handle = dynamicHandle(driver);

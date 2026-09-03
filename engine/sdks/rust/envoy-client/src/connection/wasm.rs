@@ -177,13 +177,9 @@ mod imp {
 		let (http_ws_tx, mut http_ws_rx) =
 			mpsc::channel::<HttpWsTxMessage>(super::super::HTTP_WS_MESSAGE_CAPACITY);
 		let http_byte_budget = Arc::new(Semaphore::new(super::super::HTTP_WS_BYTE_CAPACITY));
-		let session = super::super::install_connection_with_http(
-			shared,
-			ws_tx,
-			http_ws_tx,
-			http_byte_budget,
-		)
-		.await;
+		let session =
+			super::super::install_connection_with_http(shared, ws_tx, http_ws_tx, http_byte_budget)
+				.await;
 
 		tracing::info!(
 			endpoint = %shared.config.endpoint,

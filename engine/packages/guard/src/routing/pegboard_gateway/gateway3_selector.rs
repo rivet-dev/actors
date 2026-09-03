@@ -259,10 +259,7 @@ mod tests {
 	}
 
 	fn config(mode: GuardGatewayV3Mode, percentage: u8) -> GuardGatewayV3 {
-		GuardGatewayV3 {
-			mode,
-			percentage,
-		}
+		GuardGatewayV3 { mode, percentage }
 	}
 
 	fn decision(

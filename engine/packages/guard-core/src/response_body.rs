@@ -33,7 +33,8 @@ pub struct ConsumptionCallback(std::sync::Arc<dyn Fn(usize) + Send + Sync + 'sta
 
 impl std::fmt::Debug for ConsumptionCallback {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("ConsumptionCallback").finish_non_exhaustive()
+		f.debug_struct("ConsumptionCallback")
+			.finish_non_exhaustive()
 	}
 }
 
@@ -53,7 +54,8 @@ impl ResponseBodyTerminal {
 
 impl std::fmt::Debug for ResponseBodyTerminal {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("ResponseBodyTerminal").finish_non_exhaustive()
+		f.debug_struct("ResponseBodyTerminal")
+			.finish_non_exhaustive()
 	}
 }
 
@@ -113,10 +115,7 @@ impl ResponseBody {
 	}
 
 	#[doc(hidden)]
-	pub fn with_consumption(
-		self,
-		callback: impl Fn(usize) + Send + Sync + 'static,
-	) -> Self {
+	pub fn with_consumption(self, callback: impl Fn(usize) + Send + Sync + 'static) -> Self {
 		Self::WithConsumption {
 			body: Box::new(self),
 			callback: ConsumptionCallback(std::sync::Arc::new(callback)),

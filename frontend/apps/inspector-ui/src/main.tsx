@@ -78,7 +78,9 @@ function InspectorContent({
 
 	const selectedTab = activeTab ?? standaloneTab ?? availableTabs?.[0]?.id;
 	return (
-		<div className={standalone ? "flex h-full min-h-0 flex-col" : undefined}>
+		<div
+			className={standalone ? "flex h-full min-h-0 flex-col" : undefined}
+		>
 			{standalone && availableTabs ? (
 				<nav
 					aria-label="Inspector tabs"
@@ -100,8 +102,15 @@ function InspectorContent({
 					))}
 				</nav>
 			) : null}
-			<div className={standalone ? "min-h-0 flex-1 overflow-auto" : undefined}>
-				<InspectorTabContent actorId={actorId} activeTab={selectedTab} />
+			<div
+				className={
+					standalone ? "min-h-0 flex-1 overflow-auto" : undefined
+				}
+			>
+				<InspectorTabContent
+					actorId={actorId}
+					activeTab={selectedTab}
+				/>
 			</div>
 		</div>
 	);

@@ -64,7 +64,6 @@ impl HttpResponseBodyStream {
 			closed_tx: tx,
 		}
 	}
-
 }
 
 #[napi]
@@ -86,9 +85,7 @@ impl HttpResponseBodyStream {
 				finish: false,
 			})
 			.await
-			.map_err(|_| {
-				napi::Error::from_reason("http response body stream receiver dropped")
-			})?;
+			.map_err(|_| napi::Error::from_reason("http response body stream receiver dropped"))?;
 		}
 		Ok(())
 	}
@@ -96,9 +93,9 @@ impl HttpResponseBodyStream {
 	#[napi]
 	pub async fn end(&self) -> napi::Result<()> {
 		let mut tx = self.tx.lock().await;
-		let tx = tx
-			.take()
-			.ok_or_else(|| napi::Error::from_reason("http response body stream is already closed"))?;
+		let tx = tx.take().ok_or_else(|| {
+			napi::Error::from_reason("http response body stream is already closed")
+		})?;
 		tx.send(ResponseChunk::Data {
 			data: Vec::new(),
 			finish: true,
@@ -110,9 +107,9 @@ impl HttpResponseBodyStream {
 	#[napi]
 	pub async fn error(&self, message: String) -> napi::Result<()> {
 		let mut tx = self.tx.lock().await;
-		let tx = tx
-			.take()
-			.ok_or_else(|| napi::Error::from_reason("http response body stream is already closed"))?;
+		let tx = tx.take().ok_or_else(|| {
+			napi::Error::from_reason("http response body stream is already closed")
+		})?;
 		tx.send(ResponseChunk::Error(message))
 			.await
 			.map_err(|_| napi::Error::from_reason("http response body stream receiver dropped"))

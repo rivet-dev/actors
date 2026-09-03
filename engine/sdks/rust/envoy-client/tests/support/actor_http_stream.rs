@@ -249,9 +249,7 @@ async fn missing_request_actor_returns_a_canonical_error_without_dispatch() {
 		session,
 		protocol::ToEnvoyTunnelMessage {
 			message_id: message_id(),
-			message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
-				request_start(),
-			),
+			message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(request_start()),
 		},
 	)
 	.await;
@@ -324,9 +322,7 @@ async fn cancellation_before_delayed_request_start_prevents_actor_dispatch() {
 		session,
 		protocol::ToEnvoyTunnelMessage {
 			message_id: message_id(),
-			message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
-				request_start(),
-			),
+			message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(request_start()),
 		},
 	)
 	.await;
@@ -842,9 +838,7 @@ async fn admitted_exact_generation_routes_continue_during_actor_stop() {
 		session,
 		protocol::ToEnvoyTunnelMessage {
 			message_id: rejected_id,
-			message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
-				rejected_start,
-			),
+			message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(rejected_start),
 		},
 	)
 	.await;
@@ -1290,19 +1284,20 @@ async fn connection_close_replays_one_indexed_terminal_abort_after_reconnect() {
 	assert_eq!(terminal.message_id.message_index, 2);
 	assert!(matches!(
 		terminal.message_kind,
-		protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(
-			protocol::ToRivetResponseAbort {
-				reason: protocol::HttpStreamAbortReason {
-					kind: protocol::HttpStreamAbortReasonKind::InternalError,
-					..
-				}
+		protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(protocol::ToRivetResponseAbort {
+			reason: protocol::HttpStreamAbortReason {
+				kind: protocol::HttpStreamAbortReasonKind::InternalError,
+				..
 			}
-		)
+		})
 	));
 	wait_for_zero(&active_http_request_count).await;
 
 	let mut envoy_ctx = empty_envoy_context(shared.clone());
-	let key: [&[u8]; 2] = [&terminal.message_id.gateway_id, &terminal.message_id.request_id];
+	let key: [&[u8]; 2] = [
+		&terminal.message_id.gateway_id,
+		&terminal.message_id.request_id,
+	];
 	envoy_ctx.http_request_routes.insert(
 		&key,
 		HttpRequestRoute {

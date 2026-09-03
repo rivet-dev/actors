@@ -136,7 +136,9 @@ async function pumpResponseBody(
 				// request and connection cleanup indefinitely.
 				void reader
 					.cancel(
-						new Error("native http response stream receiver dropped"),
+						new Error(
+							"native http response stream receiver dropped",
+						),
 					)
 					.catch((error) => {
 						logger().debug({

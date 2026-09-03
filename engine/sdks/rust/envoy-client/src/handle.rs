@@ -694,7 +694,7 @@ impl EnvoyHandle {
 				session: self.shared.connection_session.load(Ordering::Acquire),
 			},
 		)
-			.map_err(|_| anyhow::anyhow!("envoy channel closed"))?;
+		.map_err(|_| anyhow::anyhow!("envoy channel closed"))?;
 
 		Ok(())
 	}

@@ -25,8 +25,8 @@ use std::{
 };
 use tokio::sync::Mutex;
 use tokio::time::timeout;
-use tokio_util::sync::CancellationToken;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use url::Url;
 

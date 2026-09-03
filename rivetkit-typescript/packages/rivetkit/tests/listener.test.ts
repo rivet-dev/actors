@@ -319,7 +319,7 @@ describe("registry.listen() end-to-end", () => {
 				"content-type": "text/event-stream",
 				"cache-control": "no-cache",
 			});
-			response.write("event: control\ndata: {\"upToDate\":true}\n\n");
+			response.write('event: control\ndata: {"upToDate":true}\n\n');
 		});
 		upstream.listen(upstreamPort, "127.0.0.1");
 		await once(upstream, "listening");

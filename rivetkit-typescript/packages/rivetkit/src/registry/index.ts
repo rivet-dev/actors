@@ -15,9 +15,7 @@ import {
 	RegistryConfigSchema,
 } from "./config";
 import { logger } from "./log";
-import {
-	buildConfiguredRegistry,
-} from "./native";
+import { buildConfiguredRegistry } from "./native";
 import { convertNativeHttpResponse } from "./native-http";
 import type {
 	CoreRuntime,
@@ -64,9 +62,8 @@ function createApplicationFetch(
 			if (runtime.cancellationTokenAborted(request.cancelToken)) {
 				abortController.abort();
 			} else {
-				runtime.onCancellationTokenCancelled(
-					request.cancelToken,
-					() => abortController.abort(),
+				runtime.onCancellationTokenCancelled(request.cancelToken, () =>
+					abortController.abort(),
 				);
 			}
 		}
@@ -486,10 +483,7 @@ export class Registry<A extends RegistryActors> {
 					"registry envoy serve lifecycle did not initialize",
 				);
 			}
-			await Promise.all([
-				listenerPromise,
-				serveLifecyclePromise,
-			]);
+			await Promise.all([listenerPromise, serveLifecyclePromise]);
 			return;
 		}
 

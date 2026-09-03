@@ -89,13 +89,13 @@ impl HttpTunnelSender {
 		};
 		let mut message_index = self.message_index.lock().await;
 		let message = protocol::ToRivet::ToRivetTunnelMessage(protocol::ToRivetTunnelMessage {
-				message_id: protocol::MessageId {
-					gateway_id: self.gateway_id,
-					request_id: self.request_id,
-					message_index: *message_index,
-				},
-				message_kind,
-			});
+			message_id: protocol::MessageId {
+				gateway_id: self.gateway_id,
+				request_id: self.request_id,
+				message_index: *message_index,
+			},
+			message_kind,
+		});
 		let failed = match self.connection_session {
 			Some(session) => !matches!(
 				crate::connection::ws_send_http_for_session(&self.shared, message, session).await,
@@ -139,16 +139,14 @@ impl HttpTunnelSender {
 	}
 
 	async fn queue_transport_abort(&self) {
-		self.queue_terminal(
-			protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(
-				protocol::ToRivetResponseAbort {
-					reason: protocol::HttpStreamAbortReason {
-						kind: protocol::HttpStreamAbortReasonKind::InternalError,
-						detail: Some("gateway tunnel connection closed".to_owned()),
-					},
+		self.queue_terminal(protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(
+			protocol::ToRivetResponseAbort {
+				reason: protocol::HttpStreamAbortReason {
+					kind: protocol::HttpStreamAbortReasonKind::InternalError,
+					detail: Some("gateway tunnel connection closed".to_owned()),
 				},
-			),
-		)
+			},
+		))
 		.await;
 	}
 }
@@ -181,8 +179,7 @@ impl RequestBodyReceiveWindow {
 					let consumed = self
 						.consumed_bytes
 						.load(std::sync::atomic::Ordering::Acquire);
-					(next.checked_sub(consumed)?
-						<= protocol::HTTP_STREAM_INITIAL_WINDOW_BYTES)
+					(next.checked_sub(consumed)? <= protocol::HTTP_STREAM_INITIAL_WINDOW_BYTES)
 						.then_some(next)
 				},
 			)
@@ -567,10 +564,7 @@ pub(super) async fn handle_response_body_window_update(
 	}
 }
 
-pub(super) fn handle_req_body_cancel(
-	ctx: &mut ActorContext,
-	message_id: protocol::MessageId,
-) {
+pub(super) fn handle_req_body_cancel(ctx: &mut ActorContext, message_id: protocol::MessageId) {
 	let key: [&[u8]; 2] = [&message_id.gateway_id, &message_id.request_id];
 	if let Some(pending) = ctx.http_requests.pending.get_mut(&key) {
 		let reason = protocol::HttpStreamAbortReason {
@@ -583,9 +577,7 @@ pub(super) fn handle_req_body_cancel(
 			});
 		}
 		if let Some(body_abort_tx) = pending.body_abort_tx.take() {
-			body_abort_tx.send_replace(Some(HttpRequestBodyError {
-				reason,
-			}));
+			body_abort_tx.send_replace(Some(HttpRequestBodyError { reason }));
 		}
 		pending.body_tx = None;
 	}
@@ -770,16 +762,14 @@ async fn send_response(
 			headers.insert("content-length".to_owned(), buffered.len().to_string());
 		}
 		let _ = tunnel_sender
-			.send(
-				protocol::ToRivetTunnelMessageKind::ToRivetResponseStart(
-					protocol::ToRivetResponseStart {
-						status,
-						headers,
-						body: Some(buffered),
-						stream: false,
-					},
-				),
-			)
+			.send(protocol::ToRivetTunnelMessageKind::ToRivetResponseStart(
+				protocol::ToRivetResponseStart {
+					status,
+					headers,
+					body: Some(buffered),
+					stream: false,
+				},
+			))
 			.await;
 		return;
 	}
@@ -794,16 +784,14 @@ async fn send_response(
 	}
 
 	if tunnel_sender
-		.send(
-			protocol::ToRivetTunnelMessageKind::ToRivetResponseStart(
-				protocol::ToRivetResponseStart {
-					status,
-					headers,
-					body: if is_streaming { None } else { body.clone() },
-					stream: is_streaming,
-				},
-			),
-		)
+		.send(protocol::ToRivetTunnelMessageKind::ToRivetResponseStart(
+			protocol::ToRivetResponseStart {
+				status,
+				headers,
+				body: if is_streaming { None } else { body.clone() },
+				stream: is_streaming,
+			},
+		))
 		.await
 	{
 		return;
@@ -821,13 +809,8 @@ async fn send_response(
 	while let Some(chunk) = body_stream.recv().await {
 		let finish = match chunk {
 			ResponseChunk::Data { data, finish } => {
-				if send_response_data_chunks(
-					tunnel_sender,
-					response_body_window,
-					data,
-					finish,
-				)
-				.await
+				if send_response_data_chunks(tunnel_sender, response_body_window, data, finish)
+					.await
 				{
 					return;
 				}
@@ -875,8 +858,10 @@ async fn send_response_data_chunks(
 	let total_len = data.len();
 	for (idx, chunk) in data.chunks(HTTP_BODY_MAX_CHUNK_SIZE).enumerate() {
 		let chunk_finish = finish && (idx + 1) * HTTP_BODY_MAX_CHUNK_SIZE >= total_len;
-		if response_body_window.reserve(chunk.len() as u64).await.is_err()
-			|| send_response_chunk(tunnel_sender, chunk.to_vec(), chunk_finish).await
+		if response_body_window
+			.reserve(chunk.len() as u64)
+			.await
+			.is_err() || send_response_chunk(tunnel_sender, chunk.to_vec(), chunk_finish).await
 		{
 			return true;
 		}
@@ -890,11 +875,9 @@ async fn send_response_chunk(
 	finish: bool,
 ) -> bool {
 	tunnel_sender
-		.send(
-			protocol::ToRivetTunnelMessageKind::ToRivetResponseChunk(
-				protocol::ToRivetResponseChunk { body, finish },
-			),
-		)
+		.send(protocol::ToRivetTunnelMessageKind::ToRivetResponseChunk(
+			protocol::ToRivetResponseChunk { body, finish },
+		))
 		.await
 }
 
@@ -903,11 +886,9 @@ async fn send_response_abort(
 	reason: protocol::HttpStreamAbortReason,
 ) {
 	let _ = tunnel_sender
-		.send(
-			protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(
-				protocol::ToRivetResponseAbort { reason },
-			),
-		)
+		.send(protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(
+			protocol::ToRivetResponseAbort { reason },
+		))
 		.await;
 }
 
@@ -922,15 +903,13 @@ async fn send_fetch_error_response(tunnel_sender: &HttpTunnelSender) {
 	]);
 
 	let _ = tunnel_sender
-		.send(
-			protocol::ToRivetTunnelMessageKind::ToRivetResponseStart(
-				protocol::ToRivetResponseStart {
-					status: 500,
-					headers,
-					body: Some(body),
-					stream: false,
-				},
-			),
-		)
+		.send(protocol::ToRivetTunnelMessageKind::ToRivetResponseStart(
+			protocol::ToRivetResponseStart {
+				status: 500,
+				headers,
+				body: Some(body),
+				stream: false,
+			},
+		))
 		.await;
 }

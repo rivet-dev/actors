@@ -143,7 +143,9 @@ export class ActorHandleRaw {
 			// Dynamic (get/getOrCreate) handles resolve at the gateway per
 			// request so cross-datacenter queries forward to the reserved dc,
 			// rather than pre-resolving via the non-forwarding PUT /actors path.
-			let useQueryTarget = isDynamicActorQuery(this.#actorResolutionState);
+			let useQueryTarget = isDynamicActorQuery(
+				this.#actorResolutionState,
+			);
 
 			for (let attempt = 0; attempt < maxAttempts; attempt++) {
 				let actorId: string | undefined;

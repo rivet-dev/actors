@@ -91,8 +91,7 @@ async fn send_http_response_body_bytes(
 	in_flight_req: &InFlightRequestHandle,
 	body_tx: &mpsc::Sender<Result<Bytes, ResponseBodyError>>,
 	drop_rx: &mut watch::Receiver<Option<MsgGcReason>>,
-	http_response_abort_rx:
-		&mut watch::Receiver<Option<protocol::HttpStreamAbortReason>>,
+	http_response_abort_rx: &mut watch::Receiver<Option<protocol::HttpStreamAbortReason>>,
 	stopped_sub: &mut message::SubscriptionHandle<pegboard::workflows::actor2::Stopped>,
 	actor_id: Id,
 	body: Vec<u8>,
@@ -224,8 +223,7 @@ pub(super) async fn drain_http_response_stream(
 	in_flight_req: InFlightRequestHandle,
 	mut msg_rx: mpsc::UnboundedReceiver<InFlightTunnelMessage>,
 	mut drop_rx: watch::Receiver<Option<MsgGcReason>>,
-	mut http_response_abort_rx:
-		watch::Receiver<Option<protocol::HttpStreamAbortReason>>,
+	mut http_response_abort_rx: watch::Receiver<Option<protocol::HttpStreamAbortReason>>,
 	mut stopped_sub: message::SubscriptionHandle<pegboard::workflows::actor2::Stopped>,
 	body_tx: mpsc::Sender<Result<Bytes, ResponseBodyError>>,
 	initial_body: Option<Vec<u8>>,
@@ -469,11 +467,7 @@ async fn finish_envoy_response_abort(
 ) {
 	if let Some(reason) = &reason {
 		crate::metrics::HTTP_STREAM_ABORT_TOTAL
-			.with_label_values(&[
-				"response",
-				"actor",
-				super::abort_kind_label(&reason.kind),
-			])
+			.with_label_values(&["response", "actor", super::abort_kind_label(&reason.kind)])
 			.inc();
 	}
 	let message = match &reason {

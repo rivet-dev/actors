@@ -45,14 +45,20 @@ async fn connection_loop(shared: Arc<SharedContext>) {
 						tracing::debug!("connection evicted");
 						let _ = crate::envoy::send_to_envoy_tx(
 							&shared,
-							ToEnvoyMessage::ConnClose { evict: true, session },
+							ToEnvoyMessage::ConnClose {
+								evict: true,
+								session,
+							},
 						);
 						return;
 					}
 				}
 				let _ = crate::envoy::send_to_envoy_tx(
 					&shared,
-					ToEnvoyMessage::ConnClose { evict: false, session },
+					ToEnvoyMessage::ConnClose {
+						evict: false,
+						session,
+					},
 				);
 			}
 			Err(error) => {
@@ -63,7 +69,10 @@ async fn connection_loop(shared: Arc<SharedContext>) {
 				}
 				let _ = crate::envoy::send_to_envoy_tx(
 					&shared,
-					ToEnvoyMessage::ConnClose { evict: false, session },
+					ToEnvoyMessage::ConnClose {
+						evict: false,
+						session,
+					},
 				);
 			}
 		}

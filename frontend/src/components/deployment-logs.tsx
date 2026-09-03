@@ -282,11 +282,7 @@ export function DeploymentLogs({
 		return (
 			<div className="h-full flex flex-1 flex-col items-center justify-center gap-3">
 				<div className="text-center">
-					<p>
-						{hasMore
-							? "No logs available."
-							: "No logs found."}
-					</p>
+					<p>{hasMore ? "No logs available." : "No logs found."}</p>
 					<p className="text-muted-foreground text-xs mt-1">
 						{hasMore
 							? "Nothing matches this view in recent history. Older logs may exist."
@@ -305,7 +301,9 @@ export function DeploymentLogs({
 					<Button
 						variant="outline"
 						size="sm"
-						startIcon={<Icon icon={faArrowDown} className="rotate-180" />}
+						startIcon={
+							<Icon icon={faArrowDown} className="rotate-180" />
+						}
 						isLoading={isLoadingMore}
 						onClick={() => loadMoreHistory()}
 					>

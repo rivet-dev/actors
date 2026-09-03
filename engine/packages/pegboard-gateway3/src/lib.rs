@@ -199,6 +199,173 @@ impl PegboardGateway3 {
 			}
 
 			tracing::debug!(
+				actor_id = %self.actor_id,
+				actor_key = ?self.actor_key,
+				actor_generation = ?self.actor_generation,
+				namespace_id = %self.namespace_id,
+				pool_name = %self.pool_name,
+				envoy_key = %self.envoy_key,
+				gateway_id = %display_id(&gateway_id),
+				request_id = %display_id(&request_id),
+				path = %self.path,
+				"gateway waiting for websocket open from tunnel"
+			);
+
+			// Wait for WebSocket open acknowledgment. On restore, this is also the
+			// generation-rebind barrier for buffered and newly received client frames.
+			let fut = async {
+				loop {
+					tokio::select! {
+						res = msg_rx.recv() => {
+							if let Some(msg) = res {
+								match msg.message_kind {
+									protocol::ToRivetTunnelMessageKind::ToRivetWebSocketOpen(msg) => {
+										tracing::trace!(
+											actor_id = %self.actor_id,
+											actor_key = ?self.actor_key,
+											actor_generation = ?self.actor_generation,
+											namespace_id = %self.namespace_id,
+											pool_name = %self.pool_name,
+											envoy_key = %self.envoy_key,
+											gateway_id = %display_id(&gateway_id),
+											request_id = %display_id(&request_id),
+											can_hibernate = msg.can_hibernate,
+											"websocket open reached gateway handler"
+										);
+										tracing::debug!(
+											actor_id = %self.actor_id,
+											actor_key = ?self.actor_key,
+											actor_generation = ?self.actor_generation,
+											namespace_id = %self.namespace_id,
+											pool_name = %self.pool_name,
+											envoy_key = %self.envoy_key,
+											gateway_id = %display_id(&gateway_id),
+											request_id = %display_id(&request_id),
+											can_hibernate = msg.can_hibernate,
+											"received websocket open from envoy"
+										);
+										return anyhow::Ok(msg);
+									}
+									protocol::ToRivetTunnelMessageKind::ToRivetWebSocketClose(close) => {
+										tracing::warn!(
+											actor_id = %self.actor_id,
+											actor_key = ?self.actor_key,
+											actor_generation = ?self.actor_generation,
+											namespace_id = %self.namespace_id,
+											pool_name = %self.pool_name,
+											envoy_key = %self.envoy_key,
+											gateway_id = %display_id(&gateway_id),
+											request_id = %display_id(&request_id),
+											?close,
+											"websocket closed before opening"
+										);
+										return Err(WebSocketClosedBeforeOpen {
+											close_code: close
+												.code
+												.map(|code| code.to_string())
+												.unwrap_or_else(|| "none".to_owned()),
+											close_reason: close.reason.unwrap_or_else(|| "none".to_owned()),
+										}
+										.build());
+									}
+									_ => {
+										tracing::warn!(
+											actor_id = %self.actor_id,
+											actor_key = ?self.actor_key,
+											actor_generation = ?self.actor_generation,
+											namespace_id = %self.namespace_id,
+											pool_name = %self.pool_name,
+											envoy_key = %self.envoy_key,
+											gateway_id = %display_id(&gateway_id),
+											request_id = %display_id(&request_id),
+											"received unexpected message while waiting for websocket open"
+										);
+									}
+								}
+							} else {
+								tracing::warn!(
+									actor_id = %self.actor_id,
+									actor_key = ?self.actor_key,
+									actor_generation = ?self.actor_generation,
+									namespace_id = %self.namespace_id,
+									pool_name = %self.pool_name,
+									envoy_key = %self.envoy_key,
+									gateway_id = %display_id(&gateway_id),
+									request_id = %display_id(&request_id),
+									"received empty message response during ws init",
+								);
+								break;
+							}
+						}
+						_ = stopped_sub.next() => {
+							tracing::warn!(
+								actor_id = %self.actor_id,
+								actor_key = ?self.actor_key,
+								actor_generation = ?self.actor_generation,
+								namespace_id = %self.namespace_id,
+								pool_name = %self.pool_name,
+								envoy_key = %self.envoy_key,
+								gateway_id = %display_id(&gateway_id),
+								request_id = %display_id(&request_id),
+								path = %self.path,
+								"actor stopped while waiting for websocket open"
+							);
+							return Err(ActorStoppedWhileWaitingForWebSocketOpen {
+								actor_id: self.actor_id.to_string(),
+								phase: PHASE_WAITING_FOR_WEBSOCKET_OPEN.to_owned(),
+							}
+							.build());
+						}
+						_ = drop_rx.changed() => {
+							tracing::warn!(
+								actor_id = %self.actor_id,
+								actor_key = ?self.actor_key,
+								actor_generation = ?self.actor_generation,
+								namespace_id = %self.namespace_id,
+								pool_name = %self.pool_name,
+								envoy_key = %self.envoy_key,
+								gateway_id = %display_id(&gateway_id),
+								request_id = %display_id(&request_id),
+								reason = ?drop_rx.borrow(),
+								"websocket open dropped"
+							);
+							return Err(WebSocketOpenDropped {
+								phase: PHASE_WAITING_FOR_WEBSOCKET_OPEN.to_owned(),
+								reason: format!("{:?}", drop_rx.borrow().as_ref()),
+							}
+							.build());
+						}
+					}
+				}
+
+				Err(WebSocketOpenResponseClosed {
+					phase: PHASE_WAITING_FOR_WEBSOCKET_OPEN.to_owned(),
+				}
+				.build())
+			};
+
+			let websocket_open_timeout = Duration::from_millis(
+				self.ctx
+					.config()
+					.pegboard()
+					.gateway_websocket_open_timeout_ms(),
+			);
+			let open_wait_start = Instant::now();
+			let open_msg_result = tokio::time::timeout(websocket_open_timeout, fut).await;
+			let open_wait_result = match &open_msg_result {
+				Ok(Ok(_)) => "ok",
+				Ok(Err(_)) => "error",
+				Err(_) => "timeout",
+			};
+			metrics::WEBSOCKET_OPEN_WAIT_SECONDS
+				.with_label_values(&[
+					self.namespace_id.to_string().as_str(),
+					self.pool_name.as_str(),
+					open_wait_result,
+				])
+				.observe(open_wait_start.elapsed().as_secs_f64());
+			if open_wait_start.elapsed() >= SLOW_WEBSOCKET_OPEN_WAIT_THRESHOLD {
+				tracing::warn!(
 					actor_id = %self.actor_id,
 					actor_key = ?self.actor_key,
 					actor_generation = ?self.actor_generation,
@@ -207,197 +374,30 @@ impl PegboardGateway3 {
 					envoy_key = %self.envoy_key,
 					gateway_id = %display_id(&gateway_id),
 					request_id = %display_id(&request_id),
-					path = %self.path,
-					"gateway waiting for websocket open from tunnel"
+					result = open_wait_result,
+					duration_ms = open_wait_start.elapsed().as_millis() as u64,
+					"slow websocket open wait"
 				);
-
-			// Wait for WebSocket open acknowledgment. On restore, this is also the
-			// generation-rebind barrier for buffered and newly received client frames.
-			let fut = async {
-					loop {
-						tokio::select! {
-							res = msg_rx.recv() => {
-								if let Some(msg) = res {
-									match msg.message_kind {
-										protocol::ToRivetTunnelMessageKind::ToRivetWebSocketOpen(msg) => {
-											tracing::trace!(
-												actor_id = %self.actor_id,
-												actor_key = ?self.actor_key,
-												actor_generation = ?self.actor_generation,
-												namespace_id = %self.namespace_id,
-												pool_name = %self.pool_name,
-												envoy_key = %self.envoy_key,
-												gateway_id = %display_id(&gateway_id),
-												request_id = %display_id(&request_id),
-												can_hibernate = msg.can_hibernate,
-												"websocket open reached gateway handler"
-											);
-											tracing::debug!(
-												actor_id = %self.actor_id,
-												actor_key = ?self.actor_key,
-												actor_generation = ?self.actor_generation,
-												namespace_id = %self.namespace_id,
-												pool_name = %self.pool_name,
-												envoy_key = %self.envoy_key,
-												gateway_id = %display_id(&gateway_id),
-												request_id = %display_id(&request_id),
-												can_hibernate = msg.can_hibernate,
-												"received websocket open from envoy"
-											);
-											return anyhow::Ok(msg);
-										}
-										protocol::ToRivetTunnelMessageKind::ToRivetWebSocketClose(close) => {
-											tracing::warn!(
-												actor_id = %self.actor_id,
-												actor_key = ?self.actor_key,
-												actor_generation = ?self.actor_generation,
-												namespace_id = %self.namespace_id,
-												pool_name = %self.pool_name,
-												envoy_key = %self.envoy_key,
-												gateway_id = %display_id(&gateway_id),
-												request_id = %display_id(&request_id),
-												?close,
-												"websocket closed before opening"
-											);
-											return Err(WebSocketClosedBeforeOpen {
-												close_code: close
-													.code
-													.map(|code| code.to_string())
-													.unwrap_or_else(|| "none".to_owned()),
-												close_reason: close.reason.unwrap_or_else(|| "none".to_owned()),
-											}
-											.build());
-										}
-										_ => {
-											tracing::warn!(
-												actor_id = %self.actor_id,
-												actor_key = ?self.actor_key,
-												actor_generation = ?self.actor_generation,
-												namespace_id = %self.namespace_id,
-												pool_name = %self.pool_name,
-												envoy_key = %self.envoy_key,
-												gateway_id = %display_id(&gateway_id),
-												request_id = %display_id(&request_id),
-												"received unexpected message while waiting for websocket open"
-											);
-										}
-									}
-								} else {
-									tracing::warn!(
-										actor_id = %self.actor_id,
-										actor_key = ?self.actor_key,
-										actor_generation = ?self.actor_generation,
-										namespace_id = %self.namespace_id,
-										pool_name = %self.pool_name,
-										envoy_key = %self.envoy_key,
-										gateway_id = %display_id(&gateway_id),
-										request_id = %display_id(&request_id),
-										"received empty message response during ws init",
-									);
-									break;
-								}
-							}
-							_ = stopped_sub.next() => {
-								tracing::warn!(
-									actor_id = %self.actor_id,
-									actor_key = ?self.actor_key,
-									actor_generation = ?self.actor_generation,
-									namespace_id = %self.namespace_id,
-									pool_name = %self.pool_name,
-									envoy_key = %self.envoy_key,
-									gateway_id = %display_id(&gateway_id),
-									request_id = %display_id(&request_id),
-									path = %self.path,
-									"actor stopped while waiting for websocket open"
-								);
-								return Err(ActorStoppedWhileWaitingForWebSocketOpen {
-									actor_id: self.actor_id.to_string(),
-									phase: PHASE_WAITING_FOR_WEBSOCKET_OPEN.to_owned(),
-								}
-								.build());
-							}
-							_ = drop_rx.changed() => {
-								tracing::warn!(
-									actor_id = %self.actor_id,
-									actor_key = ?self.actor_key,
-									actor_generation = ?self.actor_generation,
-									namespace_id = %self.namespace_id,
-									pool_name = %self.pool_name,
-									envoy_key = %self.envoy_key,
-									gateway_id = %display_id(&gateway_id),
-									request_id = %display_id(&request_id),
-									reason = ?drop_rx.borrow(),
-									"websocket open dropped"
-								);
-								return Err(WebSocketOpenDropped {
-									phase: PHASE_WAITING_FOR_WEBSOCKET_OPEN.to_owned(),
-									reason: format!("{:?}", drop_rx.borrow().as_ref()),
-								}
-								.build());
-							}
-						}
-					}
-
-					Err(WebSocketOpenResponseClosed {
-						phase: PHASE_WAITING_FOR_WEBSOCKET_OPEN.to_owned(),
-					}
-					.build())
-				};
-
-			let websocket_open_timeout = Duration::from_millis(
-					self.ctx
-						.config()
-						.pegboard()
-						.gateway_websocket_open_timeout_ms(),
-				);
-			let open_wait_start = Instant::now();
-			let open_msg_result = tokio::time::timeout(websocket_open_timeout, fut).await;
-			let open_wait_result = match &open_msg_result {
-					Ok(Ok(_)) => "ok",
-					Ok(Err(_)) => "error",
-					Err(_) => "timeout",
-				};
-			metrics::WEBSOCKET_OPEN_WAIT_SECONDS
-					.with_label_values(&[
-						self.namespace_id.to_string().as_str(),
-						self.pool_name.as_str(),
-						open_wait_result,
-					])
-					.observe(open_wait_start.elapsed().as_secs_f64());
-			if open_wait_start.elapsed() >= SLOW_WEBSOCKET_OPEN_WAIT_THRESHOLD {
-					tracing::warn!(
-						actor_id = %self.actor_id,
-						actor_key = ?self.actor_key,
-						actor_generation = ?self.actor_generation,
-						namespace_id = %self.namespace_id,
-						pool_name = %self.pool_name,
-						envoy_key = %self.envoy_key,
-						gateway_id = %display_id(&gateway_id),
-						request_id = %display_id(&request_id),
-						result = open_wait_result,
-						duration_ms = open_wait_start.elapsed().as_millis() as u64,
-						"slow websocket open wait"
-					);
-				}
+			}
 			let open_msg = open_msg_result.map_err(|_| {
-					tracing::warn!(
-						actor_id = %self.actor_id,
-						actor_key = ?self.actor_key,
-						actor_generation = ?self.actor_generation,
-						namespace_id = %self.namespace_id,
-						pool_name = %self.pool_name,
-						envoy_key = %self.envoy_key,
-						gateway_id = %display_id(&gateway_id),
-						request_id = %display_id(&request_id),
-						timeout_ms = websocket_open_timeout.as_millis() as u64,
-						path = %self.path,
-						"timed out waiting for websocket open from envoy"
-					);
+				tracing::warn!(
+					actor_id = %self.actor_id,
+					actor_key = ?self.actor_key,
+					actor_generation = ?self.actor_generation,
+					namespace_id = %self.namespace_id,
+					pool_name = %self.pool_name,
+					envoy_key = %self.envoy_key,
+					gateway_id = %display_id(&gateway_id),
+					request_id = %display_id(&request_id),
+					timeout_ms = websocket_open_timeout.as_millis() as u64,
+					path = %self.path,
+					"timed out waiting for websocket open from envoy"
+				);
 
-					WebSocketOpenTimeout {
-						timeout_ms: websocket_open_timeout.as_millis() as u64,
-					}
-					.build()
+				WebSocketOpenTimeout {
+					timeout_ms: websocket_open_timeout.as_millis() as u64,
+				}
+				.build()
 			})??;
 
 			in_flight_req

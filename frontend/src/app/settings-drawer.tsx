@@ -27,11 +27,7 @@ import {
 } from "@/components/actors/data-provider";
 import { features } from "@/lib/features";
 import { BillingUsageGauge } from "./billing/billing-usage-gauge";
-import {
-	PoolSwitcher,
-	poolHeaderText,
-	resolvePoolName,
-} from "./pool-switcher";
+import { PoolSwitcher, poolHeaderText, resolvePoolName } from "./pool-switcher";
 import { BillingPanel } from "./settings-pages/billing-panel";
 import { NamespaceComputeContent } from "./settings-pages/namespace-compute";
 import {

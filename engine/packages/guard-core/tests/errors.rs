@@ -1,8 +1,7 @@
 use rivet_error::RivetError;
 use rivet_guard_core::errors::{
-	ActorStoppedWhileWaitingForWebSocketOpen, ActorWakeRetriesExceeded,
-	RequestDeliveryUnconfirmed, TunnelMessageTimeout, WebSocketOpenTimeout,
-	WebSocketTargetChanged,
+	ActorStoppedWhileWaitingForWebSocketOpen, ActorWakeRetriesExceeded, RequestDeliveryUnconfirmed,
+	TunnelMessageTimeout, WebSocketOpenTimeout, WebSocketTargetChanged,
 };
 
 #[test]

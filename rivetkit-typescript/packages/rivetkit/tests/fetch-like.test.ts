@@ -37,9 +37,7 @@ describe("fetch objects across JavaScript realms", () => {
 			requestFromAnotherRealm,
 		);
 
-		expect(forwarded?.url).toBe(
-			"http://actor/request/path?query=yes",
-		);
+		expect(forwarded?.url).toBe("http://actor/request/path?query=yes");
 		expect(forwarded?.headers.get("x-source")).toBe("present");
 		expect(
 			forwarded?.headers.get("x-rivet-internal-original-request-url"),

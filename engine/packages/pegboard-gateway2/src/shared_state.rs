@@ -70,9 +70,7 @@ fn to_envoy_tunnel_message_kind_name(kind: &protocol::ToEnvoyTunnelMessageKind) 
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(_) => "ToEnvoyRequestStart",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestChunk(_) => "ToEnvoyRequestChunk",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(_) => "ToEnvoyRequestAbort",
-		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestBodyCancel => {
-			"ToEnvoyRequestBodyCancel"
-		}
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestBodyCancel => "ToEnvoyRequestBodyCancel",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyResponseBodyWindowUpdate(_) => {
 			"ToEnvoyResponseBodyWindowUpdate"
 		}
@@ -90,9 +88,7 @@ fn to_rivet_tunnel_message_kind_name(kind: &protocol::ToRivetTunnelMessageKind) 
 		protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyWindowUpdate(_) => {
 			"ToRivetRequestBodyWindowUpdate"
 		}
-		protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyCancel => {
-			"ToRivetRequestBodyCancel"
-		}
+		protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyCancel => "ToRivetRequestBodyCancel",
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketOpen(_) => "ToRivetWebSocketOpen",
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketMessage(_) => "ToRivetWebSocketMessage",
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketMessageAck(_) => {
@@ -1503,9 +1499,7 @@ mod tests {
 
 	use super::*;
 
-	fn serialize_v6_tunnel_message(
-		message_kind: protocol::ToEnvoyTunnelMessageKind,
-	) -> Vec<u8> {
+	fn serialize_v6_tunnel_message(message_kind: protocol::ToEnvoyTunnelMessageKind) -> Vec<u8> {
 		serialize_for_envoy(
 			protocol::ToEnvoyConn::ToEnvoyTunnelMessage(protocol::ToEnvoyTunnelMessage {
 				message_id: protocol::MessageId {
@@ -1531,8 +1525,8 @@ mod tests {
 
 	#[test]
 	fn v6_http_request_start_is_encoded_as_a_v6_transport_frame() {
-		let encoded = serialize_v6_tunnel_message(
-			protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
+		let encoded =
+			serialize_v6_tunnel_message(protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
 				protocol::ToEnvoyRequestStart {
 					actor_id: "actor".into(),
 					actor_generation: None,
@@ -1543,15 +1537,14 @@ mod tests {
 					stream: false,
 					response_stream: false,
 				},
-			),
-		);
+			));
 
 		assert_eq!(&encoded[..2], &6u16.to_le_bytes());
 		let decoded = versioned::ToEnvoyConn::deserialize_version(&encoded[2..], 6)
 			.expect("decode raw V6 HTTP frame");
-		let versioned::ToEnvoyConn::V6(
-			protocol::generated::v6::ToEnvoyConn::ToEnvoyTunnelMessage(message),
-		) = decoded
+		let versioned::ToEnvoyConn::V6(protocol::generated::v6::ToEnvoyConn::ToEnvoyTunnelMessage(
+			message,
+		)) = decoded
 		else {
 			panic!("expected a V6 tunnel message");
 		};
@@ -1563,23 +1556,22 @@ mod tests {
 
 	#[test]
 	fn v6_websocket_open_is_encoded_as_a_v6_transport_frame() {
-		let encoded = serialize_v6_tunnel_message(
-			protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(
+		let encoded =
+			serialize_v6_tunnel_message(protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(
 				protocol::ToEnvoyWebSocketOpen {
 					actor_id: "actor".into(),
 					actor_generation: None,
 					path: "/socket".into(),
 					headers: HashMap::new(),
 				},
-			),
-		);
+			));
 
 		assert_eq!(&encoded[..2], &6u16.to_le_bytes());
 		let decoded = versioned::ToEnvoyConn::deserialize_version(&encoded[2..], 6)
 			.expect("decode raw V6 websocket frame");
-		let versioned::ToEnvoyConn::V6(
-			protocol::generated::v6::ToEnvoyConn::ToEnvoyTunnelMessage(message),
-		) = decoded
+		let versioned::ToEnvoyConn::V6(protocol::generated::v6::ToEnvoyConn::ToEnvoyTunnelMessage(
+			message,
+		)) = decoded
 		else {
 			panic!("expected a V6 tunnel message");
 		};

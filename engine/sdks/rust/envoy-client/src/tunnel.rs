@@ -139,13 +139,8 @@ pub async fn handle_tunnel_message(
 			let cancellation_key = match request_abort_cancellation_key(&message_id, &abort) {
 				Ok(key) => key,
 				Err(detail) => {
-					handle_http_protocol_violation(
-						ctx,
-						connection_session,
-						message_id,
-						detail,
-					)
-					.await;
+					handle_http_protocol_violation(ctx, connection_session, message_id, detail)
+						.await;
 					return;
 				}
 			};
@@ -175,12 +170,12 @@ pub async fn handle_tunnel_message(
 				// V6 cancellation has no actor identity, so preserve its ordered behavior.
 				handle_request_abort(ctx, message_id, abort, None);
 			} else {
-					handle_http_protocol_violation(
-						ctx,
-						connection_session,
-						message_id,
-						"invalid HTTP request-abort sequence",
-					)
+				handle_http_protocol_violation(
+					ctx,
+					connection_session,
+					message_id,
+					"invalid HTTP request-abort sequence",
+				)
 				.await;
 			}
 		}
@@ -359,8 +354,7 @@ async fn handle_request_start(
 	}
 	prune_http_request_cancellations(ctx);
 	if let Some(actor_generation) = actor_generation {
-		let cancellation_key =
-			request_cancellation_key(&message_id, &actor_id, actor_generation);
+		let cancellation_key = request_cancellation_key(&message_id, &actor_id, actor_generation);
 		if ctx
 			.http_request_cancellations
 			.contains_key(&cancellation_key)

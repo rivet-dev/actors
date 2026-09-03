@@ -59,9 +59,7 @@ mod tests {
 
 	#[test]
 	fn guard_gateway_v3_defaults_to_off() {
-		let config = crate::config::Root::default()
-			.features()
-			.guard_gateway_v3();
+		let config = crate::config::Root::default().features().guard_gateway_v3();
 		assert_eq!(config.mode, GuardGatewayV3Mode::Off);
 		assert_eq!(config.percentage, 0);
 	}

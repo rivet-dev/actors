@@ -45,7 +45,8 @@ export interface BridgeRivetErrorPayload extends RivetErrorLike {}
  * Shape as it arrives from the native bridge, where an absent ray ID serializes
  * to null. Normalized to a BridgeRivetErrorPayload before validation.
  */
-interface NativeBridgeErrorPayload extends Omit<BridgeRivetErrorPayload, "rayId"> {
+interface NativeBridgeErrorPayload
+	extends Omit<BridgeRivetErrorPayload, "rayId"> {
 	rayId?: string | null;
 }
 

@@ -368,13 +368,15 @@ mod tests {
 	async fn request_body_returns_credit_only_when_consumed() {
 		let queue = HttpRequestBodyQueue::new();
 		let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-		let mut body =
-			HttpRequestBodyStream::new_with_flow_control(queue.clone(), event_tx);
+		let mut body = HttpRequestBodyStream::new_with_flow_control(queue.clone(), event_tx);
 		assert!(queue.push(vec![1, 2, 3]));
 
 		assert!(event_rx.try_recv().is_err());
 		assert_eq!(body.recv().await.expect("read body"), Some(vec![1, 2, 3]));
-		assert!(matches!(event_rx.recv().await, Some(RequestBodyEvent::Consumed(3))));
+		assert!(matches!(
+			event_rx.recv().await,
+			Some(RequestBodyEvent::Consumed(3))
+		));
 	}
 
 	#[tokio::test]
@@ -385,15 +387,17 @@ mod tests {
 
 		drop(body);
 
-		assert!(matches!(event_rx.recv().await, Some(RequestBodyEvent::Cancelled)));
+		assert!(matches!(
+			event_rx.recv().await,
+			Some(RequestBodyEvent::Cancelled)
+		));
 	}
 
 	#[tokio::test]
 	async fn request_body_coalesces_tiny_frames_within_the_byte_window() {
 		let queue = HttpRequestBodyQueue::new();
 		let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-		let mut body =
-			HttpRequestBodyStream::new_with_flow_control(queue.clone(), event_tx);
+		let mut body = HttpRequestBodyStream::new_with_flow_control(queue.clone(), event_tx);
 		for byte in 0..=255u8 {
 			assert!(queue.push(vec![byte]));
 		}
@@ -401,7 +405,10 @@ mod tests {
 
 		let chunk = body.recv().await.expect("read coalesced body").unwrap();
 		assert_eq!(chunk, (0..=255u8).collect::<Vec<_>>());
-		assert!(matches!(event_rx.recv().await, Some(RequestBodyEvent::Consumed(256))));
+		assert!(matches!(
+			event_rx.recv().await,
+			Some(RequestBodyEvent::Consumed(256))
+		));
 		assert_eq!(body.recv().await.expect("read request eof"), None);
 	}
 
@@ -426,7 +433,10 @@ mod tests {
 			.is_err()
 		);
 
-		window.update_consumed(1).await.expect("return one byte of credit");
+		window
+			.update_consumed(1)
+			.await
+			.expect("return one byte of credit");
 		blocked
 			.await
 			.expect("join blocked reservation")
@@ -440,6 +450,9 @@ mod tests {
 		window.update_consumed(5).await.expect("consume bytes");
 		assert!(window.update_consumed(4).await.is_err());
 		assert!(window.update_consumed(11).await.is_err());
-		window.update_consumed(5).await.expect("duplicate cumulative ack");
+		window
+			.update_consumed(5)
+			.await
+			.expect("duplicate cumulative ack");
 	}
 }

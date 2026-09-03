@@ -111,7 +111,8 @@ export function useLogScroll({
 
 	const handleScrollChange = useCallback(
 		(instance: Virtualizer<HTMLDivElement, Element>) => {
-			const isAtBottom = (instance.range?.endIndex ?? 0) >= totalCount - 1;
+			const isAtBottom =
+				(instance.range?.endIndex ?? 0) >= totalCount - 1;
 			if (isAtBottom) {
 				return setFollow(true);
 			}

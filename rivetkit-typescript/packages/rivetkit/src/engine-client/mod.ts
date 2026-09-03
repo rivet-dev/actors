@@ -462,7 +462,7 @@ export class RemoteEngineControlClient implements EngineControlClient {
 				undefined,
 				"getOrCreateForKey" in target
 					? (target.getOrCreateForKey.poolName ??
-						this.#config.poolName)
+							this.#config.poolName)
 					: undefined,
 				options,
 			);

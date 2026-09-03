@@ -74,7 +74,10 @@ async fn consumption_runs_only_when_data_is_yielded() {
 		.await
 		.expect("response frame")
 		.expect("response data");
-	assert_eq!(frame.into_data().expect("data frame"), Bytes::from_static(b"data"));
+	assert_eq!(
+		frame.into_data().expect("data frame"),
+		Bytes::from_static(b"data")
+	);
 	assert_eq!(consumed.load(Ordering::SeqCst), 4);
 }
 

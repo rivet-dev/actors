@@ -34,11 +34,7 @@ function TitleWithSwitcher({
 				{poolHeaderText(pools, suffix, generic)}
 			</h1>
 			{pools.length > 1 ? (
-				<PoolSwitcher
-					pools={pools}
-					value={value}
-					onChange={setValue}
-				/>
+				<PoolSwitcher pools={pools} value={value} onChange={setValue} />
 			) : null}
 		</div>
 	);

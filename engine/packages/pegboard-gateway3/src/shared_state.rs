@@ -630,8 +630,7 @@ pub struct InFlightRequestCtx {
 	/// This is separate from `msg_rx` there may still be messages that need to be sent to the
 	/// request after `msg_rx` has dropped.
 	pub drop_rx: watch::Receiver<Option<MsgGcReason>>,
-	pub http_response_abort_rx:
-		watch::Receiver<Option<protocol::HttpStreamAbortReason>>,
+	pub http_response_abort_rx: watch::Receiver<Option<protocol::HttpStreamAbortReason>>,
 	pub handle: InFlightRequestHandle,
 }
 
@@ -1013,7 +1012,10 @@ impl InFlightRequestHandle {
 					if is_request_start {
 						self.mark_request_start_indeterminate(current_message_index)
 							.await?;
-					tracing::warn!(?error, "request start handoff failed with unknown delivery status");
+						tracing::warn!(
+							?error,
+							"request start handoff failed with unknown delivery status"
+						);
 						return Err(RequestDeliveryUnconfirmed {
 							phase: "request_start".to_owned(),
 							reason: "envoy_handoff_error".to_owned(),
@@ -1657,10 +1659,7 @@ mod tests {
 			.await
 			.expect("subscribe test Envoy receiver");
 		let observer = tokio::spawn(async move {
-			let NextOutput::Message(start) = receiver
-				.next()
-				.await
-				.expect("receive request start")
+			let NextOutput::Message(start) = receiver.next().await.expect("receive request start")
 			else {
 				panic!("expected request start");
 			};
@@ -1668,26 +1667,21 @@ mod tests {
 				.expect("decode request start");
 			assert!(matches!(
 				start,
-				protocol::ToEnvoyConn::ToEnvoyTunnelMessage(
-					protocol::ToEnvoyTunnelMessage {
-						message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(_),
-						..
-					}
-				)
+				protocol::ToEnvoyConn::ToEnvoyTunnelMessage(protocol::ToEnvoyTunnelMessage {
+					message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(_),
+					..
+				})
 			));
 			// Deliberately drop this handoff acknowledgement after observing delivery.
 
-			let NextOutput::Message(abort_message) = receiver
-				.next()
-				.await
-				.expect("receive cancellation")
+			let NextOutput::Message(abort_message) =
+				receiver.next().await.expect("receive cancellation")
 			else {
 				panic!("expected request cancellation");
 			};
-			let decoded = versioned::ToEnvoyConn::deserialize_with_embedded_version(
-				&abort_message.payload,
-			)
-			.expect("decode request cancellation");
+			let decoded =
+				versioned::ToEnvoyConn::deserialize_with_embedded_version(&abort_message.payload)
+					.expect("decode request cancellation");
 			let protocol::ToEnvoyConn::ToEnvoyTunnelMessage(protocol::ToEnvoyTunnelMessage {
 				message_id,
 				message_kind: protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(abort),
