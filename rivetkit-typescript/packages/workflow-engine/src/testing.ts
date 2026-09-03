@@ -173,6 +173,13 @@ export class InMemoryDriver implements EngineDriver {
 		this.kv.delete(keyToHex(key));
 	}
 
+	async batchDelete(keys: Uint8Array[]): Promise<void> {
+		await sleep(this.latency);
+		for (const key of keys) {
+			this.kv.delete(keyToHex(key));
+		}
+	}
+
 	async deletePrefix(prefix: Uint8Array): Promise<void> {
 		await sleep(this.latency);
 		for (const [hexKey, entry] of this.kv) {

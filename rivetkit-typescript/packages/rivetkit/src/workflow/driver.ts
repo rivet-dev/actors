@@ -116,6 +116,11 @@ class WorkflowStorage {
 		);
 	}
 
+	async batchDelete(keys: Uint8Array[]): Promise<void> {
+		if (keys.length === 0) return;
+		await this.deleteRawKeys(keys.map((key) => makeWorkflowKey(key)));
+	}
+
 	async deletePrefix(prefix: Uint8Array): Promise<void> {
 		const start = makeWorkflowKey(prefix);
 		const end = computeUpperBound(start);
@@ -344,6 +349,10 @@ export class ActorWorkflowDriver implements EngineDriver {
 		await this.#runCtx.internalKeepAwake(this.#storage.delete(key));
 	}
 
+	async batchDelete(keys: Uint8Array[]): Promise<void> {
+		await this.#runCtx.internalKeepAwake(this.#storage.batchDelete(keys));
+	}
+
 	async deletePrefix(prefix: Uint8Array): Promise<void> {
 		await this.#runCtx.internalKeepAwake(
 			this.#storage.deletePrefix(prefix),
@@ -436,6 +445,10 @@ export class ActorWorkflowControlDriver implements EngineDriver {
 
 	async delete(key: Uint8Array): Promise<void> {
 		await this.#storage.delete(key);
+	}
+
+	async batchDelete(keys: Uint8Array[]): Promise<void> {
+		await this.#storage.batchDelete(keys);
 	}
 
 	async deletePrefix(prefix: Uint8Array): Promise<void> {
