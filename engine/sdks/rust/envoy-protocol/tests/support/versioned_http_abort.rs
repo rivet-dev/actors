@@ -120,6 +120,7 @@ fn v6_request_start_upgrades_without_response_streaming() -> Result<()> {
 	let v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(start) = msg.message_kind else {
 		panic!("expected request start");
 	};
+	assert_eq!(start.actor_generation, None);
 	assert!(!start.response_stream);
 	Ok(())
 }
@@ -136,12 +137,65 @@ fn v7_response_stream_request_cannot_downgrade_to_v6() {
 			message_kind: v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
 				v7::ToEnvoyRequestStart {
 					actor_id: "actor".into(),
+					actor_generation: None,
 					method: "GET".into(),
 					path: "/events".into(),
 					headers: Default::default(),
 					body: None,
 					stream: false,
 					response_stream: true,
+				},
+			),
+		},
+	))
+	.serialize(6);
+
+	assert!(result.is_err());
+}
+
+#[test]
+fn v7_generation_routed_http_request_cannot_downgrade_to_v6() {
+	let result = ToEnvoy::wrap_latest(v7::ToEnvoy::ToEnvoyTunnelMessage(
+		v7::ToEnvoyTunnelMessage {
+			message_id: v7::MessageId {
+				gateway_id: [1; 4],
+				request_id: [7; 4],
+				message_index: 0,
+			},
+			message_kind: v7::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
+				v7::ToEnvoyRequestStart {
+					actor_id: "actor".into(),
+					actor_generation: Some(3),
+					method: "POST".into(),
+					path: "/upload".into(),
+					headers: Default::default(),
+					body: None,
+					stream: true,
+					response_stream: false,
+				},
+			),
+		},
+	))
+	.serialize(6);
+
+	assert!(result.is_err());
+}
+
+#[test]
+fn v7_generation_routed_websocket_cannot_downgrade_to_v6() {
+	let result = ToEnvoy::wrap_latest(v7::ToEnvoy::ToEnvoyTunnelMessage(
+		v7::ToEnvoyTunnelMessage {
+			message_id: v7::MessageId {
+				gateway_id: [1; 4],
+				request_id: [7; 4],
+				message_index: 0,
+			},
+			message_kind: v7::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(
+				v7::ToEnvoyWebSocketOpen {
+					actor_id: "actor".into(),
+					actor_generation: Some(3),
+					path: "/socket".into(),
+					headers: Default::default(),
 				},
 			),
 		},

@@ -15,6 +15,7 @@ import type {
 	DriverSqliteBackend,
 	DriverTestConfig,
 } from "./shared-types";
+import type { SharedTestEngineOptions } from "../shared-engine";
 
 const describeDriverSuite =
 	process.env.RIVETKIT_DRIVER_TEST_PARALLEL === "1"
@@ -27,7 +28,9 @@ export interface DriverMatrixOptions {
 	encodings?: Array<NonNullable<DriverTestConfig["encoding"]>>;
 	runtimes?: DriverRuntime[];
 	sqliteBackends?: DriverSqliteBackend[];
-	config?: Pick<DriverTestConfig, "features" | "skip">;
+	config?: Pick<DriverTestConfig, "features" | "skip"> & {
+		engine?: SharedTestEngineOptions;
+	};
 }
 
 export const SQLITE_DRIVER_MATRIX_OPTIONS = {

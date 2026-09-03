@@ -63,6 +63,22 @@ fn v6_websocket_round_trips_through_v7() -> Result<()> {
 }
 
 #[test]
+fn v6_websocket_open_round_trips_without_generation() -> Result<()> {
+	assert_to_envoy_round_trip(v6::ToEnvoy::ToEnvoyTunnelMessage(
+		v6::ToEnvoyTunnelMessage {
+			message_id: message_id(),
+			message_kind: v6::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(
+				v6::ToEnvoyWebSocketOpen {
+					actor_id: "actor".to_owned(),
+					path: "/socket".to_owned(),
+					headers: Default::default(),
+				},
+			),
+		},
+	))
+}
+
+#[test]
 fn v6_lifecycle_event_round_trips_through_v7() -> Result<()> {
 	assert_to_rivet_round_trip(v6::ToRivet::ToRivetEvents(vec![v6::EventWrapper {
 		checkpoint: v6::ActorCheckpoint {

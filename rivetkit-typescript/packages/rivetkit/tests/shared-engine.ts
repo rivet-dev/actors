@@ -22,18 +22,6 @@ const REPO_ENGINE_BINARY = join(
 	"../../../../target/debug/rivet-engine",
 );
 const TIMING_ENABLED = process.env.RIVETKIT_DRIVER_TEST_TIMING === "1";
-const ENGINE_STATE_ID = createHash("sha256")
-	.update(TEST_DIR)
-	.digest("hex")
-	.slice(0, 16);
-const ENGINE_START_LOCK_DIR = join(
-	tmpdir(),
-	`rivetkit-driver-engine-${ENGINE_STATE_ID}.lock`,
-);
-const ENGINE_STATE_PATH = join(
-	tmpdir(),
-	`rivetkit-driver-engine-${ENGINE_STATE_ID}.json`,
-);
 const ENGINE_START_LOCK_STALE_MS = 120_000;
 
 interface RuntimeLogs {
@@ -45,8 +33,18 @@ export const TEST_ENGINE_TOKEN = "dev";
 
 export interface SharedTestEngine {
 	endpoint: string;
+	metricsEndpoint: string;
 	pid: number;
 	dbRoot: string;
+}
+
+export interface SharedTestEngineOptions {
+	gateway3?: boolean;
+}
+
+interface SharedEngineFiles {
+	lockDir: string;
+	statePath: string;
 }
 
 interface SharedEngineState extends SharedTestEngine {
@@ -55,6 +53,23 @@ interface SharedEngineState extends SharedTestEngine {
 
 let sharedEnginePromise: Promise<SharedTestEngine> | undefined;
 let sharedEngineRefAcquired = false;
+let sharedEngineProfile: string | undefined;
+let sharedEngineFiles: SharedEngineFiles | undefined;
+
+function resolveSharedEngineProfile(options: SharedTestEngineOptions): string {
+	return JSON.stringify({ gateway3: options.gateway3 ?? false });
+}
+
+function resolveSharedEngineFiles(profile: string): SharedEngineFiles {
+	const stateId = createHash("sha256")
+		.update(`${TEST_DIR}\0driver-engine-v2\0${profile}`)
+		.digest("hex")
+		.slice(0, 16);
+	return {
+		lockDir: join(tmpdir(), `rivetkit-driver-engine-${stateId}.lock`),
+		statePath: join(tmpdir(), `rivetkit-driver-engine-${stateId}.json`),
+	};
+}
 
 function childOutput(logs: RuntimeLogs): string {
 	return [logs.stdout, logs.stderr].filter(Boolean).join("\n");
@@ -85,15 +100,17 @@ function resolveEngineBinaryPath(): string {
 	return getEnginePath();
 }
 
-async function acquireEngineStartLock(): Promise<() => void> {
+async function acquireEngineStartLock(
+	files: SharedEngineFiles,
+): Promise<() => void> {
 	const startedAt = performance.now();
 
 	while (true) {
 		try {
-			mkdirSync(ENGINE_START_LOCK_DIR);
+			mkdirSync(files.lockDir);
 			timing("engine.start_lock", startedAt);
 			return () => {
-				rmSync(ENGINE_START_LOCK_DIR, { force: true, recursive: true });
+				rmSync(files.lockDir, { force: true, recursive: true });
 			};
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
@@ -102,9 +119,9 @@ async function acquireEngineStartLock(): Promise<() => void> {
 			}
 
 			try {
-				const stat = statSync(ENGINE_START_LOCK_DIR);
+				const stat = statSync(files.lockDir);
 				if (Date.now() - stat.mtimeMs > ENGINE_START_LOCK_STALE_MS) {
-					rmSync(ENGINE_START_LOCK_DIR, {
+					rmSync(files.lockDir, {
 						force: true,
 						recursive: true,
 					});
@@ -147,21 +164,26 @@ async function waitForEngineHealth(
 	);
 }
 
-function readSharedEngineState(): SharedEngineState | undefined {
+function readSharedEngineState(
+	files: SharedEngineFiles,
+): SharedEngineState | undefined {
 	try {
-		return JSON.parse(readFileSync(ENGINE_STATE_PATH, "utf8"));
+		return JSON.parse(readFileSync(files.statePath, "utf8"));
 	} catch {
 		return undefined;
 	}
 }
 
-function writeSharedEngineState(state: SharedEngineState): void {
-	writeFileSync(ENGINE_STATE_PATH, JSON.stringify(state), "utf8");
+function writeSharedEngineState(
+	files: SharedEngineFiles,
+	state: SharedEngineState,
+): void {
+	writeFileSync(files.statePath, JSON.stringify(state), "utf8");
 }
 
-function removeSharedEngineState(): void {
+function removeSharedEngineState(files: SharedEngineFiles): void {
 	try {
-		unlinkSync(ENGINE_STATE_PATH);
+		unlinkSync(files.statePath);
 	} catch {}
 }
 
@@ -234,7 +256,9 @@ async function stopRuntime(child: ChildProcess): Promise<void> {
 	timing("runtime.stop", startedAt);
 }
 
-async function spawnSharedEngine(): Promise<SharedTestEngine> {
+async function spawnSharedEngine(
+	options: SharedTestEngineOptions,
+): Promise<SharedTestEngine> {
 	const startedAt = performance.now();
 	const portStartedAt = performance.now();
 	const host = "127.0.0.1";
@@ -248,6 +272,7 @@ async function spawnSharedEngine(): Promise<SharedTestEngine> {
 		exclude: [guardPort, apiPeerPort],
 	});
 	const endpoint = `http://${host}:${guardPort}`;
+	const metricsEndpoint = `http://${host}:${metricsPort}`;
 	const dbRoot = mkdtempSync(join(tmpdir(), "rivetkit-driver-engine-"));
 	const configPath = join(dbRoot, "config.json");
 	writeFileSync(
@@ -264,6 +289,17 @@ async function spawnSharedEngine(): Promise<SharedTestEngine> {
 					},
 				},
 			},
+			pegboard: options.gateway3
+				? {
+						gateway_update_ping_interval_ms: 250,
+						gateway_tunnel_ping_timeout_ms: 2_000,
+						gateway_response_start_timeout_ms: 3_000,
+						gateway3: {
+							mode: "on",
+							rollout_percent: 100,
+						},
+					}
+				: undefined,
 		}),
 	);
 	timing("engine.allocate", portStartedAt, { endpoint });
@@ -322,6 +358,7 @@ async function spawnSharedEngine(): Promise<SharedTestEngine> {
 
 	const sharedEngine = {
 		endpoint,
+		metricsEndpoint,
 		pid: engine.pid,
 		dbRoot,
 	};
@@ -329,28 +366,40 @@ async function spawnSharedEngine(): Promise<SharedTestEngine> {
 	return sharedEngine;
 }
 
-export async function getOrStartSharedTestEngine(): Promise<SharedTestEngine> {
+export async function getOrStartSharedTestEngine(
+	options: SharedTestEngineOptions = {},
+): Promise<SharedTestEngine> {
+	const profile = resolveSharedEngineProfile(options);
 	if (sharedEnginePromise !== undefined) {
+		if (sharedEngineProfile !== profile) {
+			throw new Error(
+				`shared engine already acquired with profile ${sharedEngineProfile}; requested ${profile}`,
+			);
+		}
 		return sharedEnginePromise;
 	}
+	const files = resolveSharedEngineFiles(profile);
+	sharedEngineProfile = profile;
+	sharedEngineFiles = files;
 
 	sharedEnginePromise = (async () => {
-		const releaseStartLock = await acquireEngineStartLock();
+		const releaseStartLock = await acquireEngineStartLock(files);
 		try {
-			const existing = readSharedEngineState();
+			const existing = readSharedEngineState(files);
 			if (
 				existing &&
 				isPidRunning(existing.pid) &&
 				(await isEngineHealthy(existing.endpoint))
 			) {
 				const state = { ...existing, refs: existing.refs + 1 };
-				writeSharedEngineState(state);
+				writeSharedEngineState(files, state);
 				sharedEngineRefAcquired = true;
 				timing("engine.reuse", performance.now(), {
 					endpoint: existing.endpoint,
 				});
 				return {
 					endpoint: existing.endpoint,
+					metricsEndpoint: existing.metricsEndpoint,
 					pid: existing.pid,
 					dbRoot: existing.dbRoot,
 				};
@@ -359,15 +408,17 @@ export async function getOrStartSharedTestEngine(): Promise<SharedTestEngine> {
 			if (existing) {
 				await stopPid(existing.pid, 5_000);
 				rmSync(existing.dbRoot, { force: true, recursive: true });
-				removeSharedEngineState();
+				removeSharedEngineState(files);
 			}
 
-			const engine = await spawnSharedEngine();
-			writeSharedEngineState({ ...engine, refs: 1 });
+			const engine = await spawnSharedEngine(options);
+			writeSharedEngineState(files, { ...engine, refs: 1 });
 			sharedEngineRefAcquired = true;
 			return engine;
 		} catch (error) {
 			sharedEnginePromise = undefined;
+			sharedEngineProfile = undefined;
+			sharedEngineFiles = undefined;
 			throw error;
 		} finally {
 			releaseStartLock();
@@ -383,24 +434,30 @@ export async function releaseSharedTestEngine(): Promise<void> {
 	}
 	sharedEngineRefAcquired = false;
 	sharedEnginePromise = undefined;
+	const files = sharedEngineFiles;
+	sharedEngineFiles = undefined;
+	sharedEngineProfile = undefined;
+	if (!files) {
+		throw new Error("shared engine files missing for acquired reference");
+	}
 
-	const releaseStartLock = await acquireEngineStartLock();
+	const releaseStartLock = await acquireEngineStartLock(files);
 	const startedAt = performance.now();
 	try {
-		const state = readSharedEngineState();
+		const state = readSharedEngineState(files);
 		if (!state) {
 			return;
 		}
 
 		const refs = Math.max(0, state.refs - 1);
 		if (refs > 0) {
-			writeSharedEngineState({ ...state, refs });
+			writeSharedEngineState(files, { ...state, refs });
 			return;
 		}
 
 		await stopPid(state.pid, 5_000);
 		rmSync(state.dbRoot, { force: true, recursive: true });
-		removeSharedEngineState();
+		removeSharedEngineState(files);
 		timing("engine.stop", startedAt, { endpoint: state.endpoint });
 	} finally {
 		releaseStartLock();

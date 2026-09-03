@@ -74,9 +74,7 @@ fn to_envoy_tunnel_message_kind_name(kind: &protocol::ToEnvoyTunnelMessageKind) 
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(_) => "ToEnvoyRequestStart",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestChunk(_) => "ToEnvoyRequestChunk",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestAbort(_) => "ToEnvoyRequestAbort",
-		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestBodyCancel => {
-			"ToEnvoyRequestBodyCancel"
-		}
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestBodyCancel => "ToEnvoyRequestBodyCancel",
 		protocol::ToEnvoyTunnelMessageKind::ToEnvoyResponseBodyWindowUpdate(_) => {
 			"ToEnvoyResponseBodyWindowUpdate"
 		}
@@ -94,9 +92,7 @@ fn to_rivet_tunnel_message_kind_name(kind: &protocol::ToRivetTunnelMessageKind) 
 		protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyWindowUpdate(_) => {
 			"ToRivetRequestBodyWindowUpdate"
 		}
-		protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyCancel => {
-			"ToRivetRequestBodyCancel"
-		}
+		protocol::ToRivetTunnelMessageKind::ToRivetRequestBodyCancel => "ToRivetRequestBodyCancel",
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketOpen(_) => "ToRivetWebSocketOpen",
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketMessage(_) => "ToRivetWebSocketMessage",
 		protocol::ToRivetTunnelMessageKind::ToRivetWebSocketMessageAck(_) => {
@@ -409,6 +405,7 @@ impl SharedState {
 	) -> Result<InFlightRequestCtx> {
 		let (msg_tx, msg_rx) = mpsc::unbounded_channel();
 		let (drop_tx, drop_rx) = watch::channel(None);
+		let (http_response_abort_tx, http_response_abort_rx) = watch::channel(None);
 		let http_response_queue_budget = if matches!(protocol, RequestProtocol::Http) {
 			Some(Arc::new(HttpResponseQueueBudget::new(
 				self.buffered_http_response_max_bytes,
@@ -440,6 +437,7 @@ impl SharedState {
 					message_index: 0,
 					http_send_state: HttpSendState::PreCommit,
 					abort_sent: false,
+					http_response_abort_tx,
 					send_lock: send_lock.clone(),
 					request_body_window: request_body_window.clone(),
 					upload_cancel_tx: upload_cancel_tx.clone(),
@@ -468,6 +466,7 @@ impl SharedState {
 				let send_lock = entry.send_lock.clone();
 				let request_body_window = entry.request_body_window.clone();
 				let upload_cancel_tx = entry.upload_cancel_tx.clone();
+				entry.http_response_abort_tx = http_response_abort_tx;
 				entry.actor_key = actor_key;
 				entry.actor_generation = actor_generation;
 				entry.envoy_protocol_version = envoy_protocol_version;
@@ -490,6 +489,7 @@ impl SharedState {
 		Ok(InFlightRequestCtx {
 			msg_rx,
 			drop_rx,
+			http_response_abort_rx,
 			handle: InFlightRequestHandle {
 				shared_state: self.clone(),
 				request_id,
@@ -517,6 +517,7 @@ impl SharedState {
 
 		let (msg_tx, msg_rx) = mpsc::unbounded_channel();
 		let (drop_tx, drop_rx) = watch::channel(None);
+		let http_response_abort_rx = req.http_response_abort_tx.subscribe();
 		let send_lock = req.send_lock.clone();
 		let request_body_window = req.request_body_window.clone();
 		let upload_cancel_tx = req.upload_cancel_tx.clone();
@@ -530,6 +531,7 @@ impl SharedState {
 		Ok(InFlightRequestCtx {
 			msg_rx,
 			drop_rx,
+			http_response_abort_rx,
 			handle: InFlightRequestHandle {
 				shared_state: self.clone(),
 				request_id,
@@ -623,6 +625,8 @@ pub struct InFlightRequestCtx {
 	/// This is separate from `msg_rx` there may still be messages that need to be sent to the
 	/// request after `msg_rx` has dropped.
 	pub drop_rx: watch::Receiver<Option<MsgGcReason>>,
+	pub http_response_abort_rx:
+		watch::Receiver<Option<protocol::HttpStreamAbortReason>>,
 	pub handle: InFlightRequestHandle,
 }
 
@@ -984,9 +988,8 @@ impl InFlightRequestHandle {
 				attempt,
 				"sending gateway message to envoy"
 			);
-			let publish_timeout = Duration::from_millis(
-				self.shared_state.tunnel_ping_timeout.max(1) as u64,
-			);
+			let publish_timeout =
+				Duration::from_millis(self.shared_state.tunnel_ping_timeout.max(1) as u64);
 			let res = match tokio::time::timeout(
 				publish_timeout,
 				self.shared_state
@@ -1205,10 +1208,7 @@ impl InFlightRequestHandle {
 		self.request_body_window.reserve(bytes as u64).await
 	}
 
-	pub(crate) async fn update_request_body_consumed(
-		&self,
-		consumed_bytes: u64,
-	) -> Result<()> {
+	pub(crate) async fn update_request_body_consumed(&self, consumed_bytes: u64) -> Result<()> {
 		self.request_body_window
 			.update_consumed(consumed_bytes)
 			.await
@@ -1516,22 +1516,24 @@ mod tests {
 	use super::*;
 
 	fn request_start() -> protocol::ToEnvoyTunnelMessageKind {
-		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
-			protocol::ToEnvoyRequestStart {
-				actor_id: "test-actor".into(),
-				method: "POST".into(),
-				path: "/".into(),
-				headers: Default::default(),
-				body: None,
-				stream: true,
-				response_stream: true,
-			},
-		)
+		protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(protocol::ToEnvoyRequestStart {
+			actor_id: "test-actor".into(),
+			actor_generation: Some(1),
+			method: "POST".into(),
+			path: "/".into(),
+			headers: Default::default(),
+			body: None,
+			stream: true,
+			response_stream: true,
+		})
 	}
 
 	#[test]
 	fn http_retries_only_request_start_before_streaming() {
-		assert!(retries_no_responders(RequestProtocol::Http, &request_start()));
+		assert!(retries_no_responders(
+			RequestProtocol::Http,
+			&request_start()
+		));
 		assert!(!retries_no_responders(
 			RequestProtocol::Http,
 			&protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestChunk(
@@ -1559,7 +1561,10 @@ mod tests {
 		assert!(retries_no_responders(
 			RequestProtocol::WebSocket,
 			&protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketClose(
-				protocol::ToEnvoyWebSocketClose { code: None, reason: None },
+				protocol::ToEnvoyWebSocketClose {
+					code: None,
+					reason: None
+				},
 			),
 		));
 	}
@@ -1612,6 +1617,81 @@ mod tests {
 			.await
 			.expect("duplicate cumulative request credit");
 	}
+
+	#[tokio::test]
+	async fn envoy_response_abort_has_an_out_of_band_delivery_signal() {
+		let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
+		let (drop_tx, _drop_rx) = watch::channel(None);
+		let (http_response_abort_tx, mut http_response_abort_rx) = watch::channel(None);
+		let (upload_cancel_tx, _upload_cancel_rx) = watch::channel(false);
+		let reason = protocol::HttpStreamAbortReason {
+			kind: protocol::HttpStreamAbortReasonKind::InternalError,
+			detail: Some("Envoy session closed".to_owned()),
+		};
+		let message_id = protocol::MessageId {
+			gateway_id: [1, 2, 3, 4],
+			request_id: [5, 6, 7, 8],
+			message_index: 2,
+		};
+		let mut request = InFlightRequest {
+			namespace_id: Id::new_v1(1),
+			pool_name: "test".to_owned(),
+			actor_key: Some("actor".to_owned()),
+			actor_generation: Some(1),
+			envoy_protocol_version: Some(7),
+			protocol: RequestProtocol::Http,
+			receiver_subject: "test".to_owned(),
+			message_index: 0,
+			http_send_state: HttpSendState::Committed,
+			abort_sent: false,
+			http_response_abort_tx,
+			send_lock: Arc::new(Mutex::new(())),
+			request_body_window: Arc::new(HttpBodySendWindow::new()),
+			upload_cancel_tx,
+			lifecycle: rivet_guard_core::metrics::PegboardGatewayLifecycle::new(
+				rivet_guard_core::metrics::PegboardGatewayVersion::V3,
+				Some(7),
+				rivet_guard_core::metrics::PegboardGatewayRequestKind::Http,
+			),
+			created_at: Instant::now(),
+			state: InFlightRequestState::Active {
+				msg_tx,
+				drop_tx,
+				http_response_queue_budget: None,
+				last_pong: util::timestamp::now(),
+				hibernation_state: None,
+			},
+		};
+
+		request.recv_message(protocol::ToGateway::ToRivetTunnelMessage(
+			protocol::ToRivetTunnelMessage {
+				message_id: message_id.clone(),
+				message_kind: protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(
+					protocol::ToRivetResponseAbort {
+						reason: reason.clone(),
+					},
+				),
+			},
+		));
+
+		let queued = msg_rx.recv().await.expect("ordered response abort");
+		assert_eq!(queued.message_id.message_index, message_id.message_index);
+		assert!(matches!(
+			queued.message_kind,
+			protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(_)
+		));
+		http_response_abort_rx
+			.changed()
+			.await
+			.expect("out-of-band response abort signal");
+		assert!(matches!(
+			http_response_abort_rx.borrow().as_ref(),
+			Some(protocol::HttpStreamAbortReason {
+				kind: protocol::HttpStreamAbortReasonKind::InternalError,
+				..
+			})
+		));
+	}
 }
 
 struct InFlightRequest {
@@ -1627,6 +1707,7 @@ struct InFlightRequest {
 	message_index: protocol::MessageIndex,
 	http_send_state: HttpSendState,
 	abort_sent: bool,
+	http_response_abort_tx: watch::Sender<Option<protocol::HttpStreamAbortReason>>,
 	send_lock: Arc<Mutex<()>>,
 	request_body_window: Arc<HttpBodySendWindow>,
 	upload_cancel_tx: watch::Sender<bool>,
@@ -1672,6 +1753,15 @@ impl InFlightRequest {
 
 	#[tracing::instrument(skip_all)]
 	fn recv_message(&mut self, msg: protocol::ToGateway) {
+		let http_response_abort = match &msg {
+			protocol::ToGateway::ToRivetTunnelMessage(msg) => match &msg.message_kind {
+				protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(abort) => {
+					Some(abort.reason.clone())
+				}
+				_ => None,
+			},
+			_ => None,
+		};
 		match msg {
 			protocol::ToGateway::ToGatewayPong(pong) => {
 				match &mut self.state {
@@ -1762,6 +1852,9 @@ impl InFlightRequest {
 					}
 				}
 			},
+		}
+		if let Some(reason) = http_response_abort {
+			self.http_response_abort_tx.send_replace(Some(reason));
 		}
 	}
 

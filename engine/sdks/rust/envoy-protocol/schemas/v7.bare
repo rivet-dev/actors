@@ -404,6 +404,9 @@ type MessageId struct {
 # HTTP
 type ToEnvoyRequestStart struct {
 	actorId: Id
+	# Exact actor generation selected by Gateway 3. Legacy Gateway 2 requests
+	# omit this and retain highest-live-generation routing.
+	actorGeneration: optional<u32>
 	method: str
 	path: str
 	headers: map<str><str>
@@ -472,6 +475,9 @@ type ToRivetResponseAbort struct {
 # WebSocket
 type ToEnvoyWebSocketOpen struct {
 	actorId: Id
+	# Exact actor generation selected by Gateway 3. Legacy Gateway 2 requests
+	# omit this and retain highest-live-generation routing.
+	actorGeneration: optional<u32>
 	path: str
 	headers: map<str><str>
 }

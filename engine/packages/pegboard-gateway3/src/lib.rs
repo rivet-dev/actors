@@ -10,9 +10,8 @@ use rivet_guard_core::{
 	ResponseBody, WebSocketHandle,
 	custom_serve::{CustomServeTrait, HibernationResult},
 	errors::{
-		ActorStoppedWhileWaiting, ActorStoppedWhileWaitingForWebSocketOpen,
-		WebSocketClosedBeforeOpen, WebSocketOpenDropped, WebSocketOpenResponseClosed,
-		WebSocketOpenTimeout,
+		ActorStoppedWhileWaitingForWebSocketOpen, WebSocketClosedBeforeOpen, WebSocketOpenDropped,
+		WebSocketOpenResponseClosed, WebSocketOpenTimeout,
 	},
 	request_context::RequestContext,
 	utils::is_ws_hibernate,
@@ -79,7 +78,7 @@ pub struct PegboardGateway3 {
 	envoy_protocol_version: Option<u16>,
 	actor_id: Id,
 	actor_key: Option<String>,
-	actor_generation: Option<u32>,
+	actor_generation: u32,
 	path: String,
 	prepared_http_request: tokio::sync::Mutex<Option<http_stream::PreparedHttpRequest>>,
 }
@@ -96,7 +95,7 @@ impl PegboardGateway3 {
 		envoy_protocol_version: Option<u16>,
 		actor_id: Id,
 		actor_key: Option<String>,
-		actor_generation: Option<u32>,
+		actor_generation: u32,
 		path: String,
 	) -> Self {
 		Self {
@@ -117,31 +116,6 @@ impl PegboardGateway3 {
 }
 
 impl PegboardGateway3 {
-	async fn prepare_http_request(&self, ctx: &StandaloneCtx) -> Result<()> {
-		let route = ctx
-			.op(pegboard::ops::actor::get_for_gateway::Input {
-				actor_id: self.actor_id,
-			})
-			.await?;
-		let Some(route) = route else {
-			return Err(ActorStoppedWhileWaiting {
-				actor_id: self.actor_id.to_string(),
-				phase: "prepare_request".to_owned(),
-			}
-			.build());
-		};
-		if route.envoy_key.as_deref() != Some(self.envoy_key.as_str())
-			|| route.envoy_protocol_version != self.envoy_protocol_version
-		{
-			return Err(ActorStoppedWhileWaiting {
-				actor_id: self.actor_id.to_string(),
-				phase: "prepare_request".to_owned(),
-			}
-			.build());
-		}
-		Ok(())
-	}
-
 	async fn handle_websocket_inner(
 		&self,
 		ctx: &StandaloneCtx,
@@ -149,6 +123,7 @@ impl PegboardGateway3 {
 		client_ws: WebSocketHandle,
 		after_hibernation: bool,
 	) -> Result<Option<CloseFrame>> {
+		let actor_generation = self.actor_generation;
 		let request_id = req_ctx.in_flight_request_id()?;
 		let gateway_id = self.shared_state.gateway_id();
 
@@ -164,36 +139,6 @@ impl PegboardGateway3 {
 			.subscribe::<pegboard::workflows::actor2::Stopped>(("actor_id", self.actor_id))
 			.await?;
 
-		// Verify envoy key is still the same after stopped sub is open to prevent race conditions with
-		// actor reallocation
-		let res = ctx
-			.op(pegboard::ops::actor::get_for_gateway::Input {
-				actor_id: self.actor_id,
-			})
-			.await?;
-		let Some(envoy_key) = res.and_then(|x| x.envoy_key) else {
-			// No envoy key
-			return Err(ActorStoppedWhileWaitingForWebSocketOpen {
-				actor_id: self.actor_id.to_string(),
-				phase: PHASE_PRE_WEBSOCKET_OPEN.to_owned(),
-			}
-			.build());
-		};
-
-		// Actor reallocated to a different envoy
-		if self.envoy_key != envoy_key {
-			tracing::debug!(
-				gateway_envoy_key=%self.envoy_key,
-				new_envoy_key=%envoy_key,
-				"actor changed envoy while waiting for websocket open",
-			);
-			return Err(ActorStoppedWhileWaitingForWebSocketOpen {
-				actor_id: self.actor_id.to_string(),
-				phase: PHASE_PRE_WEBSOCKET_OPEN.to_owned(),
-			}
-			.build());
-		}
-
 		// Build subject to publish to
 		let tunnel_subject = pegboard::pubsub_subjects::EnvoyReceiverSubject::new(
 			self.namespace_id,
@@ -205,6 +150,7 @@ impl PegboardGateway3 {
 		let InFlightRequestCtx {
 			mut msg_rx,
 			mut drop_rx,
+			http_response_abort_rx: _,
 			handle: in_flight_req,
 		} = self
 			.shared_state
@@ -212,7 +158,7 @@ impl PegboardGateway3 {
 				self.namespace_id,
 				self.pool_name.as_str(),
 				self.actor_key.clone(),
-				self.actor_generation,
+				Some(actor_generation),
 				self.envoy_protocol_version,
 				RequestProtocol::WebSocket,
 				tunnel_subject.clone(),
@@ -223,14 +169,14 @@ impl PegboardGateway3 {
 			.await?;
 
 		let res = async {
-			// If we are reconnecting after hibernation, don't send an open message
-			let can_hibernate = if after_hibernation {
-				true
-			} else {
+			// Envoy restores and rebinds a hibernating websocket before sending the open
+			// acknowledgment. Do not resume client forwarding until that acknowledgment arrives.
+			if !after_hibernation {
 				// Send WebSocket open message
 				let open_message = protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(
 					protocol::ToEnvoyWebSocketOpen {
 						actor_id: self.actor_id.to_string(),
+						actor_generation: Some(actor_generation),
 						path: self.path.clone(),
 						headers: request_headers,
 					},
@@ -249,8 +195,9 @@ impl PegboardGateway3 {
 					}
 					res = in_flight_req.send_message(open_message, false) => res?,
 				}
+			}
 
-				tracing::debug!(
+			tracing::debug!(
 					actor_id = %self.actor_id,
 					actor_key = ?self.actor_key,
 					actor_generation = ?self.actor_generation,
@@ -263,8 +210,9 @@ impl PegboardGateway3 {
 					"gateway waiting for websocket open from tunnel"
 				);
 
-				// Wait for WebSocket open acknowledgment
-				let fut = async {
+			// Wait for WebSocket open acknowledgment. On restore, this is also the
+			// generation-rebind barrier for buffered and newly received client frames.
+			let fut = async {
 					loop {
 						tokio::select! {
 							res = msg_rx.recv() => {
@@ -395,27 +343,27 @@ impl PegboardGateway3 {
 					.build())
 				};
 
-				let websocket_open_timeout = Duration::from_millis(
+			let websocket_open_timeout = Duration::from_millis(
 					self.ctx
 						.config()
 						.pegboard()
 						.gateway_websocket_open_timeout_ms(),
 				);
-				let open_wait_start = Instant::now();
-				let open_msg_result = tokio::time::timeout(websocket_open_timeout, fut).await;
-				let open_wait_result = match &open_msg_result {
+			let open_wait_start = Instant::now();
+			let open_msg_result = tokio::time::timeout(websocket_open_timeout, fut).await;
+			let open_wait_result = match &open_msg_result {
 					Ok(Ok(_)) => "ok",
 					Ok(Err(_)) => "error",
 					Err(_) => "timeout",
 				};
-				metrics::WEBSOCKET_OPEN_WAIT_SECONDS
+			metrics::WEBSOCKET_OPEN_WAIT_SECONDS
 					.with_label_values(&[
 						self.namespace_id.to_string().as_str(),
 						self.pool_name.as_str(),
 						open_wait_result,
 					])
 					.observe(open_wait_start.elapsed().as_secs_f64());
-				if open_wait_start.elapsed() >= SLOW_WEBSOCKET_OPEN_WAIT_THRESHOLD {
+			if open_wait_start.elapsed() >= SLOW_WEBSOCKET_OPEN_WAIT_THRESHOLD {
 					tracing::warn!(
 						actor_id = %self.actor_id,
 						actor_key = ?self.actor_key,
@@ -430,7 +378,7 @@ impl PegboardGateway3 {
 						"slow websocket open wait"
 					);
 				}
-				let open_msg = open_msg_result.map_err(|_| {
+			let open_msg = open_msg_result.map_err(|_| {
 					tracing::warn!(
 						actor_id = %self.actor_id,
 						actor_key = ?self.actor_key,
@@ -449,14 +397,13 @@ impl PegboardGateway3 {
 						timeout_ms: websocket_open_timeout.as_millis() as u64,
 					}
 					.build()
-				})??;
+			})??;
 
-				in_flight_req
-					.toggle_hibernatable(open_msg.can_hibernate)
-					.await?;
+			in_flight_req
+				.toggle_hibernatable(open_msg.can_hibernate)
+				.await?;
 
-				open_msg.can_hibernate
-			};
+			let can_hibernate = open_msg.can_hibernate;
 
 			let ingress_bytes = Arc::new(AtomicU64::new(0));
 			let egress_bytes = Arc::new(AtomicU64::new(0));
@@ -796,6 +743,7 @@ impl CustomServeTrait for PegboardGateway3 {
 		let InFlightRequestCtx {
 			msg_rx,
 			drop_rx,
+			http_response_abort_rx: _,
 			handle: in_flight_req,
 		} = self
 			.shared_state
@@ -803,7 +751,7 @@ impl CustomServeTrait for PegboardGateway3 {
 				self.namespace_id,
 				self.pool_name.as_str(),
 				self.actor_key.clone(),
-				self.actor_generation,
+				Some(self.actor_generation),
 				request_id,
 			)
 			.await?;

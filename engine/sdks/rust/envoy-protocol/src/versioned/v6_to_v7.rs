@@ -676,6 +676,7 @@ pub fn convert_to_envoy_request_start_v6_to_v7(
 ) -> Result<v7::ToEnvoyRequestStart> {
 	Ok(v7::ToEnvoyRequestStart {
 		actor_id: x.actor_id,
+		actor_generation: None,
 		method: x.method,
 		path: x.path,
 		headers: x.headers,
@@ -719,6 +720,7 @@ pub fn convert_to_envoy_web_socket_open_v6_to_v7(
 ) -> Result<v7::ToEnvoyWebSocketOpen> {
 	Ok(v7::ToEnvoyWebSocketOpen {
 		actor_id: x.actor_id,
+		actor_generation: None,
 		path: x.path,
 		headers: x.headers,
 	})

@@ -644,6 +644,31 @@ impl EnvoyHandle {
 		);
 	}
 
+	pub(crate) async fn rebind_hibernating_websocket(
+		&self,
+		actor_id: String,
+		generation: u32,
+		gateway_id: protocol::GatewayId,
+		request_id: protocol::RequestId,
+	) -> bool {
+		let (response_tx, response_rx) = oneshot::channel();
+		if crate::envoy::send_to_envoy_tx(
+			&self.shared,
+			ToEnvoyMessage::RebindWebSocket {
+				actor_id,
+				generation,
+				gateway_id,
+				request_id,
+				response_tx,
+			},
+		)
+		.is_err()
+		{
+			return false;
+		}
+		response_rx.await.unwrap_or(false)
+	}
+
 	/// Inject a serverless start payload into the envoy.
 	/// The payload is a u16 LE protocol version followed by a serialized ToEnvoy message.
 	pub async fn start_serverless_actor(&self, payload: &[u8]) -> anyhow::Result<()> {

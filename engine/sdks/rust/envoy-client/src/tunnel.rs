@@ -2,19 +2,19 @@ use rivet_envoy_protocol as protocol;
 use std::collections::HashMap;
 
 use crate::connection::ws_send;
-use crate::envoy::{BufferedActorMessage, EnvoyContext, HttpRequestRoute};
+use crate::envoy::{BufferedActorMessage, EnvoyContext, HttpRequestRoute, WebSocketRoute};
 
-fn make_ws_key(gateway_id: &protocol::GatewayId, request_id: &protocol::RequestId) -> [u8; 8] {
+pub(crate) fn make_ws_key(
+	gateway_id: &protocol::GatewayId,
+	request_id: &protocol::RequestId,
+) -> [u8; 8] {
 	let mut key = [0u8; 8];
 	key[..4].copy_from_slice(gateway_id);
 	key[4..].copy_from_slice(request_id);
 	key
 }
 
-fn advance_http_message_index(
-	ctx: &mut EnvoyContext,
-	message_id: &protocol::MessageId,
-) -> bool {
+fn advance_http_message_index(ctx: &mut EnvoyContext, message_id: &protocol::MessageId) -> bool {
 	let key: [&[u8]; 2] = [&message_id.gateway_id, &message_id.request_id];
 	let Some(expected) = ctx.http_message_indices.get_mut(&key) else {
 		tracing::warn!(
@@ -153,11 +153,16 @@ async fn handle_http_protocol_violation(
 			return;
 		}
 		let actor_id = route.actor_id.clone();
-		if let Some(actor) = ctx.get_actor(&actor_id, None) {
-			let _ = actor.handle.send(crate::actor::ToActor::ReqProtocolViolation {
-				message_id: message_id.clone(),
-				detail: detail.to_owned(),
-			});
+		let actor_generation = route.actor_generation;
+		if route.actor_admitted
+			&& let Some(actor) = ctx.get_actor(&actor_id, actor_generation)
+		{
+			let _ = actor
+				.handle
+				.send(crate::actor::ToActor::ReqProtocolViolation {
+					message_id: message_id.clone(),
+					detail: detail.to_owned(),
+				});
 		}
 		ctx.http_request_routes.remove(&key);
 		ctx.http_message_indices.remove(&key);
@@ -193,16 +198,28 @@ async fn send_response_abort_for_session(
 }
 
 fn handle_request_body_cancel(ctx: &mut EnvoyContext, message_id: protocol::MessageId) {
-	let actor_id = ctx
+	let route = ctx
 		.http_request_routes
 		.get(&[&message_id.gateway_id, &message_id.request_id])
-		.map(|route| route.actor_id.clone());
-	if let Some(actor_id) = &actor_id
-		&& let Some(actor) = ctx.get_actor(actor_id, None)
+		.map(|route| {
+			(
+				route.actor_id.clone(),
+				route.actor_generation,
+				route.actor_admitted,
+			)
+		});
+	if let Some((actor_id, actor_generation, true)) = &route
+		&& let Some(actor) = ctx.get_actor(actor_id, *actor_generation)
 	{
-		let _ = actor
-			.handle
-			.send(crate::actor::ToActor::ReqBodyCancel { message_id });
+		let _ = actor.handle.send(crate::actor::ToActor::ReqBodyCancel {
+			message_id: message_id.clone(),
+		});
+	}
+	if matches!(route, Some((_, _, false))) {
+		ctx.http_request_routes
+			.remove(&[&message_id.gateway_id, &message_id.request_id]);
+		ctx.http_message_indices
+			.remove(&[&message_id.gateway_id, &message_id.request_id]);
 	}
 }
 
@@ -211,12 +228,18 @@ fn handle_response_body_window_update(
 	message_id: protocol::MessageId,
 	consumed_bytes: u64,
 ) {
-	let actor_id = ctx
+	let route = ctx
 		.http_request_routes
 		.get(&[&message_id.gateway_id, &message_id.request_id])
-		.map(|route| route.actor_id.clone());
-	if let Some(actor_id) = &actor_id
-		&& let Some(actor) = ctx.get_actor(actor_id, None)
+		.map(|route| {
+			(
+				route.actor_id.clone(),
+				route.actor_generation,
+				route.actor_admitted,
+			)
+		});
+	if let Some((actor_id, actor_generation, true)) = &route
+		&& let Some(actor) = ctx.get_actor(actor_id, *actor_generation)
 	{
 		let _ = actor
 			.handle
@@ -233,23 +256,11 @@ async fn handle_request_start(
 	message_id: protocol::MessageId,
 	req: protocol::ToEnvoyRequestStart,
 ) {
-	let actor_id = req.actor_id.clone();
-	let has_actor = ctx.get_actor(&actor_id, None).is_some();
-
-	if !has_actor {
-		tracing::warn!(actor_id = %actor_id, "received request for unknown actor");
-		send_error_response(
-			ctx,
-			req.response_stream.then_some(connection_session),
-			message_id.gateway_id,
-			message_id.request_id,
-			"envoy.actor_not_found",
-			"Actor not found",
-		)
-		.await;
-		return;
-	}
 	let key: [&[u8]; 2] = [&message_id.gateway_id, &message_id.request_id];
+	let actor_id = req.actor_id.clone();
+	let actor_generation = req.actor_generation;
+	let response_stream = req.response_stream;
+	let request_stream = req.stream;
 	if message_id.message_index != 0 {
 		tracing::warn!(
 			message_index = message_id.message_index,
@@ -279,6 +290,55 @@ async fn handle_request_start(
 		.await;
 		return;
 	}
+	let actor_handle = ctx
+		.get_actor_for_admission(&actor_id, actor_generation)
+		.map(|actor| actor.handle.clone());
+
+	let Some(actor_handle) = actor_handle else {
+		let generation_mismatch =
+			actor_generation.is_some() && ctx.get_actor(&actor_id, None).is_some();
+		let (error_code, message) = if generation_mismatch {
+			tracing::warn!(
+				actor_id = %actor_id,
+				?actor_generation,
+				"received request for stale actor generation"
+			);
+			(
+				"envoy.actor_generation_mismatch",
+				"Actor generation does not match",
+			)
+		} else {
+			tracing::warn!(actor_id = %actor_id, ?actor_generation, "received request for unknown actor");
+			("envoy.actor_not_found", "Actor not found")
+		};
+		// RequestStart is deliberately not application-acknowledged, so body frames may already be
+		// in flight when this rejection reaches Gateway. Keep a short-lived drain route only for a
+		// streamed upload; its finish, cancellation, abort, or connection close removes the state.
+		if request_stream {
+			ctx.http_message_indices.insert(&key, 1);
+			ctx.http_request_routes.insert(
+				&key,
+				HttpRequestRoute {
+					actor_id,
+					actor_generation,
+					actor_admitted: false,
+					session: connection_session,
+					gateway_id: message_id.gateway_id,
+					request_id: message_id.request_id,
+				},
+			);
+		}
+		send_error_response(
+			ctx,
+			response_stream.then_some(connection_session),
+			message_id.gateway_id,
+			message_id.request_id,
+			error_code,
+			message,
+		)
+		.await;
+		return;
+	};
 	ctx.http_message_indices
 		.insert(&[&message_id.gateway_id, &message_id.request_id], 1);
 
@@ -286,19 +346,36 @@ async fn handle_request_start(
 		&[&message_id.gateway_id, &message_id.request_id],
 		HttpRequestRoute {
 			actor_id: actor_id.clone(),
+			actor_generation,
+			actor_admitted: true,
 			session: connection_session,
 			gateway_id: message_id.gateway_id,
 			request_id: message_id.request_id,
 		},
 	);
 
-	let actor = ctx.get_actor(&actor_id, None).unwrap();
-	let actor_handle = actor.handle.clone();
-	let _ = actor_handle.send(crate::actor::ToActor::ReqStart {
-		message_id: message_id.clone(),
-		req,
-		connection_session,
-	});
+	if actor_handle
+		.send(crate::actor::ToActor::ReqStart {
+			message_id: message_id.clone(),
+			req,
+			connection_session,
+		})
+		.is_err()
+	{
+		ctx.http_request_routes
+			.remove(&[&message_id.gateway_id, &message_id.request_id]);
+		ctx.http_message_indices
+			.remove(&[&message_id.gateway_id, &message_id.request_id]);
+		send_error_response(
+			ctx,
+			response_stream.then_some(connection_session),
+			message_id.gateway_id,
+			message_id.request_id,
+			"envoy.actor_not_found",
+			"Actor stopped before accepting request",
+		)
+		.await;
+	}
 }
 
 async fn handle_request_chunk(
@@ -306,13 +383,28 @@ async fn handle_request_chunk(
 	message_id: protocol::MessageId,
 	chunk: protocol::ToEnvoyRequestChunk,
 ) {
-	let actor_id = ctx
+	let route = ctx
 		.http_request_routes
 		.get(&[&message_id.gateway_id, &message_id.request_id])
-		.map(|route| route.actor_id.clone());
+		.map(|route| {
+			(
+				route.actor_id.clone(),
+				route.actor_generation,
+				route.actor_admitted,
+			)
+		});
 
-	if let Some(actor_id) = &actor_id {
-		if let Some(actor) = ctx.get_actor(actor_id, None) {
+	if let Some((actor_id, actor_generation, actor_admitted)) = &route {
+		if !actor_admitted {
+			if chunk.finish {
+				ctx.http_request_routes
+					.remove(&[&message_id.gateway_id, &message_id.request_id]);
+				ctx.http_message_indices
+					.remove(&[&message_id.gateway_id, &message_id.request_id]);
+			}
+			return;
+		}
+		if let Some(actor) = ctx.get_actor(actor_id, *actor_generation) {
 			let _ = actor.handle.send(crate::actor::ToActor::ReqChunk {
 				message_id: message_id.clone(),
 				chunk,
@@ -344,12 +436,18 @@ fn handle_request_abort(
 	message_id: protocol::MessageId,
 	reason: protocol::HttpStreamAbortReason,
 ) {
-	let actor_id = ctx
+	let route = ctx
 		.http_request_routes
 		.get(&[&message_id.gateway_id, &message_id.request_id])
-		.map(|route| route.actor_id.clone());
-	if let Some(actor_id) = &actor_id {
-		if let Some(actor) = ctx.get_actor(actor_id, None) {
+		.map(|route| {
+			(
+				route.actor_id.clone(),
+				route.actor_generation,
+				route.actor_admitted,
+			)
+		});
+	if let Some((actor_id, actor_generation, true)) = &route {
+		if let Some(actor) = ctx.get_actor(actor_id, *actor_generation) {
 			let _ = actor.handle.send(crate::actor::ToActor::ReqAbort {
 				message_id: message_id.clone(),
 				reason,
@@ -369,10 +467,25 @@ async fn handle_ws_open(
 	open: protocol::ToEnvoyWebSocketOpen,
 ) {
 	let actor_id = open.actor_id.clone();
-	let has_actor = ctx.get_actor(&actor_id, None).is_some();
+	let actor_generation = open.actor_generation;
+	let actor_handle = ctx
+		.get_actor_for_admission(&actor_id, actor_generation)
+		.map(|actor| actor.handle.clone());
 
-	if !has_actor {
-		tracing::warn!(actor_id = %actor_id, "received ws open for unknown actor");
+	let Some(actor_handle) = actor_handle else {
+		let generation_mismatch =
+			actor_generation.is_some() && ctx.get_actor(&actor_id, None).is_some();
+		let reason = if generation_mismatch {
+			tracing::warn!(
+				actor_id = %actor_id,
+				?actor_generation,
+				"received ws open for stale actor generation"
+			);
+			"envoy.actor_generation_mismatch"
+		} else {
+			tracing::warn!(actor_id = %actor_id, ?actor_generation, "received ws open for unknown actor");
+			"envoy.actor_not_found"
+		};
 
 		ws_send(
 			&ctx.shared,
@@ -381,7 +494,7 @@ async fn handle_ws_open(
 				message_kind: protocol::ToRivetTunnelMessageKind::ToRivetWebSocketClose(
 					protocol::ToRivetWebSocketClose {
 						code: Some(1011),
-						reason: Some("Actor not found".to_string()),
+						reason: Some(reason.to_string()),
 						hibernate: false,
 					},
 				),
@@ -389,11 +502,14 @@ async fn handle_ws_open(
 		)
 		.await;
 		return;
-	}
+	};
 
 	ctx.request_to_actor.insert(
 		&[&message_id.gateway_id, &message_id.request_id],
-		actor_id.clone(),
+		WebSocketRoute {
+			actor_id: actor_id.clone(),
+			actor_generation,
+		},
 	);
 	ctx.shared
 		.live_tunnel_requests
@@ -411,12 +527,36 @@ async fn handle_ws_open(
 		.map(|(k, v)| (k.clone(), v.clone()))
 		.collect();
 
-	let actor = ctx.get_actor(&actor_id, None).unwrap();
-	let _ = actor.handle.send(crate::actor::ToActor::WsOpen {
-		message_id,
-		path: open.path,
-		headers,
-	});
+	if actor_handle
+		.send(crate::actor::ToActor::WsOpen {
+			message_id: message_id.clone(),
+			path: open.path,
+			headers,
+		})
+		.is_err()
+	{
+		ctx.request_to_actor
+			.remove(&[&message_id.gateway_id, &message_id.request_id]);
+		ctx.shared
+			.live_tunnel_requests
+			.lock()
+			.expect("shared live tunnel request registry poisoned")
+			.remove(&make_ws_key(&message_id.gateway_id, &message_id.request_id));
+		ws_send(
+			&ctx.shared,
+			protocol::ToRivet::ToRivetTunnelMessage(protocol::ToRivetTunnelMessage {
+				message_id,
+				message_kind: protocol::ToRivetTunnelMessageKind::ToRivetWebSocketClose(
+					protocol::ToRivetWebSocketClose {
+						code: Some(1011),
+						reason: Some("envoy.actor_not_found".to_string()),
+						hibernate: false,
+					},
+				),
+			}),
+		)
+		.await;
+	}
 }
 
 fn handle_ws_message(
@@ -424,18 +564,18 @@ fn handle_ws_message(
 	message_id: protocol::MessageId,
 	msg: protocol::ToEnvoyWebSocketMessage,
 ) {
-	let actor_id = ctx
+	let route = ctx
 		.request_to_actor
 		.get(&[&message_id.gateway_id, &message_id.request_id])
 		.cloned();
-	if let Some(actor_id) = &actor_id {
-		if let Some(actor) = ctx.get_actor(actor_id, None) {
+	if let Some(route) = &route {
+		if let Some(actor) = ctx.get_actor(&route.actor_id, route.actor_generation) {
 			let _ = actor
 				.handle
 				.send(crate::actor::ToActor::WsMsg { message_id, msg });
-		} else {
+		} else if route.actor_generation.is_none() {
 			ctx.buffered_actor_messages
-				.entry(actor_id.clone())
+				.entry(route.actor_id.clone())
 				.or_default()
 				.push(BufferedActorMessage::WsMsg { message_id, msg });
 		}
@@ -447,19 +587,19 @@ fn handle_ws_close(
 	message_id: protocol::MessageId,
 	close: protocol::ToEnvoyWebSocketClose,
 ) {
-	let actor_id = ctx
+	let route = ctx
 		.request_to_actor
 		.get(&[&message_id.gateway_id, &message_id.request_id])
 		.cloned();
-	if let Some(actor_id) = &actor_id {
-		if let Some(actor) = ctx.get_actor(actor_id, None) {
+	if let Some(route) = &route {
+		if let Some(actor) = ctx.get_actor(&route.actor_id, route.actor_generation) {
 			let _ = actor.handle.send(crate::actor::ToActor::WsClose {
 				message_id: message_id.clone(),
 				close,
 			});
-		} else {
+		} else if route.actor_generation.is_none() {
 			ctx.buffered_actor_messages
-				.entry(actor_id.clone())
+				.entry(route.actor_id.clone())
 				.or_default()
 				.push(BufferedActorMessage::WsClose {
 					message_id: message_id.clone(),
@@ -483,12 +623,12 @@ pub fn send_hibernatable_ws_message_ack(
 	request_id: protocol::RequestId,
 	envoy_message_index: u16,
 ) {
-	let actor_id = ctx
+	let route = ctx
 		.request_to_actor
 		.get(&[&gateway_id, &request_id])
 		.cloned();
-	if let Some(actor_id) = &actor_id {
-		if let Some(actor) = ctx.get_actor(actor_id, None) {
+	if let Some(route) = &route {
+		if let Some(actor) = ctx.get_actor(&route.actor_id, route.actor_generation) {
 			let _ = actor.handle.send(crate::actor::ToActor::HwsAck {
 				gateway_id,
 				request_id,
@@ -509,8 +649,32 @@ pub async fn resend_buffered_tunnel_messages(ctx: &mut EnvoyContext) {
 	);
 
 	let messages = std::mem::take(&mut ctx.buffered_messages);
-	for msg in messages {
-		ws_send(&ctx.shared, protocol::ToRivet::ToRivetTunnelMessage(msg)).await;
+	let mut messages = messages.into_iter();
+	while let Some(msg) = messages.next() {
+		let failed = ws_send(
+			&ctx.shared,
+			protocol::ToRivet::ToRivetTunnelMessage(msg.clone()),
+		)
+		.await;
+		if failed {
+			ctx.buffered_messages.push(msg);
+			ctx.buffered_messages.extend(messages);
+			break;
+		}
+	}
+}
+
+pub async fn send_or_buffer_tunnel_message(
+	ctx: &mut EnvoyContext,
+	msg: protocol::ToRivetTunnelMessage,
+) {
+	let failed = ws_send(
+		&ctx.shared,
+		protocol::ToRivet::ToRivetTunnelMessage(msg.clone()),
+	)
+	.await;
+	if failed {
+		ctx.buffered_messages.push(msg);
 	}
 }
 
@@ -528,23 +692,24 @@ async fn send_error_response(
 	headers.insert("content-length".to_string(), body.len().to_string());
 
 	let response = protocol::ToRivet::ToRivetTunnelMessage(protocol::ToRivetTunnelMessage {
-			message_id: protocol::MessageId {
-				gateway_id,
-				request_id,
-				message_index: 0,
+		message_id: protocol::MessageId {
+			gateway_id,
+			request_id,
+			message_index: 0,
+		},
+		message_kind: protocol::ToRivetTunnelMessageKind::ToRivetResponseStart(
+			protocol::ToRivetResponseStart {
+				status: 503,
+				headers,
+				body: Some(body),
+				stream: false,
 			},
-			message_kind: protocol::ToRivetTunnelMessageKind::ToRivetResponseStart(
-				protocol::ToRivetResponseStart {
-					status: 503,
-					headers,
-					body: Some(body),
-					stream: false,
-				},
-			),
-		});
+		),
+	});
 	match connection_session {
 		Some(session) => {
-			let _ = crate::connection::ws_send_http_for_session(&ctx.shared, response, session).await;
+			let _ =
+				crate::connection::ws_send_http_for_session(&ctx.shared, response, session).await;
 		}
 		None => {
 			ws_send(&ctx.shared, response).await;

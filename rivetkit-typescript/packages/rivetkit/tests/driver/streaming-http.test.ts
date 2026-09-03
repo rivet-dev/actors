@@ -12,6 +12,34 @@ describeDriverMatrix(
 	"Streaming Http",
 	(driverTestConfig) => {
 		describe("streaming http", () => {
+			test("routes this suite through Gateway 3", async (c) => {
+				const { client, metricsEndpoint } = await setupDriverTest(
+					c,
+					driverTestConfig,
+				);
+				if (!metricsEndpoint) {
+					throw new Error("driver did not expose the engine metrics endpoint");
+				}
+				const actor = client.rawHttpActor.getOrCreate([
+					"gateway3-route-proof",
+				]);
+				expect((await actor.fetch("api/hello")).ok).toBe(true);
+
+				const metrics = await (await fetch(metricsEndpoint)).text();
+				const gatewayRouteMetrics = metrics
+					.split("\n")
+					.filter((line) => line.includes("pegboard_gateway_route_total{"));
+				const selectedGateway3 = gatewayRouteMetrics.find(
+					(line) =>
+						line.includes('gateway="gateway3"') &&
+						line.includes('envoy_protocol="streaming"') &&
+						line.includes('request_kind="http_other"') &&
+						line.includes('mode="on"') &&
+						line.includes('decision="sampled_in"'),
+				);
+				expect(selectedGateway3, gatewayRouteMetrics.join("\n")).toBeDefined();
+			});
+
 			test("streams response chunks before the body completes", async (c) => {
 				const { client } = await setupDriverTest(c, driverTestConfig);
 				const actor = client.rawHttpActor.getOrCreate([
@@ -119,6 +147,55 @@ describeDriverMatrix(
 				}
 			});
 
+			test("terminates an idle SSE body when the Envoy tunnel disconnects", async (c) => {
+				const { client, hardCrashRuntime } = await setupDriverTest(
+					c,
+					driverTestConfig,
+				);
+				if (!hardCrashRuntime) {
+					throw new Error("native driver did not expose runtime crash control");
+				}
+				const actor = client.rawHttpActor.getOrCreate([
+					"envoy-disconnect-after-headers",
+				]);
+				const response = await actor.fetch("api/infinite-response");
+				const reader = response.body?.getReader();
+				if (!reader) throw new Error("response body is missing");
+				expect((await reader.read()).done).toBe(false);
+
+				await hardCrashRuntime();
+				const terminal = reader.read().then(
+					(result) => (result.done ? "terminal" : "data"),
+					() => "terminal",
+				);
+				expect(await Promise.race([terminal, delay(8_000)])).toBe(
+					"terminal",
+				);
+			}, 15_000);
+
+			test("fails a request boundedly when the Envoy disconnects before headers", async (c) => {
+				const { client, hardCrashRuntime } = await setupDriverTest(
+					c,
+					driverTestConfig,
+				);
+				if (!hardCrashRuntime) {
+					throw new Error("native driver did not expose runtime crash control");
+				}
+				const actor = client.rawHttpActor.getOrCreate([
+					"envoy-disconnect-before-headers",
+				]);
+				const request = actor.fetch("api/never-start-response");
+				await delay(100);
+				await hardCrashRuntime();
+				const terminal = request.then(
+					() => "terminal",
+					() => "terminal",
+				);
+				expect(await Promise.race([terminal, delay(8_000)])).toBe(
+					"terminal",
+				);
+			}, 15_000);
+
 			test("exposes gateway-chunked request bodies as Request streams", async (c) => {
 				const { client } = await setupDriverTest(c, driverTestConfig);
 				const actor = client.rawHttpActor.getOrCreate([
@@ -146,6 +223,43 @@ describeDriverMatrix(
 				expect(body.chunkCount).toBeGreaterThanOrEqual(2);
 				expect(Math.max(...body.sizes)).toBeLessThanOrEqual(64 * 1024);
 			});
+
+			test("resumes a multi-window upload after a slow actor consumes it", async (c) => {
+				const { client } = await setupDriverTest(c, driverTestConfig);
+				const actor = client.rawHttpActor.getOrCreate(["slow-upload"]);
+				const requestBody = new Uint8Array(3 * 1024 * 1024 + 17).fill(
+					7,
+				);
+
+				const response = await actor.fetch("api/slow-upload", {
+					method: "POST",
+					body: Buffer.from(requestBody),
+				});
+				expect(response.ok).toBe(true);
+				expect(
+					((await response.json()) as { totalBytes: number }).totalBytes,
+				).toBe(requestBody.byteLength);
+			}, 30_000);
+
+			test("resumes a multi-window response after a slow client consumes it", async (c) => {
+				const { client } = await setupDriverTest(c, driverTestConfig);
+				const actor = client.rawHttpActor.getOrCreate([
+					"slow-response-client",
+				]);
+				const response = await actor.fetch("api/large-pull-response");
+				const reader = response.body?.getReader();
+				if (!reader) throw new Error("response body is missing");
+
+				let totalBytes = 0;
+				for (;;) {
+					await delay(5);
+					const next = await reader.read();
+					if (next.done) break;
+					expect(next.value.every((byte) => byte === 9)).toBe(true);
+					totalBytes += next.value.byteLength;
+				}
+				expect(totalBytes).toBe(3 * 1024 * 1024 + 17);
+			}, 30_000);
 
 			test("allows handlers to cancel unread streamed uploads", async (c) => {
 				const { client } = await setupDriverTest(c, driverTestConfig);
@@ -306,5 +420,6 @@ describeDriverMatrix(
 		runtimes: ["native"],
 		encodings: ["bare"],
 		sqliteBackends: ["remote"],
+		config: { engine: { gateway3: true } },
 	},
 );

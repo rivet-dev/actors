@@ -113,6 +113,24 @@ export const rawHttpActor = actor({
 			);
 		}
 
+		if (url.pathname === "/api/infinite-response") {
+			const encoder = new TextEncoder();
+			return new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(encoder.encode("data: ready\n\n"));
+					},
+				}),
+				{
+					headers: { "Content-Type": "text/event-stream" },
+				},
+			);
+		}
+
+		if (url.pathname === "/api/never-start-response") {
+			await new Promise(() => {});
+		}
+
 		if (url.pathname === "/api/sse-proxy") {
 			const target = url.searchParams.get("target");
 			if (!target) {
@@ -158,6 +176,48 @@ export const rawHttpActor = actor({
 				}),
 				{
 					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
+
+		if (url.pathname === "/api/slow-upload" && method === "POST") {
+			const reader = request.body?.getReader();
+			let totalBytes = 0;
+			if (reader) {
+				for (;;) {
+					// Intentionally delay consumption so Gateway 3 must stop reading the
+					// client after the actor-side request window is exhausted.
+					await new Promise((resolve) => setTimeout(resolve, 5));
+					const next = await reader.read();
+					if (next.done) break;
+					totalBytes += next.value.byteLength;
+				}
+			}
+			return Response.json({ totalBytes });
+		}
+
+		if (url.pathname === "/api/large-pull-response") {
+			const totalBytes = 3 * 1024 * 1024 + 17;
+			let emittedBytes = 0;
+			return new Response(
+				new ReadableStream<Uint8Array>({
+					pull(controller) {
+						if (emittedBytes === totalBytes) {
+							controller.close();
+							return;
+						}
+						const chunkSize = Math.min(
+							64 * 1024,
+							totalBytes - emittedBytes,
+						);
+						controller.enqueue(new Uint8Array(chunkSize).fill(9));
+						emittedBytes += chunkSize;
+					},
+				}),
+				{
+					headers: {
+						"Content-Type": "application/octet-stream",
+					},
 				},
 			);
 		}

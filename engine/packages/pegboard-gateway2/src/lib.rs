@@ -213,6 +213,7 @@ impl PegboardGateway2 {
 			let message = protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
 				protocol::ToEnvoyRequestStart {
 					actor_id: actor_id.clone(),
+					actor_generation: None,
 					method: req_ctx.method().to_string(),
 					path: self.path.clone(),
 					headers,
@@ -429,6 +430,7 @@ impl PegboardGateway2 {
 				let open_message = protocol::ToEnvoyTunnelMessageKind::ToEnvoyWebSocketOpen(
 					protocol::ToEnvoyWebSocketOpen {
 						actor_id: self.actor_id.to_string(),
+						actor_generation: None,
 						path: self.path.clone(),
 						headers: request_headers,
 					},

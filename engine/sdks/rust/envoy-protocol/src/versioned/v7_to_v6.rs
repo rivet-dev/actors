@@ -674,6 +674,9 @@ pub fn convert_message_id_v7_to_v6(x: v7::MessageId) -> Result<v6::MessageId> {
 pub fn convert_to_envoy_request_start_v7_to_v6(
 	x: v7::ToEnvoyRequestStart,
 ) -> Result<v6::ToEnvoyRequestStart> {
+	if x.actor_generation.is_some() {
+		bail!("actor generation routing requires envoy protocol v7");
+	}
 	if x.response_stream {
 		bail!("streaming HTTP responses require envoy protocol v7");
 	}
@@ -719,6 +722,9 @@ pub fn convert_to_rivet_response_chunk_v7_to_v6(
 pub fn convert_to_envoy_web_socket_open_v7_to_v6(
 	x: v7::ToEnvoyWebSocketOpen,
 ) -> Result<v6::ToEnvoyWebSocketOpen> {
+	if x.actor_generation.is_some() {
+		bail!("actor generation routing requires envoy protocol v7");
+	}
 	Ok(v6::ToEnvoyWebSocketOpen {
 		actor_id: x.actor_id,
 		path: x.path,

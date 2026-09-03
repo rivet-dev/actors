@@ -23,11 +23,55 @@ const HTTP_RESPONSE_QUEUE_OVERLOADED_DETAIL: &str =
 
 struct HttpResponseWindowStall(std::time::Instant);
 
+#[derive(Debug)]
+enum ResponseChunkDelivery {
+	Delivered,
+	ClientDisconnected,
+	EnvoyAborted(Option<protocol::HttpStreamAbortReason>),
+}
+
+fn delivery_failure_abort_kind(
+	stop_result: RequestStopResult,
+) -> protocol::HttpStreamAbortReasonKind {
+	match stop_result {
+		RequestStopResult::EnvoyError
+		| RequestStopResult::ActorReadyTimeout
+		| RequestStopResult::RequestTimeout => protocol::HttpStreamAbortReasonKind::InternalError,
+		RequestStopResult::ClientDisconnect => protocol::HttpStreamAbortReasonKind::Cancelled,
+		RequestStopResult::Success => unreachable!("failed delivery cannot be successful"),
+	}
+}
+
 impl Drop for HttpResponseWindowStall {
 	fn drop(&mut self) {
 		crate::metrics::HTTP_BODY_WINDOW_STALL_DURATION_SECONDS
 			.with_label_values(&["response"])
 			.observe(self.0.elapsed().as_secs_f64());
+	}
+}
+
+async fn deliver_response_chunk(
+	body_tx: &mpsc::Sender<Result<Bytes, ResponseBodyError>>,
+	http_response_abort_rx: &mut watch::Receiver<Option<protocol::HttpStreamAbortReason>>,
+	chunk: Bytes,
+) -> ResponseChunkDelivery {
+	if let Some(reason) = http_response_abort_rx.borrow().clone() {
+		return ResponseChunkDelivery::EnvoyAborted(Some(reason));
+	}
+
+	tokio::select! {
+		biased;
+		_ = body_tx.closed() => ResponseChunkDelivery::ClientDisconnected,
+		changed = http_response_abort_rx.changed() => {
+			let reason = changed
+				.ok()
+				.and_then(|()| http_response_abort_rx.borrow().clone());
+			ResponseChunkDelivery::EnvoyAborted(reason)
+		}
+		result = body_tx.send(Ok(chunk)) => match result {
+			Ok(()) => ResponseChunkDelivery::Delivered,
+			Err(_) => ResponseChunkDelivery::ClientDisconnected,
+		},
 	}
 }
 
@@ -47,6 +91,8 @@ async fn send_http_response_body_bytes(
 	in_flight_req: &InFlightRequestHandle,
 	body_tx: &mpsc::Sender<Result<Bytes, ResponseBodyError>>,
 	drop_rx: &mut watch::Receiver<Option<MsgGcReason>>,
+	http_response_abort_rx:
+		&mut watch::Receiver<Option<protocol::HttpStreamAbortReason>>,
 	stopped_sub: &mut message::SubscriptionHandle<pegboard::workflows::actor2::Stopped>,
 	actor_id: Id,
 	body: Vec<u8>,
@@ -63,7 +109,10 @@ async fn send_http_response_body_bytes(
 		let consumed_bytes = response_consumed_bytes.load(Ordering::Acquire);
 		let Some((next_received_bytes, outstanding_bytes)) = received_bytes
 			.checked_add(chunk_len as u64)
-			.and_then(|next| next.checked_sub(consumed_bytes).map(|outstanding| (next, outstanding)))
+			.and_then(|next| {
+				next.checked_sub(consumed_bytes)
+					.map(|outstanding| (next, outstanding))
+			})
 		else {
 			fail_response_window(
 				in_flight_req,
@@ -102,7 +151,6 @@ async fn send_http_response_body_bytes(
 		};
 		let delivery = tokio::select! {
 			biased;
-			_ = body_tx.closed() => Err((RequestStopResult::ClientDisconnect, detail.to_owned())),
 			_ = drop_rx.changed() => {
 				let overloaded = matches!(
 					drop_rx.borrow().as_ref(),
@@ -129,23 +177,25 @@ async fn send_http_response_body_bytes(
 					"actor stopped while streaming response".to_owned(),
 				))
 			}
-			result = body_tx.send(Ok(chunk)) => match result {
-				Ok(()) => Ok(()),
-				Err(_) => Err((RequestStopResult::ClientDisconnect, detail.to_owned())),
+			result = deliver_response_chunk(body_tx, http_response_abort_rx, chunk) => match result {
+				ResponseChunkDelivery::Delivered => Ok(()),
+				ResponseChunkDelivery::ClientDisconnected => {
+					Err((RequestStopResult::ClientDisconnect, detail.to_owned()))
+				}
+				ResponseChunkDelivery::EnvoyAborted(reason) => {
+					flow_metrics.consume(chunk_len);
+					finish_envoy_response_abort(in_flight_req, terminal_error, reason).await;
+					return false;
+				}
 			},
 		};
 		if let Err((stop_result, message)) = delivery {
 			flow_metrics.consume(chunk_len);
 			tracing::debug!(?stop_result, %message, "stopped delivering streaming http response");
+			let abort_kind = delivery_failure_abort_kind(stop_result);
+			send_http_request_abort(in_flight_req, abort_kind, Some(message.clone())).await;
 			if !matches!(stop_result, RequestStopResult::ClientDisconnect) {
 				send_http_body_error(terminal_error, message);
-			} else {
-				send_http_request_abort(
-					in_flight_req,
-					protocol::HttpStreamAbortReasonKind::Cancelled,
-					Some(detail.to_owned()),
-				)
-				.await;
 			}
 			in_flight_req.stop(stop_result).await;
 			return false;
@@ -174,23 +224,32 @@ pub(super) async fn drain_http_response_stream(
 	in_flight_req: InFlightRequestHandle,
 	mut msg_rx: mpsc::UnboundedReceiver<InFlightTunnelMessage>,
 	mut drop_rx: watch::Receiver<Option<MsgGcReason>>,
+	mut http_response_abort_rx:
+		watch::Receiver<Option<protocol::HttpStreamAbortReason>>,
 	mut stopped_sub: message::SubscriptionHandle<pegboard::workflows::actor2::Stopped>,
 	body_tx: mpsc::Sender<Result<Bytes, ResponseBodyError>>,
 	initial_body: Option<Vec<u8>>,
 	mut expected_message_index: protocol::MessageIndex,
 	actor_id: Id,
 	idle_timeout: Option<Duration>,
+	tunnel_ping_interval: Duration,
 	response_consumed_bytes: Arc<AtomicU64>,
 	terminal_error: ResponseBodyTerminal,
 	flow_metrics: Arc<HttpResponseFlowMetrics>,
 ) {
 	let mut received_bytes = 0u64;
 	let mut idle_deadline = idle_timeout.map(|timeout| tokio::time::Instant::now() + timeout);
+	let mut tunnel_ping = tokio::time::interval_at(
+		tokio::time::Instant::now() + tunnel_ping_interval,
+		tunnel_ping_interval,
+	);
+	tunnel_ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 	if let Some(body) = initial_body.filter(|body| !body.is_empty()) {
 		if !send_http_response_body_bytes(
 			&in_flight_req,
 			&body_tx,
 			&mut drop_rx,
+			&mut http_response_abort_rx,
 			&mut stopped_sub,
 			actor_id,
 			body,
@@ -208,6 +267,18 @@ pub(super) async fn drain_http_response_stream(
 
 	loop {
 		tokio::select! {
+			biased;
+			_ = tunnel_ping.tick() => {
+				if let Err(error) = in_flight_req.send_and_check_ping().await {
+					crate::metrics::HTTP_POST_COMMIT_FAILURE_TOTAL
+						.with_label_values(&["tunnel_liveness"])
+						.inc();
+					tracing::warn!(?error, "lost Envoy tunnel while streaming HTTP response");
+					send_http_body_error(&terminal_error, "Envoy tunnel lost while streaming response");
+					in_flight_req.stop(RequestStopResult::EnvoyError).await;
+					return;
+				}
+			}
 			res = msg_rx.recv() => {
 				let Some(msg) = res else {
 					tracing::warn!("streaming response tunnel channel closed");
@@ -265,6 +336,7 @@ pub(super) async fn drain_http_response_stream(
 								&in_flight_req,
 								&body_tx,
 								&mut drop_rx,
+								&mut http_response_abort_rx,
 								&mut stopped_sub,
 								actor_id,
 								chunk.body,
@@ -288,27 +360,12 @@ pub(super) async fn drain_http_response_stream(
 						}
 					}
 					protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(abort) => {
-						crate::metrics::HTTP_STREAM_ABORT_TOTAL
-							.with_label_values(&[
-								"response",
-								"actor",
-								super::abort_kind_label(&abort.reason.kind),
-							])
-							.inc();
-						let message = match &abort.reason.detail {
-							Some(detail) => format!("{:?}: {detail}", abort.reason.kind),
-							None => format!("{:?}", abort.reason.kind),
-						};
-						tracing::warn!(
-							reason_kind = ?abort.reason.kind,
-							reason_detail = ?abort.reason.detail,
-							"streaming http response aborted by envoy"
-						);
-						send_http_body_error(
+						finish_envoy_response_abort(
+							&in_flight_req,
 							&terminal_error,
-							format!("response stream aborted: {message}"),
-						);
-						in_flight_req.stop(RequestStopResult::EnvoyError).await;
+							Some(abort.reason),
+						)
+						.await;
 						return;
 					}
 					other => {
@@ -331,6 +388,13 @@ pub(super) async fn drain_http_response_stream(
 					}
 				}
 			}
+			changed = http_response_abort_rx.changed() => {
+				let reason = changed
+					.ok()
+					.and_then(|()| http_response_abort_rx.borrow().clone());
+				finish_envoy_response_abort(&in_flight_req, &terminal_error, reason).await;
+				return;
+			}
 			_ = drop_rx.changed() => {
 				let overloaded = matches!(
 					drop_rx.borrow().as_ref(),
@@ -352,6 +416,12 @@ pub(super) async fn drain_http_response_stream(
 			}
 			_ = stopped_sub.next() => {
 				tracing::debug!(%actor_id, "actor stopped while streaming response");
+				send_http_request_abort(
+					&in_flight_req,
+					protocol::HttpStreamAbortReasonKind::Cancelled,
+					Some("actor stopped while streaming response".to_owned()),
+				)
+				.await;
 				send_http_body_error(&terminal_error, "actor stopped while streaming response");
 				in_flight_req.stop(RequestStopResult::EnvoyError).await;
 				return;
@@ -392,6 +462,39 @@ pub(super) async fn drain_http_response_stream(
 	}
 }
 
+async fn finish_envoy_response_abort(
+	in_flight_req: &InFlightRequestHandle,
+	terminal_error: &ResponseBodyTerminal,
+	reason: Option<protocol::HttpStreamAbortReason>,
+) {
+	if let Some(reason) = &reason {
+		crate::metrics::HTTP_STREAM_ABORT_TOTAL
+			.with_label_values(&[
+				"response",
+				"actor",
+				super::abort_kind_label(&reason.kind),
+			])
+			.inc();
+	}
+	let message = match &reason {
+		Some(reason) => match &reason.detail {
+			Some(detail) => format!("{:?}: {detail}", reason.kind),
+			None => format!("{:?}", reason.kind),
+		},
+		None => "Envoy response abort signal closed".to_owned(),
+	};
+	tracing::warn!(
+		reason_kind = ?reason.as_ref().map(|reason| &reason.kind),
+		reason_detail = ?reason.as_ref().and_then(|reason| reason.detail.as_deref()),
+		"streaming http response aborted by envoy"
+	);
+	send_http_body_error(
+		terminal_error,
+		format!("response stream aborted: {message}"),
+	);
+	in_flight_req.stop(RequestStopResult::EnvoyError).await;
+}
+
 pub(super) async fn send_http_response_window_updates(
 	in_flight_req: InFlightRequestHandle,
 	mut consumed_rx: mpsc::UnboundedReceiver<u64>,
@@ -412,10 +515,7 @@ pub(super) async fn send_http_response_window_updates(
 	}
 }
 
-fn send_http_body_error(
-	terminal_error: &ResponseBodyTerminal,
-	message: impl Into<String>,
-) {
+fn send_http_body_error(terminal_error: &ResponseBodyTerminal, message: impl Into<String>) {
 	terminal_error.fail(Box::new(std::io::Error::other(message.into())));
 }
 

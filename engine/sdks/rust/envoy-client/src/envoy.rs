@@ -36,7 +36,8 @@ use crate::sqlite::{
 	process_unsent_remote_sqlite_requests, process_unsent_sqlite_requests,
 };
 use crate::tunnel::{
-	handle_tunnel_message, resend_buffered_tunnel_messages, send_hibernatable_ws_message_ack,
+	handle_tunnel_message, make_ws_key, resend_buffered_tunnel_messages,
+	send_hibernatable_ws_message_ack,
 };
 use crate::utils::{BufferMap, EnvoyShutdownError, SleepFuture, boxed_sleep, spawn_detached};
 
@@ -57,7 +58,7 @@ pub struct EnvoyContext {
 	pub next_sqlite_request_id: u32,
 	pub remote_sqlite_requests: HashMap<u32, RemoteSqliteRequestEntry>,
 	pub next_remote_sqlite_request_id: u32,
-	pub request_to_actor: BufferMap<String>,
+	pub request_to_actor: BufferMap<WebSocketRoute>,
 	pub http_request_routes: BufferMap<HttpRequestRoute>,
 	pub http_message_indices: BufferMap<protocol::MessageIndex>,
 	pub buffered_messages: Vec<protocol::ToRivetTunnelMessage>,
@@ -70,9 +71,17 @@ pub struct EnvoyContext {
 
 pub struct HttpRequestRoute {
 	pub actor_id: String,
+	pub actor_generation: Option<u32>,
+	pub actor_admitted: bool,
 	pub session: u64,
 	pub gateway_id: protocol::GatewayId,
 	pub request_id: protocol::RequestId,
+}
+
+#[derive(Clone)]
+pub struct WebSocketRoute {
+	pub actor_id: String,
+	pub actor_generation: Option<u32>,
 }
 
 pub struct ActorEntry {
@@ -121,7 +130,7 @@ pub enum ToEnvoyMessage {
 		expected_session: Option<u64>,
 		response_tx: oneshot::Sender<anyhow::Result<RemoteSqliteResponseEnvelope>>,
 	},
-	BufferTunnelMsg {
+	SendOrBufferTunnelMsg {
 		msg: protocol::ToRivetTunnelMessage,
 	},
 	ActorIntent {
@@ -140,6 +149,13 @@ pub enum ToEnvoyMessage {
 		gateway_id: protocol::GatewayId,
 		request_id: protocol::RequestId,
 		envoy_message_index: u16,
+	},
+	RebindWebSocket {
+		actor_id: String,
+		generation: u32,
+		gateway_id: protocol::GatewayId,
+		request_id: protocol::RequestId,
+		response_tx: oneshot::Sender<bool>,
 	},
 	HttpRequestComplete {
 		gateway_id: protocol::GatewayId,
@@ -163,6 +179,41 @@ pub struct ActorInfo {
 }
 
 impl EnvoyContext {
+	pub(crate) fn rebind_websocket(
+		&mut self,
+		actor_id: &str,
+		generation: u32,
+		gateway_id: &protocol::GatewayId,
+		request_id: &protocol::RequestId,
+	) -> bool {
+		if let Some(route) = self.request_to_actor.get_mut(&[gateway_id, request_id]) {
+			if route.actor_id != actor_id {
+				return false;
+			}
+			if route.actor_generation.is_some() {
+				route.actor_generation = Some(generation);
+			}
+		} else {
+			// A hibernating actor may be restored on a different Envoy process. Its
+			// authoritative start command carries the hibernating request ids, while
+			// the original process owns the old ephemeral route map.
+			self.request_to_actor.insert(
+				&[gateway_id, request_id],
+				WebSocketRoute {
+					actor_id: actor_id.to_owned(),
+					actor_generation: Some(generation),
+				},
+			);
+		}
+
+		self.shared
+			.live_tunnel_requests
+			.lock()
+			.expect("shared live tunnel request registry poisoned")
+			.insert(make_ws_key(gateway_id, request_id), actor_id.to_owned());
+		true
+	}
+
 	pub fn insert_actor(
 		&mut self,
 		actor_id: String,
@@ -247,7 +298,7 @@ impl EnvoyContext {
 		}
 
 		if let Some(g) = generation {
-			return gens.get(&g);
+			return gens.get(&g).filter(|entry| !entry.handle.is_closed());
 		}
 
 		// Return highest generation non-closed entry
@@ -261,6 +312,21 @@ impl EnvoyContext {
 			}
 		}
 		best
+	}
+
+	/// Selects an actor for a new request. Exact-generation continuations use
+	/// `get_actor` directly so an already admitted stream can finish during stop.
+	pub fn get_actor_for_admission(
+		&self,
+		actor_id: &str,
+		generation: Option<u32>,
+	) -> Option<&ActorEntry> {
+		let actor = self.get_actor(actor_id, generation)?;
+		if generation.is_some() && actor.received_stop {
+			None
+		} else {
+			Some(actor)
+		}
 	}
 
 	pub fn get_actor_entry_mut(
@@ -394,13 +460,7 @@ async fn envoy_loop(
 						lost_timeout = handle_conn_message(&mut ctx, &start_tx, lost_timeout, message, session).await;
 					}
 					ToEnvoyMessage::ConnClose { evict, session } => {
-						let closed_routes = ctx
-							.http_request_routes
-							.remove_where(|route| route.session == session);
-						for route in closed_routes {
-							ctx.http_message_indices
-								.remove(&[&route.gateway_id, &route.request_id]);
-						}
+						remove_http_routes_for_session(&mut ctx, session);
 						for generations in ctx.actors.values() {
 							for actor in generations.values() {
 								let _ = actor.handle.send(ToActor::ConnectionClosed { session });
@@ -425,8 +485,8 @@ async fn envoy_loop(
 					ToEnvoyMessage::RemoteSqliteRequest { request, expected_session, response_tx } => {
 						handle_remote_sqlite_request(&mut ctx, request, expected_session, response_tx).await;
 					}
-					ToEnvoyMessage::BufferTunnelMsg { msg } => {
-						ctx.buffered_messages.push(msg);
+					ToEnvoyMessage::SendOrBufferTunnelMsg { msg } => {
+						crate::tunnel::send_or_buffer_tunnel_message(&mut ctx, msg).await;
 					}
 					ToEnvoyMessage::ActorIntent { actor_id, generation, intent, error } => {
 						if let Some(entry) = ctx.get_actor(&actor_id, generation) {
@@ -446,6 +506,15 @@ async fn envoy_loop(
 					}
 					ToEnvoyMessage::HwsAck { gateway_id, request_id, envoy_message_index } => {
 						send_hibernatable_ws_message_ack(&mut ctx, gateway_id, request_id, envoy_message_index);
+					}
+					ToEnvoyMessage::RebindWebSocket { actor_id, generation, gateway_id, request_id, response_tx } => {
+						let rebound = ctx.rebind_websocket(
+							&actor_id,
+							generation,
+							&gateway_id,
+							&request_id,
+						);
+						let _ = response_tx.send(rebound);
 					}
 					ToEnvoyMessage::HttpRequestComplete { gateway_id, request_id } => {
 						ctx.http_request_routes.remove(&[&gateway_id, &request_id]);
@@ -565,6 +634,16 @@ async fn envoy_loop(
 	// any future callers of `wait_stopped` resolve immediately because watch
 	// retains the last value.
 	let _ = ctx.shared.stopped_tx.send(true);
+}
+
+pub(crate) fn remove_http_routes_for_session(ctx: &mut EnvoyContext, session: u64) {
+	let closed_routes = ctx
+		.http_request_routes
+		.remove_where(|route| route.session == session);
+	for route in closed_routes {
+		ctx.http_message_indices
+			.remove(&[&route.gateway_id, &route.request_id]);
+	}
 }
 
 fn observe_envoy_loop_iteration(branch: &'static str, start: crate::time::Instant) {

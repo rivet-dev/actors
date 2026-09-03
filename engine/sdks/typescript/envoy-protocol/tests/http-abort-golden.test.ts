@@ -24,7 +24,7 @@ describe("envoy HTTP abort protocol", () => {
 					tag: "ToEnvoyRequestAbort",
 					val: {
 						reason: {
-							kind: HttpStreamAbortReasonKind.ClientDisconnect,
+							kind: HttpStreamAbortReasonKind.Cancelled,
 							detail: "client closed connection",
 						},
 					},

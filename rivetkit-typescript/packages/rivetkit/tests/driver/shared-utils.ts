@@ -36,8 +36,10 @@ export async function setupDriverTest(
 ): Promise<{
 	client: Client<typeof registry>;
 	endpoint: string;
+	metricsEndpoint?: string;
 	namespace: string;
 	hardCrashActor?: (actorId: string) => Promise<void>;
+	hardCrashRuntime?: () => Promise<void>;
 	hardCrashPreservesData: boolean;
 	getRuntimeOutput: () => string;
 }> {
@@ -51,9 +53,11 @@ export async function setupDriverTest(
 	const driverStartStartedAt = performance.now();
 	const {
 		endpoint,
+		metricsEndpoint,
 		namespace,
 		runnerName,
 		hardCrashActor,
+		hardCrashRuntime,
 		hardCrashPreservesData,
 		getRuntimeOutput,
 		cleanup,
@@ -92,8 +96,10 @@ export async function setupDriverTest(
 	return {
 		client,
 		endpoint,
+		metricsEndpoint,
 		namespace,
 		hardCrashActor,
+		hardCrashRuntime,
 		hardCrashPreservesData: hardCrashPreservesData ?? false,
 		getRuntimeOutput: getRuntimeOutput ?? (() => ""),
 	};

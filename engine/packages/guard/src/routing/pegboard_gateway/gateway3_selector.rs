@@ -1,5 +1,5 @@
-use hyper::header::ACCEPT;
 use hyper::HeaderMap;
+use hyper::header::ACCEPT;
 use rivet_config::config::pegboard::{Gateway3, Gateway3Mode};
 use rivet_envoy_protocol::PROTOCOL_VERSION;
 use rivet_guard_core::request_context::RequestContext;
@@ -284,7 +284,10 @@ mod tests {
 	#[test]
 	fn sampling_has_stable_golden_vectors() {
 		assert_eq!(sample_bucket(Id::nil(), Id::nil()), 1513);
-		assert_eq!(sample_bucket(id(std::array::from_fn(|i| i as u8)), id([255; 18])), 558);
+		assert_eq!(
+			sample_bucket(id(std::array::from_fn(|i| i as u8)), id([255; 18])),
+			558
+		);
 	}
 
 	#[test]
@@ -371,7 +374,9 @@ mod tests {
 		};
 
 		assert!(accepts("text/event-stream"));
-		assert!(accepts("application/json, TEXT/EVENT-STREAM; charset=utf-8; q=0.5"));
+		assert!(accepts(
+			"application/json, TEXT/EVENT-STREAM; charset=utf-8; q=0.5"
+		));
 		assert!(!accepts("text/event-stream;q=0"));
 		assert!(!accepts("text/event-stream;q=garbage"));
 		assert!(!accepts("application/x-text/event-stream"));

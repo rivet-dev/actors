@@ -28,9 +28,7 @@ pub(super) fn should_stream_http_request_body(
 	exact_size: Option<u64>,
 	is_end_stream: bool,
 ) -> bool {
-	!matches!(method, &Method::GET | &Method::HEAD)
-		&& !is_end_stream
-		&& exact_size != Some(0)
+	!matches!(method, &Method::GET | &Method::HEAD) && !is_end_stream && exact_size != Some(0)
 }
 
 #[derive(Debug, PartialEq)]
@@ -169,13 +167,8 @@ where
 
 		let was_empty = chunker.is_empty();
 		for chunk in chunker.push(&data) {
-			if !send_http_request_body_chunk(
-				in_flight_req,
-				chunk,
-				false,
-				&mut upload_cancel_rx,
-			)
-			.await?
+			if !send_http_request_body_chunk(in_flight_req, chunk, false, &mut upload_cancel_rx)
+				.await?
 			{
 				return Ok(false);
 			}
@@ -190,13 +183,8 @@ where
 	// Normal EOF sends exactly one final protocol chunk so actor-side upload
 	// state and request routing can be released.
 	let final_chunk = chunker.flush().unwrap_or_default();
-	if !send_http_request_body_chunk(
-		in_flight_req,
-		final_chunk,
-		true,
-		&mut upload_cancel_rx,
-	)
-	.await?
+	if !send_http_request_body_chunk(in_flight_req, final_chunk, true, &mut upload_cancel_rx)
+		.await?
 	{
 		return Ok(false);
 	}

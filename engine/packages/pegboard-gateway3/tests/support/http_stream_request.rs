@@ -12,11 +12,7 @@ fn every_nonempty_http_upload_streams_after_request_start() {
 		Some(1),
 		false
 	));
-	assert!(should_stream_http_request_body(
-		&Method::POST,
-		None,
-		false
-	));
+	assert!(should_stream_http_request_body(&Method::POST, None, false));
 	assert!(!should_stream_http_request_body(
 		&Method::GET,
 		Some(1),

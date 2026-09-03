@@ -16,9 +16,11 @@ export interface DriverTestFeatures {
 
 export interface DriverDeployOutput {
 	endpoint: string;
+	metricsEndpoint?: string;
 	namespace: string;
 	runnerName: string;
 	hardCrashActor?: (actorId: string) => Promise<void>;
+	hardCrashRuntime?: () => Promise<void>;
 	hardCrashPreservesData?: boolean;
 	getRuntimeOutput?: () => string;
 	cleanup(): Promise<void>;

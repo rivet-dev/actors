@@ -39,6 +39,8 @@ const PHASE_PRE_REQUEST: &str = "pre_request";
 pub(crate) struct PreparedHttpRequest {
 	msg_rx: mpsc::UnboundedReceiver<crate::shared_state::InFlightTunnelMessage>,
 	drop_rx: watch::Receiver<Option<crate::shared_state::MsgGcReason>>,
+	http_response_abort_rx:
+		watch::Receiver<Option<protocol::HttpStreamAbortReason>>,
 	in_flight_req: crate::shared_state::InFlightRequestHandle,
 	stopped_sub: message::SubscriptionHandle<pegboard::workflows::actor2::Stopped>,
 	client_disconnect_guard: HttpClientDisconnectGuard,
@@ -52,6 +54,7 @@ impl PegboardGateway3 {
 		ctx: &StandaloneCtx,
 		req_ctx: &mut RequestContext,
 	) -> Result<PreparedHttpRequest> {
+		let actor_generation = self.actor_generation;
 		let max_request_body_size = ctx.config().guard().http_max_request_body_size();
 		if req_ctx
 			.request_body_exact_size()
@@ -82,7 +85,6 @@ impl PegboardGateway3 {
 		let mut stopped_sub = ctx
 			.subscribe::<pegboard::workflows::actor2::Stopped>(("actor_id", self.actor_id))
 			.await?;
-		self.prepare_http_request(ctx).await?;
 
 		let tunnel_subject = pegboard::pubsub_subjects::EnvoyReceiverSubject::new(
 			self.namespace_id,
@@ -92,6 +94,7 @@ impl PegboardGateway3 {
 		let InFlightRequestCtx {
 			msg_rx,
 			drop_rx,
+			http_response_abort_rx,
 			handle: in_flight_req,
 		} = self
 			.shared_state
@@ -99,7 +102,7 @@ impl PegboardGateway3 {
 				self.namespace_id,
 				self.pool_name.as_str(),
 				self.actor_key.clone(),
-				self.actor_generation,
+				Some(actor_generation),
 				self.envoy_protocol_version,
 				RequestProtocol::Http,
 				tunnel_subject,
@@ -112,6 +115,7 @@ impl PegboardGateway3 {
 		let message = protocol::ToEnvoyTunnelMessageKind::ToEnvoyRequestStart(
 			protocol::ToEnvoyRequestStart {
 				actor_id: self.actor_id.to_string(),
+				actor_generation: Some(actor_generation),
 				method: req_ctx.method().to_string(),
 				path: self.path.clone(),
 				headers,
@@ -133,6 +137,7 @@ impl PegboardGateway3 {
 		Ok(PreparedHttpRequest {
 			msg_rx,
 			drop_rx,
+			http_response_abort_rx,
 			in_flight_req,
 			stopped_sub,
 			client_disconnect_guard,
@@ -229,6 +234,7 @@ impl PegboardGateway3 {
 		let PreparedHttpRequest {
 			mut msg_rx,
 			mut drop_rx,
+			http_response_abort_rx,
 			in_flight_req,
 			mut stopped_sub,
 			mut client_disconnect_guard,
@@ -314,6 +320,13 @@ impl PegboardGateway3 {
 					.pegboard()
 					.gateway_response_chunk_idle_timeout_ms()
 					.map(|timeout_ms| Duration::from_millis(timeout_ms.max(1)));
+				let tunnel_ping_interval = Duration::from_millis(
+					self.ctx
+						.config()
+						.pegboard()
+						.gateway_update_ping_interval_ms()
+						.max(1),
+				);
 				let expected_message_index =
 					response_start_message_id.message_index.wrapping_add(1);
 				let initial_body = response_start.body.take();
@@ -323,12 +336,14 @@ impl PegboardGateway3 {
 						in_flight_req.clone(),
 						msg_rx,
 						drop_rx,
+						http_response_abort_rx,
 						stopped_sub,
 						body_tx,
 						initial_body,
 						expected_message_index,
 						self.actor_id,
 						idle_timeout,
+						tunnel_ping_interval,
 						response_consumed_bytes.clone(),
 						terminal_error,
 						flow_metrics.clone(),
@@ -345,24 +360,22 @@ impl PegboardGateway3 {
 
 				let egress_bytes = egress_bytes.clone();
 				let consumption_flow_metrics = flow_metrics.clone();
-				response_builder.body(
-					response_body.with_consumption(move |bytes| {
-						let Ok(bytes) = u64::try_from(bytes) else {
-							return;
-						};
-						let Ok(previous) = response_consumed_bytes.fetch_update(
-							Ordering::AcqRel,
-							Ordering::Acquire,
-							|current| current.checked_add(bytes),
-						) else {
-							return;
-						};
-						let consumed = previous + bytes;
-						egress_bytes.fetch_add(bytes, Ordering::AcqRel);
-						consumption_flow_metrics.consume(bytes as usize);
-						let _ = response_consumed_tx.send(consumed);
-					}),
-				)?
+				response_builder.body(response_body.with_consumption(move |bytes| {
+					let Ok(bytes) = u64::try_from(bytes) else {
+						return;
+					};
+					let Ok(previous) = response_consumed_bytes.fetch_update(
+						Ordering::AcqRel,
+						Ordering::Acquire,
+						|current| current.checked_add(bytes),
+					) else {
+						return;
+					};
+					let consumed = previous + bytes;
+					egress_bytes.fetch_add(bytes, Ordering::AcqRel);
+					consumption_flow_metrics.consume(bytes as usize);
+					let _ = response_consumed_tx.send(consumed);
+				}))?
 			} else {
 				let body = response_start.body.unwrap_or_default();
 				egress_bytes.fetch_add(body.len() as u64, Ordering::AcqRel);
@@ -392,7 +405,9 @@ impl PegboardGateway3 {
 				Some("client disconnected before the HTTP response started".to_owned()),
 			)
 			.await;
-			in_flight_req.stop(RequestStopResult::ClientDisconnect).await;
+			in_flight_req
+				.stop(RequestStopResult::ClientDisconnect)
+				.await;
 		} else if res.is_err() {
 			send_http_request_abort(
 				&in_flight_req,

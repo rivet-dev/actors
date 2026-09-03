@@ -1,4 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+	collections::HashMap,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
+};
 
 use rivet_envoy_protocol as protocol;
 use tokio::{
@@ -54,6 +60,7 @@ struct HttpTunnelSender {
 	request_id: protocol::RequestId,
 	message_index: Arc<Mutex<protocol::MessageIndex>>,
 	connection_session: Option<u64>,
+	terminal_queued: Arc<AtomicBool>,
 }
 
 impl HttpTunnelSender {
@@ -69,10 +76,17 @@ impl HttpTunnelSender {
 			request_id,
 			message_index: Arc::new(Mutex::new(0)),
 			connection_session,
+			terminal_queued: Arc::new(AtomicBool::new(false)),
 		}
 	}
 
 	async fn send(&self, message_kind: protocol::ToRivetTunnelMessageKind) -> bool {
+		let is_terminal = match &message_kind {
+			protocol::ToRivetTunnelMessageKind::ToRivetResponseStart(response) => !response.stream,
+			protocol::ToRivetTunnelMessageKind::ToRivetResponseChunk(chunk) => chunk.finish,
+			protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(_) => true,
+			_ => false,
+		};
 		let mut message_index = self.message_index.lock().await;
 		let message = protocol::ToRivet::ToRivetTunnelMessage(protocol::ToRivetTunnelMessage {
 				message_id: protocol::MessageId {
@@ -91,8 +105,51 @@ impl HttpTunnelSender {
 		};
 		if !failed {
 			*message_index = message_index.wrapping_add(1);
+			if is_terminal {
+				self.terminal_queued.store(true, Ordering::Release);
+			}
+		}
+		drop(message_index);
+		if failed && self.connection_session.is_some() {
+			self.queue_transport_abort().await;
 		}
 		failed
+	}
+
+	async fn queue_terminal(&self, message_kind: protocol::ToRivetTunnelMessageKind) {
+		let mut message_index = self.message_index.lock().await;
+		if self.terminal_queued.swap(true, Ordering::AcqRel) {
+			return;
+		}
+		let msg = protocol::ToRivetTunnelMessage {
+			message_id: protocol::MessageId {
+				gateway_id: self.gateway_id,
+				request_id: self.request_id,
+				message_index: *message_index,
+			},
+			message_kind,
+		};
+		*message_index = message_index.wrapping_add(1);
+		drop(message_index);
+
+		let _ = crate::envoy::send_to_envoy_tx(
+			&self.shared,
+			crate::envoy::ToEnvoyMessage::SendOrBufferTunnelMsg { msg },
+		);
+	}
+
+	async fn queue_transport_abort(&self) {
+		self.queue_terminal(
+			protocol::ToRivetTunnelMessageKind::ToRivetResponseAbort(
+				protocol::ToRivetResponseAbort {
+					reason: protocol::HttpStreamAbortReason {
+						kind: protocol::HttpStreamAbortReasonKind::InternalError,
+						detail: Some("gateway tunnel connection closed".to_owned()),
+					},
+				},
+			),
+		)
+		.await;
 	}
 }
 
@@ -632,10 +689,10 @@ pub(super) async fn handle_protocol_violation(
 	}
 }
 
-pub(super) fn handle_connection_closed(ctx: &mut ActorContext, session: u64) {
+pub(super) async fn handle_connection_closed(ctx: &mut ActorContext, session: u64) {
 	let reason = protocol::HttpStreamAbortReason {
-		kind: protocol::HttpStreamAbortReasonKind::Cancelled,
-		detail: Some("gateway connection closed".to_owned()),
+		kind: protocol::HttpStreamAbortReasonKind::InternalError,
+		detail: Some("gateway tunnel connection closed".to_owned()),
 	};
 	let requests = ctx
 		.http_requests
@@ -643,6 +700,9 @@ pub(super) fn handle_connection_closed(ctx: &mut ActorContext, session: u64) {
 		.remove_where(|pending| pending.connection_session == Some(session));
 
 	for mut pending in requests {
+		if let Some(task_abort_handle) = pending.task_abort_handle.take() {
+			task_abort_handle.abort();
+		}
 		if let Some(body_queue) = pending.body_queue.take() {
 			body_queue.abort(HttpRequestBodyError {
 				reason: reason.clone(),
@@ -653,9 +713,7 @@ pub(super) fn handle_connection_closed(ctx: &mut ActorContext, session: u64) {
 				reason: reason.clone(),
 			}));
 		}
-		if let Some(task_abort_handle) = pending.task_abort_handle.take() {
-			task_abort_handle.abort();
-		}
+		pending.tunnel_sender.queue_transport_abort().await;
 		let _ = crate::envoy::send_to_envoy_tx(
 			&ctx.shared,
 			crate::envoy::ToEnvoyMessage::HttpRequestComplete {

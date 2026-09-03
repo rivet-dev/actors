@@ -6,6 +6,7 @@ import {
 	getOrStartSharedTestEngine,
 	releaseSharedTestEngine,
 	type SharedTestEngine,
+	type SharedTestEngineOptions,
 	TEST_ENGINE_TOKEN,
 } from "../shared-engine";
 import type {
@@ -39,6 +40,7 @@ export interface NativeDriverTestConfigOptions {
 	useRealTimers?: boolean;
 	skip?: DriverTestConfig["skip"];
 	features?: DriverTestConfig["features"];
+	engine?: SharedTestEngineOptions;
 }
 
 function childOutput(logs: RuntimeLogs): string {
@@ -221,28 +223,42 @@ async function stopProcess(
 	signal: NodeJS.Signals,
 	timeoutMs: number,
 ): Promise<void> {
-	if (child.exitCode !== null) {
+	if (child.exitCode !== null || child.signalCode !== null) {
 		return;
 	}
 
-	child.kill(signal);
-
 	await new Promise<void>((resolve) => {
-		const timeout = setTimeout(() => {
-			if (child.exitCode === null) {
+		let settled = false;
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		const finish = () => {
+			if (settled) return;
+			settled = true;
+			if (timeout) clearTimeout(timeout);
+			child.off("exit", finish);
+			resolve();
+		};
+		child.once("exit", finish);
+		timeout = setTimeout(() => {
+			if (child.exitCode === null && child.signalCode === null) {
 				child.kill("SIGKILL");
 			}
+			finish();
 		}, timeoutMs);
 
-		child.once("exit", () => {
-			clearTimeout(timeout);
-			resolve();
-		});
+		if (
+			!child.kill(signal) ||
+			child.exitCode !== null ||
+			child.signalCode !== null
+		) {
+			finish();
+		}
 	});
 }
 
-export async function getOrStartSharedEngine(): Promise<SharedEngine> {
-	return getOrStartSharedTestEngine();
+export async function getOrStartSharedEngine(
+	options: SharedTestEngineOptions = {},
+): Promise<SharedEngine> {
+	return getOrStartSharedTestEngine(options);
 }
 
 export async function releaseSharedEngine(): Promise<void> {
@@ -319,8 +335,12 @@ export async function startNativeDriverRuntime(
 
 	return {
 		endpoint,
+		metricsEndpoint: engine.metricsEndpoint,
 		namespace,
 		runnerName: poolName,
+		hardCrashRuntime: async () => {
+			await stopProcess(runtime, "SIGKILL", 1_000);
+		},
 		getRuntimeOutput: () => childOutput(logs),
 		cleanup: async () => {
 			await stopRuntime(runtime);
@@ -404,6 +424,7 @@ export async function startWasmDriverRuntime(
 
 	return {
 		endpoint,
+		metricsEndpoint: engine.metricsEndpoint,
 		namespace,
 		runnerName: poolName,
 		getRuntimeOutput: () => childOutput(logs),
@@ -427,7 +448,7 @@ export function createNativeDriverTestConfig(
 		},
 		useRealTimers: options.useRealTimers ?? true,
 		start: async () => {
-			const engine = await getOrStartSharedEngine();
+			const engine = await getOrStartSharedEngine(options.engine);
 			return startNativeDriverRuntime(
 				options.variant,
 				engine,
@@ -451,7 +472,7 @@ export function createWasmDriverTestConfig(
 		},
 		useRealTimers: options.useRealTimers ?? true,
 		start: async () => {
-			const engine = await getOrStartSharedEngine();
+			const engine = await getOrStartSharedEngine(options.engine);
 			return startWasmDriverRuntime(options.variant, engine);
 		},
 	};

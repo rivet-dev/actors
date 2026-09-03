@@ -383,10 +383,10 @@ async fn route_request_inner(
 			drop(destroy_sub);
 			drop(migrate_sub);
 
-				handle_actor_v2(
-					ctx,
-					shared_state,
-					req_ctx,
+			handle_actor_v2(
+				ctx,
+				shared_state,
+				req_ctx,
 				actor_id,
 				actor,
 				stripped_path,
@@ -668,6 +668,9 @@ async fn handle_actor_v2(
 	};
 
 	if selection.use_gateway3() {
+		let actor_generation = actor
+			.generation
+			.context("gateway3 actor is missing its generation")?;
 		let lifecycle = rivet_guard_core::metrics::PegboardGatewayLifecycle::new(
 			rivet_guard_core::metrics::PegboardGatewayVersion::V3,
 			actor.envoy_protocol_version,
@@ -683,7 +686,7 @@ async fn handle_actor_v2(
 			actor.envoy_protocol_version,
 			actor_id,
 			actor.key,
-			None,
+			actor_generation,
 			stripped_path.to_string(),
 		);
 		Ok(RoutingOutput::CustomServe(std::sync::Arc::new(gateway)))

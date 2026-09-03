@@ -349,7 +349,7 @@ async fn actor_inner(
 						);
 					}
 					ToActor::ConnectionClosed { session } => {
-						http::handle_connection_closed(&mut ctx, session);
+						http::handle_connection_closed(&mut ctx, session).await;
 					}
 					ToActor::ReqChunk { message_id, chunk } => {
 						http::handle_req_chunk(&mut ctx, message_id, chunk);
@@ -963,12 +963,6 @@ async fn handle_hws_restore(
 
 			match ws_result {
 				Ok(ws_handler) => {
-					spawn_ws_outgoing_task(
-						ctx.shared.clone(),
-						hib_req.gateway_id,
-						hib_req.request_id,
-						hws_outgoing_rx,
-					);
 					ctx.ws_entries.insert(
 						&[&hib_req.gateway_id, &hib_req.request_id],
 						WsEntry {
@@ -978,6 +972,25 @@ async fn handle_hws_restore(
 							outgoing_tx: hws_outgoing_tx,
 						},
 					);
+					if !handle
+						.rebind_hibernating_websocket(
+							ctx.actor_id.clone(),
+							ctx.generation,
+							hib_req.gateway_id,
+							hib_req.request_id,
+						)
+						.await
+					{
+						tracing::warn!(
+							request_id = id_to_str(&hib_req.request_id),
+							"hibernating websocket route disappeared before restore"
+						);
+						ctx.websocket_requests
+							.remove(&[&hib_req.gateway_id, &hib_req.request_id]);
+						ctx.ws_entries
+							.remove(&[&hib_req.gateway_id, &hib_req.request_id]);
+						continue;
+					}
 					// Gateway wake flows wait for the websocket-open ack before
 					// they resume forwarding buffered client messages.
 					send_actor_message(
@@ -991,6 +1004,15 @@ async fn handle_hws_restore(
 						),
 					)
 					.await;
+					// Writes made by the restored callback are already queued in
+					// `hws_outgoing_rx`. Start forwarding them only after the exact route
+					// is rebound and the restore Open frame has entered the ordered tunnel.
+					spawn_ws_outgoing_task(
+						ctx.shared.clone(),
+						hib_req.gateway_id,
+						hib_req.request_id,
+						hws_outgoing_rx,
+					);
 					if let Some(ws) = ctx
 						.ws_entries
 						.get_mut(&[&hib_req.gateway_id, &hib_req.request_id])
@@ -1187,7 +1209,7 @@ async fn send_actor_message(
 		}
 		let _ = crate::envoy::send_to_envoy_tx(
 			&ctx.shared,
-			crate::envoy::ToEnvoyMessage::BufferTunnelMsg { msg: buffer_msg },
+			crate::envoy::ToEnvoyMessage::SendOrBufferTunnelMsg { msg: buffer_msg },
 		);
 	}
 }
@@ -1645,6 +1667,7 @@ mod tests {
 	pub(super) fn request_start() -> protocol::ToEnvoyRequestStart {
 		protocol::ToEnvoyRequestStart {
 			actor_id: "test-actor".to_string(),
+			actor_generation: Some(1),
 			method: "GET".to_string(),
 			path: "/test".to_string(),
 			headers: HashMap::new(),
