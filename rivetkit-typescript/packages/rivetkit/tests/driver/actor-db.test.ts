@@ -826,6 +826,38 @@ describeDriverMatrix(
 				);
 
 				test(
+					"exposes only committed state to concurrent reads during a state transaction",
+					async (c) => {
+						const { client } = await setupDriverTest(
+							c,
+							driverTestConfig,
+						);
+						const actor = getDbActor(client, variant).getOrCreate([
+							`db-${variant}-state-tx-read-iso-${crypto.randomUUID()}`,
+						]);
+						await actor.reset();
+						// Commit a known baseline so reads have a committed value.
+						await actor.stateTransactionCommit("committed");
+
+						const rollback =
+							actor.stateTransactionHoldAndRollback("held");
+						await actor.waitForStateTransaction();
+						// A concurrent (non-owner) action reads the committed value,
+						// never the owner's uncommitted "held" write.
+						expect(await actor.readAtomicStateValue()).toBe(
+							"committed",
+						);
+						await actor.releaseStateTransaction();
+						expect(await rollback).toBe("committed");
+						// The committed value is still what reads observe afterward.
+						expect(await actor.readAtomicStateValue()).toBe(
+							"committed",
+						);
+					},
+					dbTestTimeout,
+				);
+
+				test(
 					"queues state transactions from separate actions",
 					async (c) => {
 						const { client } = await setupDriverTest(
