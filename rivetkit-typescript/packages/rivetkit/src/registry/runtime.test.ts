@@ -1,5 +1,8 @@
 import { describe, expect, test } from "vitest";
+import type { RegistryConfig } from "./config";
+import { loadAutoRuntime, type RuntimeLoaders } from "./native";
 import {
+	type CoreRuntime,
 	normalizeRuntimeSqlExecuteResult,
 	type RuntimeSqlBindParam,
 	type RuntimeSqlBindParams,
@@ -46,5 +49,76 @@ describe("runtime SQL boundary", () => {
 		};
 
 		expect(normalizeRuntimeSqlExecuteResult(base)).toEqual(base);
+	});
+});
+
+describe("loadAutoRuntime failure reporting", () => {
+	const wasmRuntime = { kind: "wasm" } as unknown as CoreRuntime;
+	const nativeRuntime = { kind: "napi" } as unknown as CoreRuntime;
+	const config = {} as RegistryConfig;
+
+	function loaders(overrides: Partial<RuntimeLoaders>): RuntimeLoaders {
+		return {
+			detectHost: () => "node-like",
+			loadNative: async () => ({ runtime: nativeRuntime }) as never,
+			loadWasm: async () => ({ runtime: wasmRuntime }) as never,
+			...overrides,
+		};
+	}
+
+	test("prefers native when it loads", async () => {
+		const runtime = await loadAutoRuntime(config, loaders({}));
+		expect(runtime).toBe(nativeRuntime);
+	});
+
+	test("falls back to wasm when native fails", async () => {
+		const runtime = await loadAutoRuntime(
+			config,
+			loaders({
+				loadNative: async () => {
+					throw new Error("missing platform binding");
+				},
+			}),
+		);
+		expect(runtime).toBe(wasmRuntime);
+	});
+
+	test("reports the native cause when both runtimes fail", async () => {
+		// The native failure is the actionable one. Before this was reported,
+		// a skipped platform binding surfaced only as the wasm loader's
+		// unrelated `file://` fetch error.
+		const promise = loadAutoRuntime(
+			config,
+			loaders({
+				loadNative: async () => {
+					throw new Error(
+						"Cannot find module '@rivetkit/rivetkit-napi-linux-x64-musl'",
+					);
+				},
+				loadWasm: async () => {
+					throw new Error("fetch failed");
+				},
+			}),
+		);
+		await expect(promise).rejects.toThrow(/rivetkit-napi-linux-x64-musl/);
+		await expect(promise).rejects.toThrow(/fetch failed/);
+	});
+
+	test("uses wasm directly on an edge-like host without touching native", async () => {
+		let nativeCalls = 0;
+		const runtime = await loadAutoRuntime(
+			config,
+			loaders({
+				detectHost: () => "edge-like",
+				loadNative: async () => {
+					nativeCalls += 1;
+					throw new Error(
+						"native must not be attempted on edge hosts",
+					);
+				},
+			}),
+		);
+		expect(runtime).toBe(wasmRuntime);
+		expect(nativeCalls).toBe(0);
 	});
 });

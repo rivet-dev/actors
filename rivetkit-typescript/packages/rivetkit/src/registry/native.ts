@@ -224,10 +224,36 @@ export async function loadAutoRuntime(
 		return (await loaders.loadWasm(config.wasm)).runtime;
 	}
 
+	let nativeError: unknown;
 	try {
 		return (await loaders.loadNative()).runtime;
-	} catch {
+	} catch (error) {
+		nativeError = error;
+		// Native is the expected runtime on a node-like host, so this is the
+		// actionable error even when the wasm fallback goes on to succeed.
+		// Discarding it hides causes such as a platform binding that npm
+		// silently skipped, which then resurfaces as an unrelated wasm error.
+		logger().warn({
+			msg: "native runtime failed to load; falling back to wasm",
+			error: stringifyError(error),
+		});
+	}
+
+	try {
 		return (await loaders.loadWasm(config.wasm)).runtime;
+	} catch (wasmError) {
+		// Report both, native first. The wasm failure on a node-like host is
+		// usually just its loader fetching over `file://`, which says nothing
+		// about why native was unavailable.
+		throw new RivetError(
+			"config",
+			"runtime_unavailable",
+			`RivetKit could not load a core runtime. Native runtime: ${stringifyError(nativeError)} Wasm runtime: ${stringifyError(wasmError)}`,
+			{
+				public: true,
+				statusCode: 500,
+			},
+		);
 	}
 }
 
