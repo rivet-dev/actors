@@ -1864,17 +1864,10 @@ impl ActorTask {
 			step = "wait_for_pending_state_writes",
 			"actor shutdown cleanup step completed"
 		);
-		ctx.sync_alarm_logged().await;
-		tracing::debug!(
-			actor_id = %actor_id,
-			reason = reason_label,
-			step = "sync_alarm",
-			"actor shutdown cleanup step completed"
-		);
-		// Destroy cancels the engine alarm here so the persist it spawns is awaited by
-		// `wait_for_pending_alarm_writes` below and cannot race the SQLite teardown.
 		match reason {
 			ShutdownKind::Destroy => {
+				// A foreign runtime may close SQLite during its destroy callback. Skip
+				// the SQLite-backed alarm sync because this alarm is cleared anyway.
 				ctx.cancel_driver_alarm_logged();
 				tracing::debug!(
 					actor_id = %actor_id,
@@ -1883,7 +1876,15 @@ impl ActorTask {
 					"actor shutdown cleanup step completed"
 				);
 			}
-			ShutdownKind::Sleep => {}
+			ShutdownKind::Sleep => {
+				ctx.sync_alarm_logged().await;
+				tracing::debug!(
+					actor_id = %actor_id,
+					reason = reason_label,
+					step = "sync_alarm",
+					"actor shutdown cleanup step completed"
+				);
+			}
 		}
 		ctx.wait_for_pending_alarm_writes().await;
 		tracing::debug!(
