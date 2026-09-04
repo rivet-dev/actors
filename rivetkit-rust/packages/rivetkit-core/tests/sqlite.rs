@@ -1551,7 +1551,9 @@ fn remote_head_fence_mismatch_stops_actor_once() {
 		} => {
 			assert_eq!(actor_id, "actor-a");
 			assert_eq!(generation, Some(7));
-			assert!(matches!(intent, protocol::ActorIntent::ActorIntentStop));
+			// A dead sqlite worker is a crash, not a deliberate destroy, so it
+			// is reported as a sleep intent carrying the error.
+			assert!(matches!(intent, protocol::ActorIntent::ActorIntentSleep));
 			assert!(
 				error
 					.expect("missing stop reason")

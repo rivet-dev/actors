@@ -151,26 +151,35 @@ impl EnvoyHandle {
 		Ok(())
 	}
 
-	pub fn sleep_actor(&self, actor_id: String, generation: Option<u32>) {
+	/// Reports a sleep intent for an actor. An `error` marks the sleep as a
+	/// crash: it surfaces as `StopCode::Error` on the eventual `Stopped` event,
+	/// which is what the engine records the crash from. The engine answers a
+	/// crashed stop by putting the actor back to sleep rather than destroying
+	/// it, so a crash belongs here rather than on [`Self::stop_actor`].
+	pub fn sleep_actor(&self, actor_id: String, generation: Option<u32>, error: Option<String>) {
 		let _ = crate::envoy::send_to_envoy_tx(
 			&self.shared,
 			ToEnvoyMessage::ActorIntent {
 				actor_id,
 				generation,
 				intent: protocol::ActorIntent::ActorIntentSleep,
-				error: None,
+				error,
 			},
 		);
 	}
 
-	pub fn stop_actor(&self, actor_id: String, generation: Option<u32>, error: Option<String>) {
+	/// Reports a stop intent for an actor. This is the deliberate-destruction
+	/// signal: the engine answers it by destroying the actor and its durable
+	/// state. It takes no error by construction, because a crash must not be
+	/// reported as an intent to destroy.
+	pub fn stop_actor(&self, actor_id: String, generation: Option<u32>) {
 		let _ = crate::envoy::send_to_envoy_tx(
 			&self.shared,
 			ToEnvoyMessage::ActorIntent {
 				actor_id,
 				generation,
 				intent: protocol::ActorIntent::ActorIntentStop,
-				error,
+				error: None,
 			},
 		);
 	}

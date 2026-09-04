@@ -752,14 +752,14 @@ pub(crate) mod moved_tests {
 	}
 
 	fn detached_cleanup_after_failed_run_factory(
-		destroy_count: Arc<AtomicUsize>,
+		cleanup_count: Arc<AtomicUsize>,
 		run_returned_tx: oneshot::Sender<()>,
 		cleanup_tx: oneshot::Sender<ShutdownKind>,
 	) -> Arc<ActorFactory> {
 		let run_returned_tx = Arc::new(Mutex::new(Some(run_returned_tx)));
 		let cleanup_tx = Arc::new(Mutex::new(Some(cleanup_tx)));
 		Arc::new(ActorFactory::new(ActorConfig::default(), move |start| {
-			let destroy_count = destroy_count.clone();
+			let cleanup_count = cleanup_count.clone();
 			let run_returned_tx = run_returned_tx.clone();
 			let cleanup_tx = cleanup_tx.clone();
 			Box::pin(async move {
@@ -771,9 +771,7 @@ pub(crate) mod moved_tests {
 								reply.send(Ok(Vec::new()));
 							}
 							ActorEvent::RunGracefulCleanup { reason, reply } => {
-								if matches!(reason, ShutdownKind::Destroy) {
-									destroy_count.fetch_add(1, Ordering::SeqCst);
-								}
+								cleanup_count.fetch_add(1, Ordering::SeqCst);
 								reply.send(Ok(()));
 								if let Some(tx) = cleanup_tx
 									.lock()
@@ -4102,13 +4100,13 @@ pub(crate) mod moved_tests {
 			"local",
 			new_in_memory(),
 		);
-		let destroy_count = Arc::new(AtomicUsize::new(0));
+		let cleanup_count = Arc::new(AtomicUsize::new(0));
 		let (run_returned_tx, run_returned_rx) = oneshot::channel();
 		let (cleanup_tx, cleanup_rx) = oneshot::channel();
 		let mut task = new_task_with_factory(
 			ctx.clone(),
 			detached_cleanup_after_failed_run_factory(
-				destroy_count.clone(),
+				cleanup_count.clone(),
 				run_returned_tx,
 				cleanup_tx,
 			),
@@ -4130,16 +4128,22 @@ pub(crate) mod moved_tests {
 		assert!(task.handle_run_handle_outcome(outcome).is_none());
 		// The failed run must not terminate the generation locally: the
 		// errored stop request goes to the engine and the answering Stop
-		// command still drives the destroy grace hooks.
+		// command still drives the grace hooks.
 		assert_eq!(task.lifecycle, LifecycleState::Started);
+		// A crash reports a sleep intent, not a destroy, so the engine can
+		// resume the actor on a new generation.
 		assert!(
-			ctx.is_destroy_requested(),
+			ctx.sleep_requested(),
 			"failed run should request an errored stop"
+		);
+		assert!(
+			!ctx.is_destroy_requested(),
+			"a crash must not request a destroy"
 		);
 
 		let (stop_tx, stop_rx) = oneshot::channel();
 		task.handle_lifecycle(LifecycleCommand::Stop {
-			reason: ShutdownKind::Destroy,
+			reason: ShutdownKind::Sleep,
 			reply: stop_tx,
 		})
 		.await;
@@ -4148,9 +4152,9 @@ pub(crate) mod moved_tests {
 				.await
 				.expect("grace cleanup should run after Stop")
 				.expect("cleanup signal should send"),
-			ShutdownKind::Destroy
+			ShutdownKind::Sleep
 		);
-		assert_eq!(destroy_count.load(Ordering::SeqCst), 1);
+		assert_eq!(cleanup_count.load(Ordering::SeqCst), 1);
 
 		timeout(Duration::from_secs(2), async {
 			while ctx.core_dispatched_hook_count() != 0 {
@@ -4169,7 +4173,7 @@ pub(crate) mod moved_tests {
 		else {
 			panic!("grace should transition to shutdown");
 		};
-		assert_eq!(shutdown_reason, ShutdownKind::Destroy);
+		assert_eq!(shutdown_reason, ShutdownKind::Sleep);
 		let result = task.run_shutdown(shutdown_reason).await;
 		task.deliver_shutdown_reply(shutdown_reason, &result);
 		task.transition_to(LifecycleState::Terminated);
