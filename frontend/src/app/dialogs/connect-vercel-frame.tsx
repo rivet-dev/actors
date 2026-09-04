@@ -19,8 +19,6 @@ import {
 
 const { stepper } = ConnectVercelForm;
 
-export const VERCEL_SERVERLESS_MAX_DURATION = 300;
-
 interface CreateProjectFrameContentProps extends DialogContentProps {}
 
 export default function CreateProjectFrameContent({
@@ -93,7 +91,8 @@ function FormStepper({
 					provider,
 					{
 						...values,
-						requestLifespan: VERCEL_SERVERLESS_MAX_DURATION - 5,
+						requestLifespan:
+							ConnectVercelForm.VERCEL_REQUEST_LIFESPAN,
 					},
 					{ provider: "vercel" },
 				);
@@ -106,7 +105,7 @@ function FormStepper({
 			defaultValues={{
 				plan: "hobby",
 				runnerName: "default",
-				drainGracePeriod: 0,
+				drainGracePeriod: ConnectVercelForm.VERCEL_DRAIN_GRACE_PERIOD,
 				headers: [],
 				datacenters: Object.fromEntries(
 					datacenters.map((dc) => [dc.name, true]),

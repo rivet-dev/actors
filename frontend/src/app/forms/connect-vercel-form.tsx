@@ -24,6 +24,25 @@ import {
 	useRivetDsn,
 } from "../env-variables";
 
+export const VERCEL_SERVERLESS_MAX_DURATION = 300;
+export const VERCEL_REQUEST_LIFESPAN = VERCEL_SERVERLESS_MAX_DURATION - 5;
+export const VERCEL_DRAIN_GRACE_PERIOD = 5;
+
+export const configurationSchema =
+	ConnectManualServerlessForm.configurationSchema
+		.omit({ requestLifespan: true })
+		.extend({
+			drainGracePeriod: z.coerce
+				.number()
+				.min(0)
+				.max(
+					VERCEL_REQUEST_LIFESPAN - 1,
+					`Must be less than ${VERCEL_REQUEST_LIFESPAN}`,
+				)
+				.optional()
+				.default(VERCEL_DRAIN_GRACE_PERIOD),
+		});
+
 export const stepper = defineStepper(
 	{
 		id: "api-route",
@@ -55,9 +74,7 @@ export const stepper = defineStepper(
 		next: "Done",
 		schema: z.object({
 			...ConnectManualServerlessForm.deploymentSchema.shape,
-			...ConnectManualServerlessForm.configurationSchema.omit({
-				requestLifespan: true,
-			}).shape,
+			...configurationSchema.shape,
 			plan: z.string().min(1, "Please select a Vercel plan"),
 		}),
 	},
