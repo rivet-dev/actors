@@ -43,6 +43,9 @@ import type {
 export const MAX_KV_BATCH_ENTRIES = 128;
 export const MAX_KV_BATCH_PAYLOAD_BYTES = 976 * 1024;
 
+/** Max delete ops (one transaction/permit each) run at once, under the 128-permit cap. */
+export const MAX_CONCURRENT_DELETES = 64;
+
 /**
  * Create an empty storage instance.
  */
@@ -330,18 +333,8 @@ export async function flush(
 	// Apply pending deletions after the batch write. These are collected
 	// by collectLoopPruning so pruning happens alongside the state write.
 	if (pendingDeletions) {
-		const deleteOps: Promise<void>[] = [];
-		for (const prefix of pendingDeletions.prefixes) {
-			deleteOps.push(driver.deletePrefix(prefix));
-		}
-		for (const range of pendingDeletions.ranges) {
-			deleteOps.push(driver.deleteRange(range.start, range.end));
-		}
-		for (const key of pendingDeletions.keys) {
-			deleteOps.push(driver.delete(key));
-		}
-		if (deleteOps.length > 0) {
-			await Promise.all(deleteOps);
+		const didChange = await runDeletes(driver, pendingDeletions);
+		if (didChange) {
 			historyUpdated = true;
 		}
 	}
@@ -398,6 +391,44 @@ function splitBatchWrites(writes: KVWrite[]): KVWrite[][] {
 }
 
 /**
+ * Split delete keys into batches within one KV transaction (KV_TX_MAX_ROWS).
+ */
+function splitBatchDeletes(keys: Uint8Array[]): Uint8Array[][] {
+	const chunks: Uint8Array[][] = [];
+	for (let i = 0; i < keys.length; i += MAX_KV_BATCH_ENTRIES) {
+		chunks.push(keys.slice(i, i + MAX_KV_BATCH_ENTRIES));
+	}
+	return chunks;
+}
+
+/**
+ * Apply deletions concurrently in bounded rounds; returns whether anything was deleted.
+ */
+async function runDeletes(
+	driver: EngineDriver,
+	deletions: PendingDeletions,
+): Promise<boolean> {
+	const ops = [
+		...deletions.prefixes.map((prefix) => () => driver.deletePrefix(prefix)),
+		...deletions.ranges.map(
+			(range) => () => driver.deleteRange(range.start, range.end),
+		),
+		...splitBatchDeletes(deletions.keys).map(
+			(chunk) => () => driver.batchDelete(chunk),
+		),
+	];
+	if (ops.length === 0) {
+		return false;
+	}
+	for (let i = 0; i < ops.length; i += MAX_CONCURRENT_DELETES) {
+		await Promise.all(
+			ops.slice(i, i + MAX_CONCURRENT_DELETES).map((op) => op()),
+		);
+	}
+	return true;
+}
+
+/**
  * Delete entries with a given location prefix (used for loop forgetting).
  * Also cleans up associated metadata from both memory and driver.
  */
@@ -410,8 +441,7 @@ export async function deleteEntriesWithPrefix(
 	const deletions = collectDeletionsForPrefix(storage, prefixLocation);
 
 	// Apply deletions to driver
-	await driver.deletePrefix(deletions.prefixes[0]!);
-	await Promise.all(deletions.keys.map((key) => driver.delete(key)));
+	await runDeletes(driver, deletions);
 
 	if (deletions.keys.length > 0 && onHistoryUpdated) {
 		onHistoryUpdated();

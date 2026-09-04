@@ -55,6 +55,12 @@ export interface EngineDriver {
 	delete(key: Uint8Array): Promise<void>;
 
 	/**
+	 * Batch delete multiple keys in a single operation.
+	 * Should be atomic if possible.
+	 */
+	batchDelete(keys: Uint8Array[]): Promise<void>;
+
+	/**
 	 * Delete all keys with a given prefix.
 	 */
 	deletePrefix(prefix: Uint8Array): Promise<void>;
