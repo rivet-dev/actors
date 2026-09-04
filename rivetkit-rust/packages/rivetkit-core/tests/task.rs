@@ -3289,6 +3289,42 @@ pub(crate) mod moved_tests {
 		assert_eq!(ctx.test_driver_alarm_cancel_count(), 1);
 	}
 
+	#[tokio::test]
+	async fn destroy_cleanup_does_not_sync_alarm_after_runtime_closes_sqlite() {
+		let ctx = new_with_kv(
+			"actor-destroy-closed-sqlite",
+			"task-destroy-closed-sqlite",
+			Vec::new(),
+			"local",
+			new_in_memory(),
+		);
+		ctx.sql()
+			.close()
+			.await
+			.expect("foreign runtime sqlite close should succeed");
+
+		let records = Arc::new(Mutex::new(Vec::new()));
+		let subscriber = Registry::default().with(ActorTaskLogLayer {
+			records: records.clone(),
+		});
+		let dispatch = tracing::Dispatch::new(subscriber);
+		ActorTask::finish_shutdown_cleanup_with_ctx(ctx.clone(), ShutdownKind::Destroy)
+			.with_subscriber(dispatch)
+			.await
+			.expect("destroy cleanup should succeed after sqlite closes");
+
+		assert_eq!(ctx.test_driver_alarm_cancel_count(), 1);
+		assert!(
+			!records
+				.lock()
+				.expect("actor-task log lock poisoned")
+				.iter()
+				.any(|record| record.message.as_deref()
+					== Some("failed to sync scheduled actor alarm")),
+			"destroy cleanup must not query the closed sqlite coordinator"
+		);
+	}
+
 	#[tokio::test(start_paused = true)]
 	async fn sleep_shutdown_without_in_flight_work_finishes_under_baseline() {
 		let ctx = new_with_kv(
