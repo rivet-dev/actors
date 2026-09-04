@@ -2,6 +2,9 @@ import { useDialog as baseUseDialog, createDialogHook } from "@/components";
 
 export const useDialog = {
 	...baseUseDialog,
+	AddComponent: createDialogHook(
+		() => import("@/app/dialogs/add-component-frame"),
+	),
 	CreateNamespace: createDialogHook(
 		() => import("@/app/dialogs/create-namespace-frame"),
 	),

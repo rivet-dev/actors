@@ -1,17 +1,26 @@
 import { faCopy, Icon } from "@rivet-gg/icons";
 import { deployOptions, type Provider } from "@rivetkit/shared-data";
 import { useSuspenseQuery } from "@tanstack/react-query";
+import { useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { Badge, Button, CodeFrame, CodePreview } from "@/components";
+import { Badge, Button, CodeFrame, CodePreview, getConfig } from "@/components";
 import {
 	useCloudNamespaceDataProvider,
 	useEngineCompatDataProvider,
 } from "@/components/actors";
 import {
+	hostedMcpCommand,
+	localMcpCommand,
+} from "@/components/mcp/client-tabs";
+import { type HostedTarget, hostedUrl } from "@/components/mcp/scope";
+import {
 	getAgentInstructionsPrompt,
 	getComputeAddendum,
+	type McpSetup,
+	type OnboardingTarget,
 } from "@/content/agent-prompts";
-import { cloudEnv, getRivetRunUrl } from "@/lib/env";
+import { cloudEnv, getMcpUrl, getRivetRunUrl } from "@/lib/env";
+import { features } from "@/lib/features";
 import { usePublishableToken } from "@/queries/accessors";
 import { useRivetDsn } from "./env-variables";
 
@@ -40,11 +49,13 @@ export function useAgentInstructionsCode({
 	runnerName = "default",
 	endpoint,
 	mode,
+	target = "actor",
 }: {
 	provider?: Provider;
 	runnerName?: string;
 	endpoint?: string;
 	mode?: "serverless" | "serverful";
+	target?: OnboardingTarget;
 } = {}) {
 	const providerDetails = provider
 		? deployOptions.find((p) => p.name === provider)
@@ -62,6 +73,7 @@ export function useAgentInstructionsCode({
 		(mode ?? defaultRuntimeModeForProvider(provider)) === "serverless";
 	const publishableToken = useRivetDsn({ kind: "publishable", endpoint });
 	const secretToken = useRivetDsn({ kind: "secret", endpoint });
+	const mcp = useMcpSetup();
 	const namespace = useEngineCompatDataProvider().engineNamespace;
 
 	return getAgentInstructionsPrompt({
@@ -75,20 +87,63 @@ export function useAgentInstructionsCode({
 		// The `--namespace` deploy flag only applies to Rivet Compute's
 		// `@rivetkit/cli deploy` flow.
 		cliDeploy: provider === "rivet",
+		target,
+		mcp,
 	});
+}
+
+// The MCP setup the copy-prompt should instruct the agent to perform. The hosted
+// connection needs the user to approve an OAuth window, so the agent has to hand
+// that step back; the local stdio server it can wire up itself.
+function useMcpSetup(): McpSetup | undefined {
+	const params = useParams({ strict: false }) as Partial<HostedTarget>;
+	const dataProvider = useEngineCompatDataProvider();
+
+	if (!features.mcp) return undefined;
+
+	if (features.platform) {
+		if (!params.organization || !params.project || !params.namespace) {
+			return undefined;
+		}
+		const url = hostedUrl(
+			getMcpUrl(),
+			{
+				organization: params.organization,
+				project: params.project,
+				namespace: params.namespace,
+			},
+			"namespace",
+		);
+		return {
+			command: hostedMcpCommand(url),
+			requiresUserApproval: true,
+		};
+	}
+
+	return {
+		command: localMcpCommand(
+			getConfig().apiUrl,
+			dataProvider.engineNamespace,
+		),
+		requiresUserApproval: false,
+	};
 }
 
 // Builds the Rivet Compute copy-prompt (generic instructions + compute addendum)
 // and exposes the cloud token and namespace so callers can also render a manual
 // `@rivetkit/cli deploy` command.
-export function useComputeInstructionsCode() {
-	const agentInstructions = useAgentInstructionsCode({ provider: "rivet" });
+export function useComputeInstructionsCode(target: OnboardingTarget = "actor") {
+	const agentInstructions = useAgentInstructionsCode({
+		provider: "rivet",
+		target,
+	});
 	const dataProvider = useCloudNamespaceDataProvider();
 	const { data: cloudToken } = useSuspenseQuery(
 		dataProvider.createApiTokenQueryOptions({ name: "Onboarding" }),
 	);
 	const publishableRawToken = usePublishableToken();
 	const namespace = dataProvider.engineNamespace;
+	const mcp = useMcpSetup();
 
 	const computeAddendum = getComputeAddendum({
 		cloudToken,
@@ -97,6 +152,8 @@ export function useComputeInstructionsCode() {
 		apiUrl: cloudEnv().VITE_APP_API_URL,
 		cloudApiUrl: cloudEnv().VITE_APP_CLOUD_API_URL,
 		rivetRunUrl: getRivetRunUrl(namespace),
+		target,
+		mcp,
 	});
 
 	return {
@@ -143,7 +200,7 @@ export function AgentPromptBanner({
 						: "Copied to clipboard",
 				);
 			}}
-			className="relative w-full flex items-center justify-between gap-4 rounded-lg px-4 py-4 border border-primary group cursor-pointer text-left"
+			className="relative w-full flex flex-col items-stretch justify-between gap-4 rounded-lg px-4 py-4 border border-primary group cursor-pointer text-left sm:flex-row sm:items-center"
 		>
 			<Badge className="absolute -top-2.5 left-4 z-10 bg-background">
 				Recommended
@@ -158,7 +215,11 @@ export function AgentPromptBanner({
 					</p>
 				) : null}
 			</div>
-			<Button asChild variant="outline" className="shrink-0">
+			<Button
+				asChild
+				variant="outline"
+				className="w-full shrink-0 sm:w-auto"
+			>
 				<div>
 					<Icon icon={faCopy} className="me-2 text-primary" />
 					Copy prompt

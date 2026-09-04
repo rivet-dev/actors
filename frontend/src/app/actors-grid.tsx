@@ -1,4 +1,4 @@
-import { faChevronDown, faGear, faLogs, faPlus, Icon } from "@rivet-gg/icons";
+import { faGear, faLogs, Icon } from "@rivet-gg/icons";
 import {
 	queryOptions,
 	useInfiniteQuery,
@@ -22,18 +22,12 @@ import {
 	useCloudNamespaceDataProvider,
 	useDataProvider,
 } from "@/components/actors";
-import { Badge } from "@/components/ui/badge";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { NoProvidersAlert } from "@/components/actors/no-providers-alert";
 import { ActorIcon } from "@/components/lazy-icon";
 import { VisibilitySensor } from "@/components/visibility-sensor";
 import { features } from "@/lib/features";
 import { getRivetRunUrl } from "../lib/env";
+import { AddComponentButton, AddComponentCard } from "./add-component-card";
 import { RouteLayout } from "./route-layout";
 
 function _GridCard({
@@ -62,61 +56,6 @@ function _GridCard({
 		>
 			{children}
 		</Wrapper>
-	);
-}
-
-// Header create affordance. With the agentOS feature flag on, the single
-// "Create Actor" button becomes a "Create" menu offering Actor or agentOS;
-// both open the same create dialog, the latter with agentOS-tailored copy.
-function CreateMenu({
-	buttonVariant,
-}: {
-	buttonVariant: "outline" | "default";
-}) {
-	const navigate = useNavigate();
-	const openModal = (modal: string) =>
-		navigate({ to: ".", search: (old) => ({ ...old, modal }) });
-
-	if (!features.agentOs) {
-		return (
-			<Button
-				variant={buttonVariant}
-				size="sm"
-				startIcon={<Icon icon={faPlus} />}
-				onClick={() => openModal("create-actor")}
-			>
-				Create Actor
-			</Button>
-		);
-	}
-
-	return (
-		<DropdownMenu>
-			<DropdownMenuTrigger asChild>
-				<Button
-					variant={buttonVariant}
-					size="sm"
-					startIcon={<Icon icon={faPlus} />}
-					endIcon={<Icon icon={faChevronDown} />}
-				>
-					Create
-				</Button>
-			</DropdownMenuTrigger>
-			<DropdownMenuContent align="end">
-				<DropdownMenuItem onClick={() => openModal("create-actor")}>
-					Actor
-				</DropdownMenuItem>
-				<DropdownMenuItem onClick={() => openModal("create-agent-os")}>
-					agentOS
-					<Badge
-						variant="outline"
-						className="ml-2 text-[10px] leading-none py-0.5 px-1.5 font-medium"
-					>
-						Beta
-					</Badge>
-				</DropdownMenuItem>
-			</DropdownMenuContent>
-		</DropdownMenu>
 	);
 }
 
@@ -269,9 +208,6 @@ export function ActorsGrid({ namespaceLabel }: { namespaceLabel?: string }) {
 							<h2 className="text-base font-semibold text-foreground">
 								Actors
 							</h2>
-							{builds.length > 0 ? (
-								<CreateMenu buttonVariant="outline" />
-							) : null}
 						</header>
 
 						{isLoading ? (
@@ -293,7 +229,7 @@ export function ActorsGrid({ namespaceLabel }: { namespaceLabel?: string }) {
 										Deploy code that registers an actor to
 										see it here.
 									</SmallText>
-									<CreateMenu buttonVariant="default" />
+									<AddComponentButton />
 								</div>
 							)
 						) : (
@@ -305,6 +241,7 @@ export function ActorsGrid({ namespaceLabel }: { namespaceLabel?: string }) {
 											build={build}
 										/>
 									))}
+									<AddComponentCard />
 									{isFetchingNextPage
 										? Array.from({ length: 4 }).map(
 												(_, i) => (

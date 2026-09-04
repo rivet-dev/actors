@@ -1,10 +1,11 @@
-import { faGear, faPlus, Icon } from "@rivet-gg/icons";
+import { faGear, Icon } from "@rivet-gg/icons";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Button, H1, ScrollArea, SmallText, WithTooltip } from "@/components";
 import { useEngineNamespaceDataProvider } from "@/components/actors";
 import { NoProvidersAlert } from "@/components/actors/no-providers-alert";
 import { VisibilitySensor } from "@/components/visibility-sensor";
+import { AddComponentButton, AddComponentCard } from "./add-component-card";
 import { ActorBuildCard, ActorGridCardSkeleton } from "./actors-grid";
 
 // Engine (OSS / enterprise) namespace landing shown when no Actor name is
@@ -43,15 +44,6 @@ export function EngineNamespaceLanding() {
 
 	const sorted = [...builds].sort((a, b) => a.id.localeCompare(b.id));
 
-	const openCreateActor = () =>
-		navigate({
-			to: ".",
-			search: (old) => ({
-				...(old as Record<string, unknown>),
-				modal: "create-actor",
-			}),
-		});
-
 	return (
 		<div className="flex flex-1 min-h-0 my-2 mr-2 overflow-hidden rounded-xl border border-foreground/10 bg-card">
 			<ScrollArea className="h-full w-full">
@@ -89,16 +81,6 @@ export function EngineNamespaceLanding() {
 							<h2 className="text-base font-semibold text-foreground">
 								Actors
 							</h2>
-							{builds.length > 0 ? (
-								<Button
-									variant="outline"
-									size="sm"
-									startIcon={<Icon icon={faPlus} />}
-									onClick={openCreateActor}
-								>
-									Create Actor
-								</Button>
-							) : null}
 						</header>
 
 						{isLoading ? (
@@ -120,14 +102,7 @@ export function EngineNamespaceLanding() {
 										Deploy code that registers an actor to
 										see it here.
 									</SmallText>
-									<Button
-										variant="default"
-										size="sm"
-										startIcon={<Icon icon={faPlus} />}
-										onClick={openCreateActor}
-									>
-										Create Actor
-									</Button>
+									<AddComponentButton />
 								</div>
 							)
 						) : (
@@ -139,6 +114,7 @@ export function EngineNamespaceLanding() {
 											build={build}
 										/>
 									))}
+									<AddComponentCard />
 									{isFetchingNextPage
 										? Array.from({ length: 4 }).map(
 												(_, i) => (

@@ -1,19 +1,6 @@
-import {
-	faChevronRight,
-	faClaude,
-	faCursor,
-	faGemini,
-	faPlug,
-	faVscode,
-	Icon,
-	type IconProp,
-} from "@rivet-gg/icons";
 import { useParams } from "@tanstack/react-router";
 import { useState } from "react";
 import {
-	CodeFrame,
-	CodeGroup,
-	CodePreview,
 	getConfig,
 	Select,
 	SelectContent,
@@ -22,142 +9,22 @@ import {
 	SelectValue,
 } from "@/components";
 import { useEngineCompatDataProvider } from "@/components/actors";
-import { getMcpUrl } from "@/lib/env";
-import { features } from "@/lib/features";
+import {
+	ClientTabs,
+	hostedTabs,
+	localTabs,
+	MCP_DESCRIPTION,
+} from "@/components/mcp/client-tabs";
 import {
 	type HostedTarget,
 	hostedUrl,
 	SCOPE_ORDER,
 	SCOPES,
 	type Scope,
-} from "./mcp-scope";
+} from "@/components/mcp/scope";
+import { getMcpUrl } from "@/lib/env";
+import { features } from "@/lib/features";
 import { SettingsCard } from "./settings-card";
-
-const DOCS_URL = "https://rivet.dev/mcp";
-
-const DESCRIPTION =
-	"Let AI tools like Claude Code and Cursor read and manage your actors.";
-
-type Language = "json" | "bash";
-
-interface ClientTab {
-	title: string;
-	icon: IconProp;
-	language: Language;
-	code: string;
-}
-
-function json(value: unknown) {
-	return JSON.stringify(value, null, 2);
-}
-
-function hostedTabs(url: string): ClientTab[] {
-	return [
-		{
-			title: "Claude Code",
-			icon: faClaude,
-			language: "bash",
-			code: `claude mcp add --transport http rivet "${url}"`,
-		},
-		{
-			title: "Cursor",
-			icon: faCursor,
-			language: "json",
-			code: json({ mcpServers: { rivet: { url } } }),
-		},
-		{
-			title: "VS Code",
-			icon: faVscode,
-			language: "bash",
-			code: `code --add-mcp '${JSON.stringify({ name: "rivet", type: "http", url })}'`,
-		},
-		{
-			title: "Gemini CLI",
-			icon: faGemini,
-			language: "json",
-			code: json({ mcpServers: { rivet: { httpUrl: url } } }),
-		},
-		{
-			title: "Other",
-			icon: faPlug,
-			language: "json",
-			code: json({ mcpServers: { rivet: { type: "http", url } } }),
-		},
-	];
-}
-
-function localTabs(endpoint: string, namespace: string): ClientTab[] {
-	const command = "npx";
-	const args = ["-y", "@rivet-dev/mcp", "--target", "local"];
-	const env = { RIVET_ENDPOINT: endpoint, RIVET_NAMESPACE: namespace };
-	const server = { command, args, env };
-
-	return [
-		{
-			title: "Claude Code",
-			icon: faClaude,
-			language: "bash",
-			code: `claude mcp add rivet \\
-  --env RIVET_ENDPOINT=${endpoint} \\
-  --env RIVET_NAMESPACE=${namespace} \\
-  -- ${command} ${args.join(" ")}`,
-		},
-		{
-			title: "Cursor",
-			icon: faCursor,
-			language: "json",
-			code: json({ mcpServers: { rivet: server } }),
-		},
-		{
-			title: "VS Code",
-			icon: faVscode,
-			language: "bash",
-			code: `code --add-mcp '${JSON.stringify({ name: "rivet", ...server })}'`,
-		},
-		{
-			title: "Gemini CLI",
-			icon: faGemini,
-			language: "json",
-			code: json({ mcpServers: { rivet: server } }),
-		},
-		{
-			title: "Other",
-			icon: faPlug,
-			language: "json",
-			code: json({ mcpServers: { rivet: server } }),
-		},
-	];
-}
-
-function DocsFooter() {
-	return (
-		<a href={DOCS_URL} target="_blank" rel="noopener noreferrer">
-			<span className="cursor-pointer hover:underline">
-				See MCP Documentation{" "}
-				<Icon icon={faChevronRight} className="text-xs" />
-			</span>
-		</a>
-	);
-}
-
-function ClientTabs({ tabs }: { tabs: ClientTab[] }) {
-	return (
-		<CodeGroup>
-			{tabs.map((tab) => (
-				<CodeFrame
-					key={tab.title}
-					language={tab.language}
-					title={tab.title}
-					icon={tab.icon}
-					code={() => tab.code}
-					footer={<DocsFooter />}
-				>
-					<CodePreview code={tab.code} language={tab.language} />
-				</CodeFrame>
-			))}
-		</CodeGroup>
-	);
-}
 
 function ScopeSelect({
 	value,
@@ -201,7 +68,7 @@ function HostedMcp() {
 	return (
 		<SettingsCard
 			title="MCP"
-			description={`${DESCRIPTION} This connection can reach ${SCOPES[scope].reach}.`}
+			description={`${MCP_DESCRIPTION} This connection can reach ${SCOPES[scope].reach}.`}
 			action={<ScopeSelect value={scope} onValueChange={setScope} />}
 		>
 			<ClientTabs
@@ -218,7 +85,7 @@ function LocalMcp() {
 	return (
 		<SettingsCard
 			title="MCP"
-			description={`${DESCRIPTION} Runs on your machine.`}
+			description={`${MCP_DESCRIPTION} Runs on your machine.`}
 		>
 			<ClientTabs tabs={localTabs(endpoint, namespace)} />
 		</SettingsCard>

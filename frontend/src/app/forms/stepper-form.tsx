@@ -297,20 +297,19 @@ function Content<const Steps extends Step[]>({
 			: {}),
 	});
 
+	// Step visibility can depend on form values. Keep the visibility provider
+	// subscribed to the live form state so sequential changes (including
+	// dirty-to-dirty changes) update progress and the visible step sequence.
+	const liveValues = (useWatch({ control: form.control }) ?? {}) as Record<
+		string,
+		unknown
+	>;
+
 	const ref = useRef<z.infer<JoinStepSchemas<Steps>> | null>({});
 	const formRef = useRef<HTMLFormElement>(null);
 
-	const getValues = () => {
-		const allLive = form.getValues() as Record<string, unknown>;
-		const dirtyFields = form.formState.dirtyFields as Record<
-			string,
-			unknown
-		>;
-		const live = Object.fromEntries(
-			Object.entries(allLive).filter(([k]) => k in dirtyFields),
-		);
-		return { ...ref.current, ...live } as Record<string, unknown>;
-	};
+	const getValues = () =>
+		({ ...ref.current, ...liveValues }) as Record<string, unknown>;
 
 	const isLastVisible = (currentId: string) =>
 		getNextVisibleStepId(allSteps as Step[], currentId, getValues()) ===
@@ -330,10 +329,14 @@ function Content<const Steps extends Step[]>({
 			return onSubmit?.({ values: ref.current, form, stepper });
 		}
 		await onPartialSubmit?.({ values: ref.current, form, stepper });
+		// `liveValues` is the previous render's useWatch snapshot, so it still
+		// holds the pre-submit value for anything just changed. Let the
+		// accumulated values win here or a step gated on a field submitted by
+		// this step resolves its visibility against the stale choice.
 		const nextId = getNextVisibleStepId(
 			allSteps as Step[],
 			stepper.current.id,
-			getValues(),
+			{ ...getValues(), ...ref.current },
 		);
 		if (nextId) stepper.goTo(nextId as Parameters<typeof stepper.goTo>[0]);
 		form.reset(undefined, {
