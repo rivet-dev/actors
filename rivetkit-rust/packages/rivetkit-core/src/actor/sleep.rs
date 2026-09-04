@@ -47,9 +47,10 @@ pub(crate) struct SleepState {
 	pub(super) envoy_handle: Mutex<Option<EnvoyHandle>>,
 	pub(super) generation: Mutex<Option<u32>>,
 	pub(super) http_request_counter: Mutex<Option<Arc<AsyncCounter>>>,
-	// Forced-sync: written once by whichever caller wins the destroy-request
-	// swap, then consumed when the stop intent is sent to the envoy.
-	pub(super) destroy_error: Mutex<Option<String>>,
+	// Forced-sync: set by an errored stop, then consumed when the intent is
+	// sent to the envoy. Its presence is what makes the intent a sleep rather
+	// than a destroy.
+	pub(super) stop_error: Mutex<Option<String>>,
 	#[cfg(test)]
 	sleep_request_count: TestAtomicUsize,
 	#[cfg(test)]
@@ -82,7 +83,7 @@ impl SleepState {
 			envoy_handle: Mutex::new(None),
 			generation: Mutex::new(None),
 			http_request_counter: Mutex::new(None),
-			destroy_error: Mutex::new(None),
+			stop_error: Mutex::new(None),
 			#[cfg(test)]
 			sleep_request_count: TestAtomicUsize::new(0),
 			#[cfg(test)]
@@ -163,11 +164,11 @@ impl ActorContext {
 		let envoy_handle = self.0.sleep.envoy_handle.lock().clone();
 		let generation = *self.0.sleep.generation.lock();
 		if let Some(envoy_handle) = envoy_handle {
-			envoy_handle.sleep_actor(self.actor_id().to_owned(), generation);
+			envoy_handle.sleep_actor(self.actor_id().to_owned(), generation, None);
 		}
 	}
 
-	pub(crate) fn request_destroy_from_envoy(&self) {
+	pub(crate) fn request_stop_from_envoy(&self) {
 		#[cfg(test)]
 		self.0
 			.sleep
@@ -175,9 +176,18 @@ impl ActorContext {
 			.fetch_add(1, Ordering::SeqCst);
 		let envoy_handle = self.0.sleep.envoy_handle.lock().clone();
 		let generation = *self.0.sleep.generation.lock();
-		let error = self.0.sleep.destroy_error.lock().take();
-		if let Some(envoy_handle) = envoy_handle {
-			envoy_handle.stop_actor(self.actor_id().to_owned(), generation, error);
+		let error = self.0.sleep.stop_error.lock().take();
+		let Some(envoy_handle) = envoy_handle else {
+			return;
+		};
+		// A crash is reported as a sleep intent. The engine puts a crashed
+		// actor back to sleep rather than destroying it, and `StopIntent` is
+		// reserved for a deliberate destroy.
+		match error {
+			Some(error) => {
+				envoy_handle.sleep_actor(self.actor_id().to_owned(), generation, Some(error))
+			}
+			None => envoy_handle.stop_actor(self.actor_id().to_owned(), generation),
 		}
 	}
 

@@ -669,7 +669,7 @@ mod moved_tests {
 		async fn recv_stop_intent(
 			rx: &mut mpsc::UnboundedReceiver<ToEnvoyMessage>,
 			expected_actor_id: &str,
-		) -> Option<String> {
+		) -> (protocol::ActorIntent, Option<String>) {
 			let message = tokio::time::timeout(Duration::from_secs(5), rx.recv())
 				.await
 				.expect("timed out waiting for stop intent")
@@ -678,14 +678,14 @@ mod moved_tests {
 				ToEnvoyMessage::ActorIntent {
 					actor_id,
 					generation,
-					intent: protocol::ActorIntent::ActorIntentStop,
+					intent,
 					error,
 				} => {
 					assert_eq!(actor_id, expected_actor_id);
 					assert_eq!(generation, Some(3));
-					error
+					(intent, error)
 				}
-				_ => panic!("expected stop intent envoy message"),
+				_ => panic!("expected an intent envoy message"),
 			}
 		}
 
@@ -698,7 +698,10 @@ mod moved_tests {
 
 			ctx.destroy().expect("destroy should succeed after startup");
 
-			let error = recv_stop_intent(&mut rx, "actor-destroy-intent").await;
+			// A deliberate destroy is the only thing that may report
+			// `ActorIntentStop`.
+			let (intent, error) = recv_stop_intent(&mut rx, "actor-destroy-intent").await;
+			assert!(matches!(intent, protocol::ActorIntent::ActorIntentStop));
 			assert_eq!(error, None);
 		}
 
@@ -712,11 +715,87 @@ mod moved_tests {
 			ctx.stop_with_error("child exited unexpectedly (exit status: 137)")
 				.expect("stop_with_error should succeed after startup");
 
-			let error = recv_stop_intent(&mut rx, "actor-stop-error-intent").await;
+			// A crash is reported as a sleep intent so the engine resumes the
+			// actor instead of destroying it. The message still rides along and
+			// becomes `StopCode::Error` on the eventual `Stopped` event.
+			let (intent, error) = recv_stop_intent(&mut rx, "actor-stop-error-intent").await;
+			assert!(matches!(intent, protocol::ActorIntent::ActorIntentSleep));
 			assert_eq!(
 				error.as_deref(),
 				Some("child exited unexpectedly (exit status: 137)")
 			);
+		}
+
+		async fn assert_no_further_intent(rx: &mut mpsc::UnboundedReceiver<ToEnvoyMessage>) {
+			// Paused time auto-advances once every task is idle, so this
+			// resolves as soon as the runtime has nothing left to run.
+			let extra = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await;
+			assert!(extra.is_err(), "expected no further envoy message");
+		}
+
+		#[tokio::test(start_paused = true)]
+		async fn repeated_stop_with_error_sends_one_sleep_intent() {
+			let ctx = ActorContext::new_for_sleep_tests("actor-stop-error-repeated");
+			let (handle, mut rx) = test_envoy_handle();
+			ctx.configure_sleep_envoy(handle, Some(3));
+			ctx.set_started(true);
+
+			// Two reports for one crash is a real path: the run task reports
+			// eagerly and the event loop reports the same failure again at
+			// shutdown. The second report must not reach the envoy as a bare
+			// `ActorIntentStop`, which the engine answers by destroying the
+			// actor.
+			ctx.stop_with_error("first crash")
+				.expect("first stop_with_error should succeed after startup");
+			ctx.stop_with_error("second crash")
+				.expect("second stop_with_error should succeed");
+
+			let (intent, error) = recv_stop_intent(&mut rx, "actor-stop-error-repeated").await;
+			assert!(matches!(intent, protocol::ActorIntent::ActorIntentSleep));
+			assert_eq!(error.as_deref(), Some("second crash"));
+			assert_no_further_intent(&mut rx).await;
+		}
+
+		#[tokio::test(start_paused = true)]
+		async fn destroy_after_stop_with_error_still_sends_stop_intent() {
+			let ctx = ActorContext::new_for_sleep_tests("actor-destroy-after-error");
+			let (handle, mut rx) = test_envoy_handle();
+			ctx.configure_sleep_envoy(handle, Some(3));
+			ctx.set_started(true);
+
+			// A destroy escalates an errored stop that has not been sent yet.
+			// It must report `ActorIntentStop` rather than inheriting the
+			// pending error and reporting a sleep, which would leave the actor
+			// alive.
+			ctx.stop_with_error("crash before destroy")
+				.expect("stop_with_error should succeed after startup");
+			ctx.destroy()
+				.expect("destroy should succeed after an errored stop");
+
+			let (intent, error) = recv_stop_intent(&mut rx, "actor-destroy-after-error").await;
+			assert!(matches!(intent, protocol::ActorIntent::ActorIntentStop));
+			assert_eq!(error, None);
+		}
+
+		#[tokio::test(start_paused = true)]
+		async fn sleep_then_stop_with_error_reports_the_crash() {
+			let ctx = ActorContext::new_for_sleep_tests("actor-sleep-then-error");
+			let (handle, mut rx) = test_envoy_handle();
+			ctx.configure_sleep_envoy(handle, Some(3));
+			ctx.set_started(true);
+
+			// An in-flight sleep leaves the error slot empty, so upgrading it
+			// to a crash still has to reach the envoy.
+			ctx.sleep().expect("sleep should succeed after startup");
+			let (intent, error) = recv_stop_intent(&mut rx, "actor-sleep-then-error").await;
+			assert!(matches!(intent, protocol::ActorIntent::ActorIntentSleep));
+			assert_eq!(error, None);
+
+			ctx.stop_with_error("crash during sleep")
+				.expect("stop_with_error should succeed while sleeping");
+			let (intent, error) = recv_stop_intent(&mut rx, "actor-sleep-then-error").await;
+			assert!(matches!(intent, protocol::ActorIntent::ActorIntentSleep));
+			assert_eq!(error.as_deref(), Some("crash during sleep"));
 		}
 
 		#[tokio::test(start_paused = true)]
@@ -729,9 +808,9 @@ mod moved_tests {
 			ctx.stop_with_error("x".repeat(1024 * 1024))
 				.expect("stop_with_error should succeed after startup");
 
-			let error = recv_stop_intent(&mut rx, "actor-stop-error-truncated")
-				.await
-				.expect("stop intent should carry the truncated message");
+			let (intent, error) = recv_stop_intent(&mut rx, "actor-stop-error-truncated").await;
+			assert!(matches!(intent, protocol::ActorIntent::ActorIntentSleep));
+			let error = error.expect("stop intent should carry the truncated message");
 			assert!(
 				error.len() < 4096,
 				"message must be capped: {}",

@@ -1227,7 +1227,10 @@ fn report_sqlite_worker_fatal(reported: &AtomicBool, config: SqliteRuntimeConfig
 	// A dead worker means SQLite's sole native connection is no longer a valid
 	// actor subsystem. Core reports that through envoy lifecycle instead of
 	// letting the actor continue to serve requests with a broken database.
-	config.handle.stop_actor(
+	// This is a crash, not a deliberate destroy, so it goes out as a sleep
+	// intent: the next generation opens a fresh worker over the same durable
+	// state.
+	config.handle.sleep_actor(
 		config.actor_id,
 		config
 			.generation

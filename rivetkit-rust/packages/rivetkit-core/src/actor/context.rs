@@ -551,11 +551,13 @@ impl ActorContext {
 		self.request_stop(None)
 	}
 
-	/// Request a stop with an error attached. Behaves like [`Self::destroy`]
-	/// locally (destroy grace hooks run for this generation), but the envoy
-	/// reports the stop to the engine with `StopCode::Error` and the message,
-	/// so the engine records the crash and applies its crash handling instead
-	/// of unconditionally destroying the actor.
+	/// Request a stop with an error attached. The envoy reports the stop to the
+	/// engine with `StopCode::Error` and the message, and the engine answers a
+	/// crash by putting the actor back to sleep rather than destroying it. The
+	/// local teardown therefore takes the sleep path too, so `onSleep` runs,
+	/// hibernatable connections are preserved, the persisted alarm stays armed
+	/// for the next generation, and incoming work is not rejected with
+	/// `Destroying` for an actor that is about to resume.
 	pub fn stop_with_error(&self, message: impl Into<String>) -> Result<()> {
 		self.request_stop(Some(truncate_stop_error_message(message.into())))
 	}
@@ -569,33 +571,60 @@ impl ActorContext {
 			&& !self.0.destroy_requested.load(Ordering::SeqCst)
 		{
 			return Err(ActorLifecycleError::Starting.build())
-				.context("cannot request destroy before actor startup completes");
+				.context("cannot request stop before actor startup completes");
 		}
-		if self.0.destroy_requested.swap(true, Ordering::SeqCst) {
-			return Err(ActorLifecycleError::Stopping.build())
-				.context("destroy already requested for this generation");
+
+		if let Some(error) = error {
+			// An errored stop is a crash report, not a destroy. A destroy that
+			// already won owns the teardown, so leave it alone.
+			if self.0.destroy_requested.load(Ordering::SeqCst) {
+				return Err(ActorLifecycleError::Stopping.build())
+					.context("destroy already requested for this generation");
+			}
+			// Record the error even when a sleep is already in flight. The
+			// envoy attaches it to the actor regardless of whether the intent
+			// itself is a duplicate, so the eventual `Stopped` still carries
+			// `StopCode::Error` and the engine still records the crash.
+			let queued_error = self.0.sleep.stop_error.lock().replace(error);
+			if !self.0.sleep_requested.swap(true, Ordering::SeqCst) {
+				self.mark_errored_stop_requested();
+			}
+			// An errored stop is already queued and has not reached the envoy
+			// yet. It picks up the error recorded above, so sending a second
+			// intent would only race an error-less `stop_actor` against it:
+			// `request_stop_from_envoy` consumes the single error slot with
+			// `take`, and the loser reports the crash as a deliberate destroy.
+			// A sleep that is already in flight leaves the slot empty, so the
+			// `sleep()` -> `stop_with_error()` upgrade still reports here.
+			if queued_error.is_some() {
+				return Ok(());
+			}
+		} else {
+			if self.0.destroy_requested.swap(true, Ordering::SeqCst) {
+				return Err(ActorLifecycleError::Stopping.build())
+					.context("destroy already requested for this generation");
+			}
+			// A destroy supersedes an errored stop that has not reached the
+			// envoy yet. Without clearing the slot, whichever request runs
+			// first consumes the error and reports this destroy as a sleep
+			// intent, leaving the actor alive.
+			*self.0.sleep.stop_error.lock() = None;
+			// Reuse the shared teardown sequence used by the registry shutdown
+			// path so future changes to `mark_destroy_requested` cannot drift.
+			// `destroy_requested` is already true from the swap above. The
+			// redundant `store(true)` inside is harmless.
+			#[cfg(not(feature = "wasm-runtime"))]
+			self.mark_destroy_requested();
+			#[cfg(feature = "wasm-runtime")]
+			self.mark_destroy_requested_without_spawn();
 		}
-		// Winning the swap above makes this the only writer of the error slot
-		// for this generation. The slot is consumed by
-		// `request_destroy_from_envoy` when the stop intent is sent.
-		if error.is_some() {
-			*self.0.sleep.destroy_error.lock() = error;
-		}
-		// Reuse the shared teardown sequence used by the registry shutdown path
-		// so future changes to `mark_destroy_requested` cannot drift.
-		// `destroy_requested` is already true from the swap above. The redundant
-		// `store(true)` inside is harmless.
-		#[cfg(not(feature = "wasm-runtime"))]
-		self.mark_destroy_requested();
-		#[cfg(feature = "wasm-runtime")]
-		self.mark_destroy_requested_without_spawn();
 
 		let ctx = self.clone();
 		if Handle::try_current().is_ok() {
 			let tracked = self.track_shutdown_task(async move {
 				ctx.record_user_task_started(UserTaskKind::DestroyRequest);
 				let started_at = Instant::now();
-				ctx.request_destroy_from_envoy();
+				ctx.request_stop_from_envoy();
 				ctx.record_user_task_finished(UserTaskKind::DestroyRequest, started_at.elapsed());
 			});
 			if tracked {
@@ -603,7 +632,7 @@ impl ActorContext {
 			}
 		}
 
-		self.request_destroy_from_envoy();
+		self.request_stop_from_envoy();
 		Ok(())
 	}
 
@@ -612,6 +641,16 @@ impl ActorContext {
 		self.flush_on_shutdown();
 		self.0.destroy_requested.store(true, Ordering::SeqCst);
 		self.0.destroy_completed.store(false, Ordering::SeqCst);
+	}
+
+	/// Teardown bookkeeping for an errored stop. Mirrors
+	/// `mark_destroy_requested` minus the destroy flags, since the actor is
+	/// heading for the sleep path. The state flush still runs so a crash
+	/// persists whatever the actor had before its teardown.
+	fn mark_errored_stop_requested(&self) {
+		self.cancel_sleep_timer();
+		#[cfg(not(feature = "wasm-runtime"))]
+		self.flush_on_shutdown();
 	}
 
 	#[cfg(feature = "wasm-runtime")]
