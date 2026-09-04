@@ -6,7 +6,7 @@ import {
 	Schema,
 	SchemaTransformation,
 } from "effect";
-import type { RawAccess } from "rivetkit/db";
+import type { SynchronousRawAccess } from "rivetkit/db";
 import { db } from "rivetkit/db";
 import { describe, expectTypeOf, it, test } from "@effect/vitest";
 
@@ -287,13 +287,21 @@ describe("Actor.make(...).toLayer", () => {
 			(wakeOptions) => {
 				expectTypeOf(
 					wakeOptions.rawRivetkitContext.db,
-				).toEqualTypeOf<RawAccess>();
+				).toEqualTypeOf<SynchronousRawAccess>();
 				expectTypeOf(
 					wakeOptions.rawRivetkitContext.db.transaction(
 						async () => {},
 						{ name: "effect-operation", timeout: 1_000 },
 					),
 				).toEqualTypeOf<Promise<void>>();
+				expectTypeOf(
+					wakeOptions.rawRivetkitContext.db.executeSync<{
+						count: number;
+					}>("SELECT COUNT(*) AS count"),
+				).toEqualTypeOf<{ count: number }[]>();
+				expectTypeOf(
+					wakeOptions.rawRivetkitContext.db.transactionSync(() => 42),
+				).toEqualTypeOf<number>();
 
 				return {
 					Ping: () => Effect.succeed(0),

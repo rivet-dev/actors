@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import type { RequestContext } from "@/actor/config";
-import type { DatabaseProvider, RawAccess } from "@/common/database/config";
+import type {
+	DatabaseProvider,
+	SynchronousRawAccess,
+} from "@/common/database/config";
 import type { AgentOsActorConfig } from "../config";
 import type {
 	AgentOsActionContext,
@@ -46,7 +49,7 @@ type AgentOsRequestContext<TConnParams> = RequestContext<
 	undefined,
 	AgentOsActorVars,
 	undefined,
-	DatabaseProvider<RawAccess>
+	DatabaseProvider<SynchronousRawAccess>
 >;
 
 export function buildOnRequestHandler<TConnParams>(

@@ -20,26 +20,64 @@ function deferred<T>() {
 
 class FakeNativeDatabase implements JsNativeDatabaseLike {
 	async beginTransaction() {
+		this.transactionEvents.push("BEGIN");
+		return this.#transaction();
+	}
+
+	beginTransactionSync() {
+		this.transactionEvents.push("BEGIN_SYNC");
+		return this.#transaction();
+	}
+
+	#transaction() {
 		return {
 			exec: async (_sql: string) => this.exec(),
+			execSync: (_sql: string) => this.execSync(),
 			execute: async (sql: string, params?: NativeParams) =>
 				this.execute(sql, params),
-			commit: async () => {},
-			rollback: async () => {},
+			executeSync: (sql: string, params?: NativeParams) =>
+				this.executeSync(sql, params),
+			commit: async () => {
+				this.transactionEvents.push("COMMIT");
+			},
+			commitSync: () => {
+				this.transactionEvents.push("COMMIT_SYNC");
+			},
+			rollback: async () => {
+				this.transactionEvents.push("ROLLBACK");
+			},
+			rollbackSync: () => {
+				this.transactionEvents.push("ROLLBACK_SYNC");
+			},
 		};
 	}
 	active = 0;
 	maxActive = 0;
 	closed = false;
 	executeCalls: { sql: string; params?: NativeParams; write: boolean }[] = [];
+	transactionEvents: string[] = [];
 	#pending: ReturnType<typeof deferred<NativeExecuteResult>>[] = [];
 
 	async exec() {
 		return { columns: [], rows: [] };
 	}
 
+	execSync() {
+		return { columns: ["value"], rows: [[1], [2]] };
+	}
+
 	async execute(sql: string, params?: NativeParams) {
 		return await this.#startExecute(sql, params, false);
+	}
+
+	executeSync(sql: string, params?: NativeParams): NativeExecuteResult {
+		this.executeCalls.push({ sql, params, write: false });
+		return {
+			columns: ["value"],
+			rows: [[1]],
+			changes: 0,
+			lastInsertRowId: null,
+		};
 	}
 
 	async query(sql: string, params?: NativeParams) {
@@ -153,6 +191,47 @@ describe("wrapJsNativeDatabase", () => {
 			columns: ["value"],
 			rows: [[1]],
 		});
+	});
+
+	test("executes synchronously with normalized bindings", () => {
+		const native = new FakeNativeDatabase();
+		const db = wrapJsNativeDatabase(native);
+
+		const result = db.executeSync?.("SELECT ?, ?", [true, "text"]);
+		const execRows: unknown[][] = [];
+		db.execSync?.("SELECT 1; SELECT 2", (row) => execRows.push(row));
+
+		expect(native.executeCalls[0]?.params).toEqual([
+			{ kind: "int", intValue: 1 },
+			{ kind: "text", textValue: "text" },
+		]);
+		expect(result).toMatchObject({
+			columns: ["value"],
+			rows: [[1]],
+		});
+		expect(execRows).toEqual([[1], [2]]);
+	});
+
+	test("wraps synchronous transaction lifecycle methods", () => {
+		const native = new FakeNativeDatabase();
+		const db = wrapJsNativeDatabase(native);
+
+		const committed = db.beginTransactionSync?.(1_000, "commit");
+		if (!committed)
+			throw new Error("missing synchronous transaction support");
+		committed.executeSync("SELECT 1");
+		committed.commitSync();
+		const rolledBack = db.beginTransactionSync?.(1_000, "rollback");
+		if (!rolledBack)
+			throw new Error("missing synchronous transaction support");
+		rolledBack.rollbackSync();
+
+		expect(native.transactionEvents).toEqual([
+			"BEGIN_SYNC",
+			"COMMIT_SYNC",
+			"BEGIN_SYNC",
+			"ROLLBACK_SYNC",
+		]);
 	});
 
 	test("returns native execute metadata", async () => {

@@ -1,7 +1,10 @@
 import type { AgentOsOptions, MountConfig } from "@rivet-dev/agent-os-core";
 import { AgentOs, createInMemoryFileSystem } from "@rivet-dev/agent-os-core";
 import { type ActorDefinition, actor, event } from "@/actor/mod";
-import type { DatabaseProvider, RawAccess } from "@/common/database/config";
+import type {
+	DatabaseProvider,
+	SynchronousRawAccess,
+} from "@/common/database/config";
 import { db } from "@/common/database/mod";
 import {
 	type AgentOsActorConfig,
@@ -146,7 +149,7 @@ export function agentOs<TConnParams = undefined>(
 	undefined,
 	AgentOsActorVars,
 	undefined,
-	DatabaseProvider<RawAccess>,
+	DatabaseProvider<SynchronousRawAccess>,
 	{
 		sessionEvent: typeof sessionEventToken;
 		permissionRequest: typeof permissionRequestToken;
@@ -182,7 +185,7 @@ export function agentOs<TConnParams = undefined>(
 		undefined,
 		AgentOsActorVars,
 		undefined,
-		DatabaseProvider<RawAccess>,
+		DatabaseProvider<SynchronousRawAccess>,
 		{
 			sessionEvent: typeof sessionEventToken;
 			permissionRequest: typeof permissionRequestToken;

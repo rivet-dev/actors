@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use crate::actor_context::{StateDeltaPayload, state_deltas_from_payload};
 use napi::bindgen_prelude::Buffer;
@@ -177,6 +177,18 @@ impl JsNativeDatabase {
 	}
 
 	#[napi]
+	pub fn execute_sync(
+		&self,
+		sql: String,
+		params: Option<Vec<JsBindParam>>,
+	) -> napi::Result<NativeExecuteResult> {
+		let params = params.map(js_bind_params_to_core).transpose()?;
+		let db = self.db.clone();
+		wait_for_runtime(async move { db.execute(sql, params).await })
+			.map(core_execute_result_to_js)
+	}
+
+	#[napi]
 	pub async fn execute_batch(
 		&self,
 		statements: Vec<JsSqliteBatchStatement>,
@@ -194,6 +206,12 @@ impl JsNativeDatabase {
 	pub async fn exec(&self, sql: String) -> napi::Result<QueryResult> {
 		let result = self.db.exec(sql).await.map_err(crate::napi_anyhow_error)?;
 		Ok(core_query_result_to_js(result))
+	}
+
+	#[napi]
+	pub fn exec_sync(&self, sql: String) -> napi::Result<QueryResult> {
+		let db = self.db.clone();
+		wait_for_runtime(async move { db.exec(sql).await }).map(core_query_result_to_js)
 	}
 
 	#[napi]
@@ -215,6 +233,21 @@ impl JsNativeDatabase {
 			.map_err(crate::napi_anyhow_error)?;
 		Ok(JsSqliteTransaction { transaction })
 	}
+
+	#[napi]
+	pub fn begin_transaction_sync(
+		&self,
+		timeout_ms: Option<f64>,
+		name: Option<String>,
+	) -> napi::Result<JsSqliteTransaction> {
+		let timeout = timeout_ms.map(transaction_timeout).transpose()?;
+		let db = self.db.clone();
+		let transaction =
+			wait_for_runtime(
+				async move { db.begin_named_transaction(name.as_deref(), timeout).await },
+			)?;
+		Ok(JsSqliteTransaction { transaction })
+	}
 }
 
 #[napi]
@@ -234,12 +267,30 @@ impl JsSqliteTransaction {
 	}
 
 	#[napi]
+	pub fn execute_sync(
+		&self,
+		sql: String,
+		params: Option<Vec<JsBindParam>>,
+	) -> napi::Result<NativeExecuteResult> {
+		let params = params.map(js_bind_params_to_core).transpose()?;
+		let transaction = self.transaction.clone();
+		wait_for_runtime(async move { transaction.execute(sql, params).await })
+			.map(core_execute_result_to_js)
+	}
+
+	#[napi]
 	pub async fn exec(&self, sql: String) -> napi::Result<QueryResult> {
 		self.transaction
 			.exec(sql)
 			.await
 			.map(core_query_result_to_js)
 			.map_err(crate::napi_anyhow_error)
+	}
+
+	#[napi]
+	pub fn exec_sync(&self, sql: String) -> napi::Result<QueryResult> {
+		let transaction = self.transaction.clone();
+		wait_for_runtime(async move { transaction.exec(sql).await }).map(core_query_result_to_js)
 	}
 
 	#[napi]
@@ -251,11 +302,23 @@ impl JsSqliteTransaction {
 	}
 
 	#[napi]
+	pub fn commit_sync(&self) -> napi::Result<()> {
+		let transaction = self.transaction.clone();
+		wait_for_runtime(async move { transaction.commit().await })
+	}
+
+	#[napi]
 	pub async fn rollback(&self) -> napi::Result<()> {
 		self.transaction
 			.rollback()
 			.await
 			.map_err(crate::napi_anyhow_error)
+	}
+
+	#[napi]
+	pub fn rollback_sync(&self) -> napi::Result<()> {
+		let transaction = self.transaction.clone();
+		wait_for_runtime(async move { transaction.rollback().await })
 	}
 }
 
@@ -276,6 +339,18 @@ impl JsActorStateTransaction {
 	}
 
 	#[napi]
+	pub fn execute_sync(
+		&self,
+		sql: String,
+		params: Option<Vec<JsBindParam>>,
+	) -> napi::Result<NativeExecuteResult> {
+		let params = params.map(js_bind_params_to_core).transpose()?;
+		let transaction = self.transaction.clone();
+		wait_for_runtime(async move { transaction.execute(sql, params).await })
+			.map(core_execute_result_to_js)
+	}
+
+	#[napi]
 	pub async fn commit(&self, payload: StateDeltaPayload) -> napi::Result<()> {
 		self.transaction
 			.commit(state_deltas_from_payload(payload))
@@ -290,6 +365,23 @@ impl JsActorStateTransaction {
 			.await
 			.map_err(crate::napi_anyhow_error)
 	}
+}
+
+fn wait_for_runtime<T, F>(future: F) -> napi::Result<T>
+where
+	F: Future<Output = anyhow::Result<T>>,
+{
+	let runtime = tokio::runtime::Handle::try_current().map_err(|error| {
+		napi_anyhow_error(
+			crate::NapiInvalidState {
+				state: "runtime".to_owned(),
+				reason: format!("cannot run synchronous SQLite operation: {error}"),
+			}
+			.build(),
+		)
+	})?;
+	// NAPI-RS enters its multithreaded runtime before invoking synchronous exports.
+	tokio::task::block_in_place(|| runtime.block_on(future)).map_err(crate::napi_anyhow_error)
 }
 
 pub(crate) fn transaction_timeout(timeout_ms: f64) -> napi::Result<Duration> {
@@ -386,5 +478,22 @@ fn column_value_to_json(value: ColumnValue) -> serde_json::Value {
 		ColumnValue::Blob(value) => {
 			serde_json::Value::Array(value.into_iter().map(serde_json::Value::from).collect())
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	#[test]
+	fn synchronous_wait_uses_the_active_multithreaded_runtime() {
+		let runtime = tokio::runtime::Builder::new_multi_thread()
+			.enable_all()
+			.build()
+			.expect("runtime should build");
+		let _guard = runtime.enter();
+
+		let result = super::wait_for_runtime(async { Ok::<_, anyhow::Error>(42) })
+			.expect("future should complete");
+
+		assert_eq!(result, 42);
 	}
 }

@@ -7,6 +7,7 @@ import type {
 	SqliteDatabase,
 	SqliteExecuteResult,
 	SqliteTransactionDatabase,
+	SynchronousSqliteTransactionDatabase,
 } from "./config";
 import { db, registerNativeStateTransactionOpener } from "./mod";
 
@@ -19,7 +20,20 @@ class FakeSqliteDatabase implements SqliteDatabase {
 	transactionTimeouts: Array<number | undefined> = [];
 	transactionNames: Array<string | undefined> = [];
 
-	async exec(): Promise<void> {}
+	async exec(
+		sql: string,
+		callback?: (row: unknown[], columns: string[]) => void,
+	): Promise<void> {
+		this.execSync(sql, callback);
+	}
+
+	execSync(
+		sql: string,
+		callback?: (row: unknown[], columns: string[]) => void,
+	): void {
+		this.record(sql);
+		callback?.([1], ["value"]);
+	}
 
 	async execute(
 		sql: string,
@@ -29,21 +43,40 @@ class FakeSqliteDatabase implements SqliteDatabase {
 		return emptyResult();
 	}
 
+	executeSync(sql: string, params?: SqliteBindings): SqliteExecuteResult {
+		this.record(sql, params);
+		return emptyResult();
+	}
+
 	async beginTransaction(
 		timeoutMs?: number,
 		name?: string,
 	): Promise<SqliteTransactionDatabase> {
+		return this.beginTransactionSync(timeoutMs, name);
+	}
+
+	beginTransactionSync(
+		timeoutMs?: number,
+		name?: string,
+	): SynchronousSqliteTransactionDatabase {
 		this.transactionTimeouts.push(timeoutMs);
 		this.transactionNames.push(name);
 		this.record("BEGIN");
 		return {
 			exec: async () => {},
+			execSync: () => {},
 			execute: async (sql, params) => {
 				this.record(sql, params);
 				return emptyResult();
 			},
+			executeSync: (sql, params) => {
+				this.record(sql, params);
+				return emptyResult();
+			},
 			commit: async () => this.record("COMMIT"),
+			commitSync: () => this.record("COMMIT"),
 			rollback: async () => this.record("ROLLBACK"),
+			rollbackSync: () => this.record("ROLLBACK"),
 		};
 	}
 	async beginStateTransaction(
@@ -53,7 +86,12 @@ class FakeSqliteDatabase implements SqliteDatabase {
 		this.record("BEGIN_STATE");
 		return {
 			exec: async () => {},
+			execSync: () => {},
 			execute: async (sql, params) => {
+				this.record(sql, params);
+				return emptyResult();
+			},
+			executeSync: (sql, params) => {
 				this.record(sql, params);
 				return emptyResult();
 			},
@@ -171,6 +209,129 @@ describe("db", () => {
 			maxTrackedStatementFingerprints: 12,
 			baselineSampleRate: 0.25,
 		});
+	});
+
+	test("exposes synchronous raw queries on the built-in client", async () => {
+		const nativeDb = new FakeSqliteDatabase();
+		const client = await db().createClient(testProviderContext(nativeDb));
+
+		client.executeSync("SELECT ?", 42);
+		expect(
+			client.executeSync<{ value: number }>("SELECT 1; SELECT 2"),
+		).toEqual([{ value: 1 }]);
+
+		expect(nativeDb.executeCalls).toEqual([
+			{
+				sql: "SELECT ?",
+				params: [42],
+			},
+			{
+				sql: "SELECT 1; SELECT 2",
+				params: undefined,
+			},
+		]);
+	});
+
+	test("commits synchronous transaction work before returning", async () => {
+		const nativeDb = new FakeSqliteDatabase();
+		const client = await db().createClient(testProviderContext(nativeDb));
+
+		const value = client.transactionSync(
+			(tx) => {
+				tx.executeSync("INSERT INTO items(value) VALUES (?)", "inside");
+				return 42;
+			},
+			{ name: "sync-insert", timeout: 120_000 },
+		);
+
+		expect(value).toBe(42);
+		expect(nativeDb.transactionTimeouts).toEqual([120_000]);
+		expect(nativeDb.transactionNames).toEqual(["sync-insert"]);
+		expect(nativeDb.executeCalls.map(({ sql }) => sql)).toEqual([
+			"BEGIN",
+			"INSERT INTO items(value) VALUES (?)",
+			"COMMIT",
+		]);
+	});
+
+	test("rolls back synchronous transactions on callback and commit errors", async () => {
+		const callbackDb = new FakeSqliteDatabase();
+		const callbackClient = await db().createClient(
+			testProviderContext(callbackDb),
+		);
+		expect(() =>
+			callbackClient.transactionSync(() => {
+				throw new Error("callback failed");
+			}),
+		).toThrow("callback failed");
+		expect(callbackDb.executeCalls.map(({ sql }) => sql)).toEqual([
+			"BEGIN",
+			"ROLLBACK",
+		]);
+
+		const commitDb = new FakeSqliteDatabase();
+		commitDb.failSql.set("COMMIT", new Error("commit failed"));
+		const commitClient = await db().createClient(
+			testProviderContext(commitDb),
+		);
+		expect(() => commitClient.transactionSync(() => 1)).toThrow(
+			"commit failed",
+		);
+		expect(commitDb.executeCalls.map(({ sql }) => sql)).toEqual([
+			"BEGIN",
+			"COMMIT",
+			"ROLLBACK",
+		]);
+	});
+
+	test("rejects async synchronous-transaction callbacks and outer-client queries", async () => {
+		const nativeDb = new FakeSqliteDatabase();
+		const client = await db().createClient(testProviderContext(nativeDb));
+
+		expect(() => client.transactionSync(async () => undefined)).toThrow(
+			"must not return a promise",
+		);
+		expect(nativeDb.executeCalls.map(({ sql }) => sql)).toEqual([
+			"BEGIN",
+			"ROLLBACK",
+		]);
+
+		nativeDb.executeCalls = [];
+		let outerQuery: Promise<Record<string, unknown>[]> | undefined;
+		client.transactionSync((tx) => {
+			expect(Object.keys(tx)).toEqual(["executeSync"]);
+			expect(() => client.executeSync("SELECT 1")).toThrow(
+				"transaction callback's tx value",
+			);
+			outerQuery = client.execute("SELECT 1");
+			expect(() => client.transactionSync(() => undefined)).toThrow(
+				"Nested synchronous SQLite transactions",
+			);
+			tx.executeSync("SELECT 2");
+		});
+		await expect(outerQuery).rejects.toThrow(
+			"transaction callback's tx value",
+		);
+		expect(nativeDb.executeCalls.map(({ sql }) => sql)).toEqual([
+			"BEGIN",
+			"SELECT 2",
+			"COMMIT",
+		]);
+	});
+
+	test("validates synchronous transaction options before beginning", async () => {
+		const nativeDb = new FakeSqliteDatabase();
+		const client = await db().createClient(testProviderContext(nativeDb));
+
+		for (const timeout of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(() =>
+				client.transactionSync(() => undefined, { timeout }),
+			).toThrow("positive finite");
+		}
+		expect(() =>
+			client.transactionSync(() => undefined, { name: "" }),
+		).toThrow("must not be empty");
+		expect(nativeDb.executeCalls).toEqual([]);
 	});
 
 	test("rolls back migrations when onMigrate fails", async () => {

@@ -84,7 +84,12 @@ export interface SqliteDatabase {
 		sql: string,
 		callback?: (row: unknown[], columns: string[]) => void,
 	): Promise<void>;
+	execSync?(
+		sql: string,
+		callback?: (row: unknown[], columns: string[]) => void,
+	): void;
 	execute(sql: string, params?: SqliteBindings): Promise<SqliteExecuteResult>;
+	executeSync?(sql: string, params?: SqliteBindings): SqliteExecuteResult;
 	executeBatch(
 		statements: SqliteBatchStatement[],
 	): Promise<SqliteExecuteResult[]>;
@@ -92,6 +97,10 @@ export interface SqliteDatabase {
 		timeoutMs?: number,
 		name?: string,
 	): Promise<SqliteTransactionDatabase>;
+	beginTransactionSync?(
+		timeoutMs?: number,
+		name?: string,
+	): SynchronousSqliteTransactionDatabase;
 	run(sql: string, params?: SqliteBindings): Promise<void>;
 	query(sql: string, params?: SqliteBindings): Promise<SqliteQueryResult>;
 	nativeMetrics?():
@@ -106,10 +115,25 @@ export interface SqliteTransactionDatabase {
 		sql: string,
 		callback?: (row: unknown[], columns: string[]) => void,
 	): Promise<void>;
+	execSync?(
+		sql: string,
+		callback?: (row: unknown[], columns: string[]) => void,
+	): void;
 	execute(sql: string, params?: SqliteBindings): Promise<SqliteExecuteResult>;
+	executeSync?(sql: string, params?: SqliteBindings): SqliteExecuteResult;
 	commit(): Promise<void>;
 	rollback(): Promise<void>;
 }
+
+export type SynchronousSqliteTransactionDatabase = SqliteTransactionDatabase & {
+	execSync(
+		sql: string,
+		callback?: (row: unknown[], columns: string[]) => void,
+	): void;
+	executeSync(sql: string, params?: SqliteBindings): SqliteExecuteResult;
+	commitSync(): void;
+	rollbackSync(): void;
+};
 
 /**
  * Provider for opening native databases from the active runtime.
@@ -204,11 +228,28 @@ type ExecuteFunction = <
 	...args: unknown[]
 ) => Promise<TRow[]>;
 
+type ExecuteSyncFunction = <
+	TRow extends Record<string, unknown> = Record<string, unknown>,
+>(
+	query: string,
+	...args: unknown[]
+) => TRow[];
+
+/** SQL operations available inside a synchronous transaction callback. */
+export type SynchronousTransactionAccess = {
+	executeSync: ExecuteSyncFunction;
+};
+
 export type RawAccess = {
 	/**
 	 * Executes a raw SQL query.
 	 */
 	execute: ExecuteFunction;
+	/**
+	 * Executes a raw SQL query synchronously when supported by the runtime.
+	 * This blocks the Node.js event loop. Prefer `execute` for normal use.
+	 */
+	executeSync?: ExecuteSyncFunction;
 	/** Runs a callback in an isolated SQLite transaction. */
 	transaction: <T>(
 		callback: (tx: RawAccess) => Promise<T> | T,
@@ -225,4 +266,17 @@ export type RawAccess = {
 	 * Closes the database connection and releases resources.
 	 */
 	close: () => Promise<void>;
+};
+
+/** Raw database access with synchronous operations provided by the Node.js runtime. */
+export type SynchronousRawAccess = RawAccess & {
+	executeSync: ExecuteSyncFunction;
+	/**
+	 * Runs a synchronous callback in an isolated SQLite transaction.
+	 * The callback must not return a promise.
+	 */
+	transactionSync: <T>(
+		callback: (tx: SynchronousTransactionAccess) => T,
+		options?: Omit<SqliteTransactionOptions, "experimental">,
+	) => T;
 };
