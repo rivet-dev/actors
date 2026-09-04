@@ -29,7 +29,8 @@ use crate::sqlite::{
 	RemoteSqliteRequest, RemoteSqliteRequestEntry, RemoteSqliteResponseEnvelope, SqliteRequest,
 	SqliteRequestEntry, SqliteResponse, cleanup_old_remote_sqlite_requests,
 	cleanup_old_sqlite_requests, fail_remote_sqlite_requests_with_shutdown,
-	fail_sent_remote_sqlite_requests_with_indeterminate_result, fail_sqlite_requests_with_shutdown,
+	fail_sent_remote_sqlite_requests_with_indeterminate_result,
+	fail_sent_sqlite_requests_with_indeterminate_result, fail_sqlite_requests_with_shutdown,
 	handle_remote_sqlite_exec_response, handle_remote_sqlite_execute_batch_response,
 	handle_remote_sqlite_execute_response, handle_remote_sqlite_request,
 	handle_sqlite_commit_finalize_response, handle_sqlite_commit_response,
@@ -473,6 +474,7 @@ async fn envoy_loop(
 							}
 						}
 						fail_sent_remote_sqlite_requests_with_indeterminate_result(&mut ctx);
+						fail_sent_sqlite_requests_with_indeterminate_result(&mut ctx);
 						lost_timeout = handle_conn_close(&ctx, lost_timeout);
 						if evict {
 							observe_envoy_loop_iteration(branch, iter_start);
