@@ -42,11 +42,7 @@ export class Tunnel {
 	#runner: Runner;
 
 	/** Maps request IDs to actor IDs for lookup */
-	#requestToActor: Array<{
-		gatewayId: GatewayId;
-		requestId: RequestId;
-		actorId: string;
-	}> = [];
+	#requestToActor = new Map<string, string>();
 
 	/** Buffer for messages when not connected */
 	#bufferedMessages: Array<{
@@ -114,7 +110,7 @@ export class Tunnel {
 		}
 
 		// Clear the request-to-actor mapping
-		this.#requestToActor = [];
+		this.#requestToActor.clear();
 	}
 
 	async restoreHibernatingRequests(
@@ -414,31 +410,23 @@ export class Tunnel {
 		requestId: RequestId,
 		actorId: string,
 	) {
-		this.#requestToActor.push({ gatewayId, requestId, actorId });
+		const key = `${idToStr(gatewayId)}:${idToStr(requestId)}`;
+		this.#requestToActor.set(key, actorId);
 	}
 
 	#removeRequestToActor(gatewayId: GatewayId, requestId: RequestId) {
-		const index = this.#requestToActor.findIndex(
-			(entry) =>
-				arraysEqual(entry.gatewayId, gatewayId) &&
-				arraysEqual(entry.requestId, requestId),
-		);
-		if (index !== -1) {
-			this.#requestToActor.splice(index, 1);
-		}
+		const key = `${idToStr(gatewayId)}:${idToStr(requestId)}`;
+		this.#requestToActor.delete(key);
 	}
 
 	getRequestActor(
 		gatewayId: GatewayId,
 		requestId: RequestId,
 	): RunnerActor | undefined {
-		const entry = this.#requestToActor.find(
-			(entry) =>
-				arraysEqual(entry.gatewayId, gatewayId) &&
-				arraysEqual(entry.requestId, requestId),
-		);
+		const key = `${idToStr(gatewayId)}:${idToStr(requestId)}`;
+		const actorId = this.#requestToActor.get(key);
 
-		if (!entry) {
+		if (!actorId) {
 			this.log?.warn({
 				msg: "missing requestToActor entry",
 				requestId: idToStr(requestId),
@@ -446,12 +434,12 @@ export class Tunnel {
 			return undefined;
 		}
 
-		const actor = this.#runner.getActor(entry.actorId);
+		const actor = this.#runner.getActor(actorId);
 		if (!actor) {
 			this.log?.warn({
 				msg: "missing actor for requestToActor lookup",
 				requestId: idToStr(requestId),
-				actorId: entry.actorId,
+				actorId,
 			});
 			return undefined;
 		}
