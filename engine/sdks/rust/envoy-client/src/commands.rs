@@ -18,11 +18,10 @@ pub async fn handle_commands(ctx: &mut EnvoyContext, commands: Vec<protocol::Com
 		);
 	}
 
-	// Collect actors with a stop in the raw batch before dedup, so a replayed
-	// (skipped) stop is still re-acked instead of being replayed forever.
-	let stopped_actors: Vec<(String, u32)> = commands
+	// Collect every actor in the raw batch before dedup, so a replayed
+	// (skipped) command is still re-acked instead of being replayed forever.
+	let batch_actors: Vec<(String, u32)> = commands
 		.iter()
-		.filter(|c| matches!(c.inner, protocol::Command::CommandStopActor(_)))
 		.map(|c| (c.checkpoint.actor_id.clone(), c.checkpoint.generation))
 		.collect();
 
@@ -91,18 +90,22 @@ pub async fn handle_commands(ctx: &mut EnvoyContext, commands: Vec<protocol::Com
 		}
 	}
 
-	// Ack stops immediately since their actors are removed before the periodic
-	// tick. Scope to just the stopped actors instead of a full-state ack, and do
-	// not clear dedup; the tick handles full re-acks, recovery, and clearing.
-	if !stopped_actors.is_empty() {
-		send_stop_command_acks(ctx, &stopped_actors).await;
+	// Ack the whole batch immediately. Anything left unacked stays in the
+	// engine's `ActorCommandKey` subspace, and `envoy_conn_prepare` re-streams
+	// that subspace on every reconnect, so a start that waits for the periodic
+	// tick can be replayed for up to `ACK_COMMANDS_INTERVAL_MS` and resurrect a
+	// stopped actor or replace a live one. Scope to just this batch's actors
+	// instead of a full-state ack, and do not clear dedup; the tick handles
+	// full re-acks, recovery, and clearing.
+	if !batch_actors.is_empty() {
+		send_batch_command_acks(ctx, &batch_actors).await;
 	}
 }
 
 /// Ack only the given actors' latest processed command index. Used for the
-/// immediate stop ack. Does not clear dedup (see the race note in
+/// immediate post-batch ack. Does not clear dedup (see the race note in
 /// `send_command_ack`); a failed send is retried by the replayed batch or tick.
-async fn send_stop_command_acks(ctx: &EnvoyContext, actors: &[(String, u32)]) {
+async fn send_batch_command_acks(ctx: &EnvoyContext, actors: &[(String, u32)]) {
 	let mut highest: HashMap<(String, u32), i64> = HashMap::new();
 	for key in actors {
 		if let Some(&index) = ctx.processed_command_idx.get(key) {

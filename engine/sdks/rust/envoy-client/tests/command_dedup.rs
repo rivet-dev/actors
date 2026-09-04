@@ -140,6 +140,26 @@ fn stop_command(actor_id: &str, generation: u32, index: i64) -> protocol::Comman
 	}
 }
 
+fn start_command(actor_id: &str, generation: u32, index: i64) -> protocol::CommandWrapper {
+	protocol::CommandWrapper {
+		checkpoint: protocol::ActorCheckpoint {
+			actor_id: actor_id.to_string(),
+			generation,
+			index,
+		},
+		inner: protocol::Command::CommandStartActor(protocol::CommandStartActor {
+			config: protocol::ActorConfig {
+				name: actor_id.to_string(),
+				key: None,
+				create_ts: 0,
+				input: None,
+			},
+			hibernating_requests: Vec::new(),
+			preloaded_kv: None,
+		}),
+	}
+}
+
 fn execute_request() -> protocol::SqliteExecuteRequest {
 	protocol::SqliteExecuteRequest {
 		namespace_id: "test".to_string(),
@@ -287,6 +307,36 @@ fn decode_ack_checkpoints(msg: WsTxMessage) -> Vec<protocol::ActorCheckpoint> {
 		protocol::ToRivet::ToRivetAckCommands(val) => val.last_command_checkpoints,
 		_ => panic!("expected ToRivetAckCommands"),
 	}
+}
+
+#[tokio::test]
+async fn start_command_is_acked_immediately() {
+	let mut ctx = new_envoy_context();
+	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+	*ctx.shared.ws_tx.lock().await = Some(ws_tx);
+
+	handle_commands(&mut ctx, vec![start_command("actor-a", 1, 1)]).await;
+
+	// A start left unacked stays in the engine's command subspace, which is
+	// re-streamed on every reconnect. Waiting for the periodic tick leaves a
+	// window of `ACK_COMMANDS_INTERVAL_MS` in which a reconnect replays the
+	// start and replaces the live actor.
+	let checkpoints = decode_ack_checkpoints(
+		ws_rx
+			.try_recv()
+			.expect("start should trigger an immediate ack"),
+	);
+	assert_eq!(checkpoints.len(), 1);
+	assert_eq!(checkpoints[0].actor_id, "actor-a");
+	assert_eq!(checkpoints[0].generation, 1);
+	assert_eq!(checkpoints[0].index, 1);
+
+	// Dedup is retained so a replay can still be suppressed in-process until
+	// the tick clears it.
+	assert_eq!(
+		ctx.processed_command_idx.get(&("actor-a".to_string(), 1)),
+		Some(&1)
+	);
 }
 
 #[tokio::test]
