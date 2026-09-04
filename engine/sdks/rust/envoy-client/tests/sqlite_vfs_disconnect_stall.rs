@@ -1,39 +1,31 @@
-//! Reproduction test for the actor-side VFS-SQLite-stall-on-disconnect bug.
+//! Regression test for the actor-side VFS-SQLite-stall-on-disconnect bug.
 //!
-//! Hypothesis under test (H6):
+//! The bug: when the actor-engine WebSocket disconnected with sent-but-unanswered VFS
+//! SQLite requests (`get_pages` / `commit`) in flight, the actor side did not fail those
+//! requests. `ConnClose` only ran the *remote* exec/execute variant
+//! (`fail_sent_remote_sqlite_requests_with_indeterminate_result`), so VFS requests
+//! survived it and were only freed by the periodic cleanup (every 15s, 30s timeout).
+//! During that window the SQLite VFS callback stayed parked in
+//! `runtime.block_on(transport.get_pages(...))`, which blocked the SQLite worker thread
+//! and every subsequent SQLite call on that actor.
 //!
-//!   When the actor-engine WebSocket disconnects with sent-but-unanswered VFS SQLite
-//!   requests (`get_pages` / `commit`) in flight, the actor side does NOT immediately
-//!   fail those requests. Instead, they sit in `ctx.sqlite_requests` until the periodic
-//!   cleanup (every 15s, 30s timeout) expires them. During that ~30s window, the SQLite
-//!   VFS callback is parked in `runtime.block_on(transport.get_pages(...))`, which blocks
-//!   the SQLite worker thread, which blocks all subsequent SQLite calls on that actor.
+//! `fail_sent_sqlite_requests_with_indeterminate_result` closes that gap, and `ConnClose`
+//! now runs both variants.
 //!
-//! The disconnect handler is at
-//! `engine/sdks/rust/envoy-client/src/envoy.rs:363-367` and only calls
-//! `fail_sent_remote_sqlite_requests_with_indeterminate_result` — the *remote* exec/execute
-//! variant. There is no symmetric `fail_sent_sqlite_requests_*` for VFS requests, so they
-//! survive `ConnClose` and only get dropped by the 30s cleanup tick.
+//! This test invokes the same code paths `ConnClose` runs on a synthetic `EnvoyContext`
+//! holding one sent VFS get_pages request and one sent remote-execute request, and
+//! asserts both resolve immediately with `RemoteSqliteIndeterminateResultError`.
 //!
-//! This test does not change any production code. It directly invokes the same code paths
-//! that `ConnClose` runs (`fail_sent_remote_sqlite_requests_with_indeterminate_result`,
-//! `handle_conn_close`) on a synthetic `EnvoyContext` containing one sent VFS get_pages
-//! request and one sent remote-execute request, then measures how long until each oneshot
-//! response future resolves.
-//!
-//! Expected output:
-//!   - Remote exec/execute oneshot resolves IMMEDIATELY with
-//!     `RemoteSqliteIndeterminateResultError` (the existing disconnect path).
-//!   - VFS get_pages oneshot stays pending until `cleanup_old_sqlite_requests` runs and
-//!     finds the entry older than `KV_EXPIRE_MS`. We accelerate that by mutating the
-//!     entry's `timestamp` to a synthetic past value, demonstrating that the only escape
-//!     hatch for a sent VFS request is the timestamp-based expiry. With unmodified
-//!     timestamps the request would sit for 30s.
+//! A lost `commit` reply stays genuinely ambiguous: the engine may have applied it. Failing
+//! fast bounds the stall but does not resolve that, and the retry is still adjudicated by
+//! the head fence (see `lost_commit_response_fails_later_on_head_fence_mismatch` in
+//! `rivet-depot-client`). Reconciling instead would need writer identity in `DBHead`, which
+//! it does not carry.
 //!
 //! Negative-control test (`unsent_vfs_request_quickly_resubmitted_after_reconnect`)
 //! flips one variable: the VFS request is queued *before* the WS goes up, so it never
-//! reaches `sent=true`. The bug must NOT manifest in this case — `process_unsent_sqlite_requests`
-//! must successfully re-send it on reconnect.
+//! reaches `sent=true`. Unsent requests must be left alone for
+//! `process_unsent_sqlite_requests` to re-send on reconnect.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -46,10 +38,10 @@ use rivet_envoy_client::config::{
 use rivet_envoy_client::context::{SharedContext, WsTxMessage};
 use rivet_envoy_client::envoy::EnvoyContext;
 use rivet_envoy_client::handle::EnvoyHandle;
-use rivet_envoy_client::kv::KV_EXPIRE_MS;
 use rivet_envoy_client::sqlite::{
 	RemoteSqliteRequest, SqliteRequest, cleanup_old_sqlite_requests,
-	fail_sent_remote_sqlite_requests_with_indeterminate_result, handle_remote_sqlite_request,
+	fail_sent_remote_sqlite_requests_with_indeterminate_result,
+	fail_sent_sqlite_requests_with_indeterminate_result, handle_remote_sqlite_request,
 	handle_sqlite_request, process_unsent_sqlite_requests,
 };
 use rivet_envoy_client::utils::{BufferMap, RemoteSqliteIndeterminateResultError};
@@ -211,7 +203,7 @@ fn init_tracing() {
 ///    VFS oneshot resolves with the `sqlite request timed out` error. This is the same
 ///    error path that fires in production at ~30s after the disconnect.
 #[tokio::test]
-async fn sent_vfs_request_stalls_on_disconnect() {
+async fn sent_vfs_request_fails_immediately_on_disconnect() {
 	init_tracing();
 	let mut ctx = new_envoy_context();
 
@@ -265,9 +257,10 @@ async fn sent_vfs_request_stalls_on_disconnect() {
 	tracing::info!("ws disconnected; running production ConnClose handler");
 	let before_handler = std::time::Instant::now();
 	fail_sent_remote_sqlite_requests_with_indeterminate_result(&mut ctx);
+	fail_sent_sqlite_requests_with_indeterminate_result(&mut ctx);
 	tracing::info!(
 		elapsed_us = before_handler.elapsed().as_micros() as u64,
-		"ran fail_sent_remote_sqlite_requests_with_indeterminate_result"
+		"ran both ConnClose sqlite failure handlers"
 	);
 
 	// 1) Remote oneshot resolves NOW with indeterminate result. (Existing behavior.)
@@ -288,71 +281,37 @@ async fn sent_vfs_request_stalls_on_disconnect() {
 		"REMOTE: fails immediately on disconnect (existing correct behavior)"
 	);
 
-	// 2) VFS oneshot is STILL pending. The disconnect handler did not touch it.
-	//    We give it a real 500ms wall-clock window to confirm it does not resolve.
-	let stall_probe = Duration::from_millis(500);
-	let stall_start = std::time::Instant::now();
-	let vfs_immediate = tokio::time::timeout(stall_probe, &mut vfs_rx).await;
-	let stall_elapsed = stall_start.elapsed();
-	assert!(
-		vfs_immediate.is_err(),
-		"BUG: VFS sqlite request is still pending after disconnect handler ran. \
-		 In production, this oneshot is what `runtime.block_on(transport.get_pages(...))` \
-		 is parked on inside the SQLite VFS callback."
-	);
-	assert!(
-		ctx.sqlite_requests.contains_key(&0),
-		"VFS request must still be in the pending map"
-	);
-	tracing::warn!(
-		stall_elapsed_ms = stall_elapsed.as_millis() as u64,
-		"BUG REPRODUCED: VFS sqlite_requests entry survives ConnClose; still pending after \
-		 {} ms. Only the 15s/30s cleanup tick can free it.",
-		stall_elapsed.as_millis()
-	);
-
-	// 3) Demonstrate that the timestamp-based cleanup is the only escape hatch. Backdate
-	//    the entry's timestamp by KV_EXPIRE_MS+1ms and run the same `cleanup_old_sqlite_requests`
-	//    function the periodic tick runs.
-	let backdate = Duration::from_millis(KV_EXPIRE_MS + 1);
-	let entry = ctx
-		.sqlite_requests
-		.get_mut(&0)
-		.expect("vfs request still pending");
-	// Walk the Instant backward.
-	entry.timestamp = std::time::Instant::now()
-		.checked_sub(backdate)
-		.expect("instant subtraction");
-	tracing::info!(
-		backdate_ms = backdate.as_millis() as u64,
-		"backdated timestamp to simulate KV_EXPIRE_MS elapsed"
-	);
-	cleanup_old_sqlite_requests(&mut ctx);
-
+	// 2) VFS oneshot resolves NOW too, with the same indeterminate error.
+	let vfs_resolve_start = std::time::Instant::now();
 	let vfs_result = tokio::time::timeout(Duration::from_millis(50), &mut vfs_rx)
 		.await
-		.expect("VFS oneshot must resolve after cleanup")
-		.expect("VFS oneshot must complete");
+		.expect("vfs oneshot must resolve immediately after disconnect")
+		.expect("vfs oneshot must complete");
+	let vfs_elapsed = vfs_resolve_start.elapsed();
 	let vfs_err = match vfs_result {
-		Ok(_) => panic!("VFS request must fail with timed-out error"),
+		Ok(_) => panic!("vfs get_pages must fail with indeterminate"),
 		Err(err) => err,
 	};
-	let msg = format!("{vfs_err:#}");
-	assert!(
-		msg.contains("sqlite request timed out"),
-		"unexpected VFS error: {msg}"
-	);
+	let vfs_indet = vfs_err
+		.downcast_ref::<RemoteSqliteIndeterminateResultError>()
+		.expect("vfs get_pages must fail with RemoteSqliteIndeterminateResultError");
+	assert_eq!(vfs_indet.operation, "get_pages");
 	assert!(
 		!ctx.sqlite_requests.contains_key(&0),
-		"VFS request must be removed by cleanup"
+		"vfs request must be removed from the pending map by the disconnect handler"
 	);
-	tracing::warn!(
-		error = %msg,
-		stall_window_ms = KV_EXPIRE_MS,
-		"In production this is the only path that frees the VFS request. \
-		 During the entire {KV_EXPIRE_MS}ms window the SQLite VFS callback is blocked \
-		 on `runtime.block_on(transport.get_pages(...))`, blocking the SQLite worker \
-		 thread and any subsequent SQLite call on this actor.",
+	tracing::info!(
+		elapsed_us = vfs_elapsed.as_micros() as u64,
+		operation = %vfs_indet.operation,
+		"VFS: fails immediately on disconnect, matching the remote path"
+	);
+
+	// 3) The expiry tick is no longer the escape hatch for a sent request: there is
+	//    nothing left for it to reap.
+	cleanup_old_sqlite_requests(&mut ctx);
+	assert!(
+		ctx.sqlite_requests.is_empty(),
+		"no sent vfs request should survive to the expiry tick"
 	);
 }
 

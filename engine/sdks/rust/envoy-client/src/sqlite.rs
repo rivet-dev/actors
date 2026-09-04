@@ -518,6 +518,37 @@ pub fn fail_sqlite_requests_with_shutdown(ctx: &mut EnvoyContext) {
 	}
 }
 
+/// Fails every sent-but-unanswered VFS request after the websocket drops.
+///
+/// Without this a sent request survives `ConnClose` and is only freed by the
+/// `KV_EXPIRE_MS` cleanup tick. The VFS callback that is parked on the response
+/// blocks the SQLite worker thread for that whole window, which stalls every
+/// subsequent SQLite call on the actor. Unsent requests are left in place for
+/// `process_unsent_sqlite_requests` to resend on reconnect.
+pub fn fail_sent_sqlite_requests_with_indeterminate_result(ctx: &mut EnvoyContext) {
+	let request_ids: Vec<u32> = ctx
+		.sqlite_requests
+		.iter()
+		.filter(|(_, request)| request.sent)
+		.map(|(request_id, _)| *request_id)
+		.collect();
+
+	for request_id in request_ids {
+		if let Some(request) = ctx.sqlite_requests.remove(&request_id) {
+			METRICS.sqlite_requests_inflight.dec();
+			let operation = request.request.kind();
+			tracing::warn!(
+				request_id,
+				operation,
+				"sqlite response lost after websocket disconnect"
+			);
+			let _ = request.response_tx.send(Err(anyhow::anyhow!(
+				RemoteSqliteIndeterminateResultError { operation }
+			)));
+		}
+	}
+}
+
 pub fn fail_remote_sqlite_requests_with_shutdown(ctx: &mut EnvoyContext) {
 	for (_id, request) in ctx.remote_sqlite_requests.drain() {
 		METRICS.remote_sqlite_requests_inflight.dec();
