@@ -22,8 +22,8 @@ use crate::actor::factory::ActorFactory;
 #[cfg(feature = "native-runtime")]
 use crate::development_process::DevelopmentProcessManager;
 use crate::registry::{
-	CoreEnvoyHandle, CoreEnvoyStatus, RegistryCallbacks, RegistryDispatcher, ServeConfig,
-	should_manage_engine,
+	ActorFactoryProvider, CoreEnvoyHandle, CoreEnvoyStatus, RegistryCallbacks, RegistryDispatcher,
+	ServeConfig, should_manage_engine,
 };
 use crate::runtime::RuntimeSpawner;
 use crate::time::{sleep, timeout};
@@ -168,8 +168,13 @@ impl CoreServerlessRuntime {
 			anyhow::bail!("engine process spawning requires the `native-runtime` feature");
 		}
 
+		let actor_configs = factories
+			.iter()
+			.map(|(name, factory)| (name.clone(), factory.config().clone()))
+			.collect();
 		let dispatcher = Arc::new(RegistryDispatcher::new(
-			factories,
+			ActorFactoryProvider::Static(factories),
+			actor_configs,
 			config.handle_inspector_http_in_runtime,
 		));
 		let base_path = normalize_base_path(config.serverless_base_path.as_deref());

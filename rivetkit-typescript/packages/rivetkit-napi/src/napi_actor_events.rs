@@ -20,6 +20,8 @@ use crate::NapiInvalidState;
 #[cfg(test)]
 use crate::actor_context::EndReason;
 use crate::actor_context::{ActorContext, RegisteredTask, state_deltas_from_payload};
+#[cfg(test)]
+use crate::actor_factory::CallbackEnvironment;
 use crate::actor_factory::{
 	ActionPayload, AdapterConfig, BeforeActionResponsePayload, BeforeConnectPayload,
 	BeforeSubscribePayload, CallbackBindings, ConnectionPayload, CreateConnStatePayload,
@@ -39,6 +41,14 @@ struct RunHandlerActiveGuard {
 
 struct DispatchCancelGuard {
 	token: CancellationToken,
+}
+
+struct AdapterAbortGuard {
+	token: CancellationToken,
+}
+
+struct RunHandlerAbortGuard {
+	run_handler: RunHandlerSlot,
 }
 
 impl RunHandlerActiveGuard {
@@ -91,6 +101,20 @@ impl Drop for DispatchCancelGuard {
 	}
 }
 
+impl Drop for AdapterAbortGuard {
+	fn drop(&mut self) {
+		self.token.cancel();
+	}
+}
+
+impl Drop for RunHandlerAbortGuard {
+	fn drop(&mut self) {
+		if let Some(handle) = self.run_handler.lock().take() {
+			handle.abort();
+		}
+	}
+}
+
 static ACTION_TIMED_OUT_SCHEMA: RivetErrorSchema = RivetErrorSchema {
 	group: "actor",
 	code: "action_timed_out",
@@ -125,6 +149,9 @@ pub(crate) async fn run_adapter_loop(
 	let ctx = ActorContext::new(core_ctx.clone());
 	ctx.reset_runtime_shared_state();
 	let abort = CancellationToken::new();
+	let _adapter_abort_guard = AdapterAbortGuard {
+		token: abort.clone(),
+	};
 	ctx.attach_napi_abort_token(abort.clone());
 	let (registered_task_tx, mut registered_task_rx) = unbounded_channel();
 	ctx.attach_task_sender(registered_task_tx);
@@ -162,6 +189,12 @@ pub(crate) async fn run_adapter_loop(
 			}
 			return Err(error);
 		}
+	};
+	// Core intentionally drops this entire adapter future when its worker
+	// environment disappears. Keep an abort-on-drop owner so the separately
+	// spawned `run` task cannot detach while retaining TSFNs and actor context.
+	let _run_handler_abort_guard = RunHandlerAbortGuard {
+		run_handler: run_handler.clone(),
 	};
 
 	run_event_loop(

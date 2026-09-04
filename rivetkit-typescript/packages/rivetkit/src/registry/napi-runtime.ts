@@ -48,6 +48,9 @@ import type {
 	RuntimeStateDeltaPayload,
 	RuntimeWebSocketEvent,
 	RuntimeWorkflowKvWrite,
+	RuntimeWorkerRegistration,
+	RuntimeWorkerRetireRequest,
+	RuntimeWorkerSpawnRequest,
 	SqliteTransactionHandle,
 	WebSocketHandle,
 } from "./runtime";
@@ -280,6 +283,69 @@ export class NapiCoreRuntime implements CoreRuntime {
 		factory: ActorFactoryHandle,
 	): void {
 		asNativeRegistry(registry).register(name, asNativeFactory(factory));
+	}
+
+	registerActorConfig(
+		registry: RegistryHandle,
+		name: string,
+		config: RuntimeActorConfig,
+	): void {
+		asNativeRegistry(registry).registerActorConfig(name, config);
+	}
+
+	configureWorkerPool(
+		registry: RegistryHandle,
+		actorsPerThread: number,
+		baselineWorkerLimit: number,
+		requestSpawns: (requests: RuntimeWorkerSpawnRequest[]) => void,
+		retireWorker: (request: RuntimeWorkerRetireRequest) => void,
+	): string {
+		return asNativeRegistry(registry).configureWorkerPool(
+			actorsPerThread,
+			baselineWorkerLimit,
+			requestSpawns,
+			retireWorker,
+		);
+	}
+
+	attachWorker(
+		registry: RegistryHandle,
+		poolId: string,
+		workerId: number,
+		spawnToken: string,
+		workerClass: "baseline" | "overflow",
+	): RuntimeWorkerRegistration {
+		return asNativeRegistry(registry).attachWorker(
+			poolId,
+			workerId,
+			spawnToken,
+			workerClass,
+		);
+	}
+
+	detachWorker(registry: RegistryHandle): void {
+		asNativeRegistry(registry).detachWorker();
+	}
+
+	workerSpawnFailed(
+		registry: RegistryHandle,
+		workerId: number,
+		spawnToken: string,
+		reason: string,
+	): void {
+		asNativeRegistry(registry).workerSpawnFailed(
+			workerId,
+			spawnToken,
+			reason,
+		);
+	}
+
+	workerExited(
+		registry: RegistryHandle,
+		workerId: number,
+		workerEpoch: number,
+	): void {
+		asNativeRegistry(registry).workerExited(workerId, workerEpoch);
 	}
 
 	async serveRegistry(

@@ -127,6 +127,15 @@ export const RegistryConfigSchema = z
 		wasm: WasmRuntimeConfigSchema.optional().default(() => ({})),
 
 		/**
+		 * Runs actor JavaScript on Node.js worker threads, with this many live
+		 * actors allowed on each thread. Actors remain pinned to their thread for
+		 * the lifetime of that actor generation.
+		 *
+		 * @experimental
+		 */
+		actorsPerThread: z.number().int().positive().safe().optional(),
+
+		/**
 		 * @experimental
 		 *
 		 * SQLite backend selection.
@@ -581,6 +590,15 @@ export const DocRegistryConfigSchema = z
 			.optional()
 			.describe(
 				"Maximum size of outgoing WebSocket messages in bytes. Default: 1048576",
+			),
+		actorsPerThread: z
+			.number()
+			.int()
+			.positive()
+			.safe()
+			.optional()
+			.describe(
+				"Hard limit on resident actor generations per Node.js worker thread, including actors that are starting, running, or stopping. Omit to run actor JavaScript on the main thread.",
 			),
 		noWelcome: z
 			.boolean()

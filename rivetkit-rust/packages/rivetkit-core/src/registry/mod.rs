@@ -34,7 +34,7 @@ use url::Url;
 use vbare::OwnedVersionedData;
 
 use crate::actor::action::ActionDispatchError;
-use crate::actor::config::CanHibernateWebSocket;
+use crate::actor::config::{ActorConfig, CanHibernateWebSocket};
 use crate::actor::connection::{ConnHandle, HibernatableConnectionMetadata};
 use crate::actor::context::{ActorContext, InspectorAttachGuard};
 use crate::actor::factory::ActorFactory;
@@ -67,13 +67,35 @@ mod inspector_ws;
 #[cfg(feature = "native-runtime")]
 mod runner_config;
 mod websocket;
+#[cfg(feature = "native-runtime")]
+pub mod worker_pool;
 
 use inspector::build_actor_inspector;
 use websocket::is_actor_connect_path;
+#[cfg(feature = "native-runtime")]
+use worker_pool::{
+	ActorFactoryLease, ActorWorkerPool, ActorWorkerPoolCallbacks, ActorWorkerPoolConfig,
+};
 
 #[derive(Default)]
 pub struct CoreRegistry {
 	factories: HashMap<String, Arc<ActorFactory>>,
+	actor_configs: HashMap<String, ActorConfig>,
+	#[cfg(feature = "native-runtime")]
+	worker_pool: Option<Arc<ActorWorkerPool>>,
+}
+
+pub(crate) enum ActorFactoryProvider {
+	Static(HashMap<String, Arc<ActorFactory>>),
+	#[cfg(feature = "native-runtime")]
+	WorkerPool(Arc<ActorWorkerPool>),
+}
+
+struct ActorFactorySelection {
+	factory: Arc<ActorFactory>,
+	runtime_lost: Option<CancellationToken>,
+	#[cfg(feature = "native-runtime")]
+	lease: Option<ActorFactoryLease>,
 }
 
 #[derive(Clone)]
@@ -131,6 +153,17 @@ struct ActorTaskHandle {
 	lifecycle: mpsc::UnboundedSender<LifecycleCommand>,
 	dispatch: mpsc::UnboundedSender<DispatchCommand>,
 	join: Arc<TokioMutex<Option<JoinHandle<Result<()>>>>>,
+	#[cfg(feature = "native-runtime")]
+	worker_lease: Arc<Mutex<Option<ActorFactoryLease>>>,
+}
+
+impl ActorTaskHandle {
+	#[cfg(feature = "native-runtime")]
+	fn release_worker_lease(&self) {
+		if let Some(lease) = self.worker_lease.lock().take() {
+			lease.release();
+		}
+	}
 }
 
 type ActiveActorInstance = Arc<ActorTaskHandle>;
@@ -165,12 +198,19 @@ struct PendingStop {
 }
 
 pub(crate) struct RegistryDispatcher {
-	pub(crate) factories: HashMap<String, Arc<ActorFactory>>,
+	factory_provider: ActorFactoryProvider,
+	actor_configs: HashMap<String, ActorConfig>,
 	actor_instances: SccHashMap<String, ActorInstanceState>,
-	starting_instances: SccHashMap<String, Arc<Notify>>,
+	starting_instances: SccHashMap<String, StartingActorInstance>,
 	pending_stops: SccHashMap<String, PendingStop>,
 	region: String,
 	handle_inspector_http_in_runtime: bool,
+}
+
+#[derive(Clone)]
+struct StartingActorInstance {
+	generation: u32,
+	notify: Arc<Notify>,
 }
 
 pub(crate) struct RegistryCallbacks {
@@ -542,16 +582,58 @@ impl CoreRegistry {
 	}
 
 	pub fn register(&mut self, name: &str, factory: ActorFactory) {
+		self.actor_configs
+			.insert(name.to_owned(), factory.config().clone());
 		self.factories.insert(name.to_owned(), Arc::new(factory));
 	}
 
 	pub fn register_shared(&mut self, name: &str, factory: Arc<ActorFactory>) {
+		self.actor_configs
+			.insert(name.to_owned(), factory.config().clone());
 		self.factories.insert(name.to_owned(), factory);
+	}
+
+	pub fn register_config(&mut self, name: &str, config: ActorConfig) {
+		self.actor_configs.insert(name.to_owned(), config);
+	}
+
+	#[cfg(feature = "native-runtime")]
+	pub fn enable_worker_pool(
+		&mut self,
+		config: ActorWorkerPoolConfig,
+		callbacks: ActorWorkerPoolCallbacks,
+	) -> Result<Arc<ActorWorkerPool>> {
+		if self.worker_pool.is_some() {
+			anyhow::bail!("actor worker pool is already configured");
+		}
+		if !self.factories.is_empty() {
+			anyhow::bail!(
+				"main worker-pool registry must register actor configs without callback factories"
+			);
+		}
+		let expected = self
+			.actor_configs
+			.iter()
+			.map(|(name, config)| (name.clone(), config.worker_pool_fingerprint()));
+		let pool = ActorWorkerPool::new(config, expected, callbacks);
+		self.worker_pool = Some(pool.clone());
+		Ok(pool)
+	}
+
+	#[cfg(feature = "native-runtime")]
+	pub fn into_worker_factories(self) -> Result<HashMap<String, Arc<ActorFactory>>> {
+		if self.worker_pool.is_some() {
+			anyhow::bail!("a worker registration registry cannot host another worker pool");
+		}
+		if self.factories.len() != self.actor_configs.len() {
+			anyhow::bail!("worker registry is missing actor callback factories");
+		}
+		Ok(self.factories)
 	}
 
 	pub fn normal_metadata_payload(&self, config: &ServeConfig) -> ServerlessMetadataPayload {
 		serverless_metadata_payload(
-			build_actor_metadata_map_from_factories(&self.factories),
+			build_actor_metadata_map_from_configs(&self.actor_configs),
 			config,
 			ServerlessMetadataEnvoyKind::Normal {},
 		)
@@ -559,7 +641,7 @@ impl CoreRegistry {
 
 	pub fn serverless_metadata_payload(&self, config: &ServeConfig) -> ServerlessMetadataPayload {
 		serverless_metadata_payload(
-			build_actor_metadata_map_from_factories(&self.factories),
+			build_actor_metadata_map_from_configs(&self.actor_configs),
 			config,
 			ServerlessMetadataEnvoyKind::Serverless {},
 		)
@@ -592,6 +674,8 @@ impl CoreRegistry {
 			config.pool_name.clone(),
 		);
 
+		#[cfg(feature = "native-runtime")]
+		let worker_pool = self.worker_pool.clone();
 		let dispatcher = self.into_dispatcher(&config);
 		let manage_engine = should_manage_engine(&config.endpoint, config.engine_spawn)?;
 		#[cfg(feature = "native-runtime")]
@@ -675,13 +759,25 @@ impl CoreRegistry {
 		tokio::join!(shutdown_envoy, shutdown_development_processes);
 		#[cfg(not(feature = "native-runtime"))]
 		shutdown_envoy.await;
+		#[cfg(feature = "native-runtime")]
+		if let Some(worker_pool) = worker_pool {
+			worker_pool.shutdown();
+		}
 
 		Ok(())
 	}
 
 	fn into_dispatcher(self, config: &ServeConfig) -> Arc<RegistryDispatcher> {
+		#[cfg(feature = "native-runtime")]
+		let factory_provider = match self.worker_pool {
+			Some(pool) => ActorFactoryProvider::WorkerPool(pool),
+			None => ActorFactoryProvider::Static(self.factories),
+		};
+		#[cfg(not(feature = "native-runtime"))]
+		let factory_provider = ActorFactoryProvider::Static(self.factories);
 		Arc::new(RegistryDispatcher::new(
-			self.factories,
+			factory_provider,
+			self.actor_configs,
 			config.handle_inspector_http_in_runtime,
 		))
 	}
@@ -690,17 +786,23 @@ impl CoreRegistry {
 		self,
 		config: ServeConfig,
 	) -> Result<crate::serverless::CoreServerlessRuntime> {
+		#[cfg(feature = "native-runtime")]
+		if self.worker_pool.is_some() {
+			anyhow::bail!("actor worker threads are not supported in serverless mode");
+		}
 		crate::serverless::CoreServerlessRuntime::new(self.factories, config).await
 	}
 }
 
 impl RegistryDispatcher {
 	pub(crate) fn new(
-		factories: HashMap<String, Arc<ActorFactory>>,
+		factory_provider: ActorFactoryProvider,
+		actor_configs: HashMap<String, ActorConfig>,
 		handle_inspector_http_in_runtime: bool,
 	) -> Self {
 		Self {
-			factories,
+			factory_provider,
+			actor_configs,
 			actor_instances: SccHashMap::new(),
 			starting_instances: SccHashMap::new(),
 			pending_stops: SccHashMap::new(),
@@ -710,7 +812,46 @@ impl RegistryDispatcher {
 	}
 
 	pub(crate) fn build_actor_metadata_map(&self) -> HashMap<String, JsonValue> {
-		build_actor_metadata_map_from_factories(&self.factories)
+		build_actor_metadata_map_from_configs(&self.actor_configs)
+	}
+
+	fn actor_config(&self, actor_name: &str) -> Option<&ActorConfig> {
+		self.actor_configs.get(actor_name)
+	}
+
+	async fn acquire_factory(
+		&self,
+		actor_id: &str,
+		generation: u32,
+		actor_name: &str,
+	) -> Result<ActorFactorySelection> {
+		#[cfg(not(feature = "native-runtime"))]
+		let _ = (actor_id, generation);
+		match &self.factory_provider {
+			ActorFactoryProvider::Static(factories) => {
+				let factory = factories.get(actor_name).cloned().ok_or_else(|| {
+					ActorRuntime::NotRegistered {
+						actor_name: actor_name.to_owned(),
+					}
+					.build()
+				})?;
+				Ok(ActorFactorySelection {
+					factory,
+					runtime_lost: None,
+					#[cfg(feature = "native-runtime")]
+					lease: None,
+				})
+			}
+			#[cfg(feature = "native-runtime")]
+			ActorFactoryProvider::WorkerPool(pool) => {
+				let lease = pool.acquire(actor_id, generation, actor_name).await?;
+				Ok(ActorFactorySelection {
+					factory: lease.factory(),
+					runtime_lost: Some(lease.worker_lost()),
+					lease: Some(lease),
+				})
+			}
+		}
 	}
 }
 
@@ -747,13 +888,12 @@ pub(crate) fn serverless_metadata_payload(
 	}
 }
 
-fn build_actor_metadata_map_from_factories(
-	factories: &HashMap<String, Arc<ActorFactory>>,
+fn build_actor_metadata_map_from_configs(
+	configs: &HashMap<String, ActorConfig>,
 ) -> HashMap<String, JsonValue> {
-	factories
+	configs
 		.iter()
-		.map(|(actor_name, factory)| {
-			let config = factory.config();
+		.map(|(actor_name, config)| {
 			let mut metadata = serde_json::Map::new();
 			if let Some(icon) = &config.icon {
 				metadata.insert("icon".to_owned(), json!(icon));
@@ -766,23 +906,57 @@ fn build_actor_metadata_map_from_factories(
 		.collect()
 }
 
+#[cfg(test)]
+fn build_actor_metadata_map_from_factories(
+	factories: &HashMap<String, Arc<ActorFactory>>,
+) -> HashMap<String, JsonValue> {
+	let configs = factories
+		.iter()
+		.map(|(name, factory)| (name.clone(), factory.config().clone()))
+		.collect();
+	build_actor_metadata_map_from_configs(&configs)
+}
+
 impl RegistryDispatcher {
 	async fn start_actor(self: &Arc<Self>, request: StartActorRequest) -> Result<()> {
 		let startup_notify = Arc::new(Notify::new());
 		let _ = self
 			.starting_instances
-			.insert_async(request.actor_id.clone(), startup_notify.clone())
+			.insert_async(
+				request.actor_id.clone(),
+				StartingActorInstance {
+					generation: request.generation,
+					notify: startup_notify.clone(),
+				},
+			)
 			.await;
-		let factory = self
-			.factories
-			.get(&request.actor_name)
-			.cloned()
-			.ok_or_else(|| {
-				ActorRuntime::NotRegistered {
-					actor_name: request.actor_name.clone(),
+		let selection = match self
+			.acquire_factory(&request.actor_id, request.generation, &request.actor_name)
+			.await
+		{
+			Ok(selection) => selection,
+			Err(error) => {
+				let pending_stop = self
+					.pending_stops
+					.remove_async(&request.actor_id.clone())
+					.await
+					.map(|(_, pending_stop)| pending_stop);
+				if let Some(pending_stop) = pending_stop {
+					let _ = pending_stop
+						.stop_handle
+						.fail(anyhow::Error::new(RivetError::extract(&error)));
 				}
-				.build()
-			})?;
+				self.finish_starting_actor(&request.actor_id, request.generation)
+					.await;
+				return Err(error);
+			}
+		};
+		let ActorFactorySelection {
+			factory,
+			runtime_lost,
+			#[cfg(feature = "native-runtime")]
+			lease,
+		} = selection;
 		let (lifecycle_tx, lifecycle_rx) = mpsc::unbounded_channel();
 		let (dispatch_tx, dispatch_rx) = mpsc::unbounded_channel();
 		let (lifecycle_events_tx, lifecycle_events_rx) = mpsc::unbounded_channel();
@@ -807,7 +981,7 @@ impl RegistryDispatcher {
 				})
 			}
 		})));
-		let task = ActorTask::new(
+		let task = ActorTask::new_with_runtime_loss(
 			request.actor_id.clone(),
 			request.generation,
 			lifecycle_rx,
@@ -816,8 +990,11 @@ impl RegistryDispatcher {
 			factory.clone(),
 			request.ctx.clone(),
 			request.input,
+			runtime_lost,
 		);
-		let join = RuntimeSpawner::spawn(task.run());
+		let join = Arc::new(TokioMutex::new(Some(RuntimeSpawner::spawn(task.run()))));
+		#[cfg(feature = "native-runtime")]
+		let worker_lease = Arc::new(Mutex::new(lease));
 
 		let (start_tx, start_rx) = oneshot::channel();
 		let result: Result<Arc<ActorTaskHandle>> = async {
@@ -836,9 +1013,11 @@ impl RegistryDispatcher {
 				ctx: request.ctx.clone(),
 				factory,
 				inspector,
-				lifecycle: lifecycle_tx,
-				dispatch: dispatch_tx,
-				join: Arc::new(TokioMutex::new(Some(join))),
+				lifecycle: lifecycle_tx.clone(),
+				dispatch: dispatch_tx.clone(),
+				join: join.clone(),
+				#[cfg(feature = "native-runtime")]
+				worker_lease: worker_lease.clone(),
 			}))
 		}
 		.await
@@ -865,9 +1044,7 @@ impl RegistryDispatcher {
 						},
 					)
 					.await;
-					let _ = self
-						.starting_instances
-						.remove_async(&request.actor_id.clone())
+					self.finish_starting_actor(&request.actor_id, request.generation)
 						.await;
 
 					let dispatcher = self.clone();
@@ -891,8 +1068,6 @@ impl RegistryDispatcher {
 							.remove_stopping_actor_instance(&actor_id, &instance)
 							.await;
 					});
-					startup_notify.notify_waiters();
-
 					Ok(())
 				} else {
 					self.set_actor_instance_state(
@@ -900,23 +1075,59 @@ impl RegistryDispatcher {
 						ActorInstanceState::Active(instance),
 					)
 					.await;
-					let _ = self
-						.starting_instances
-						.remove_async(&request.actor_id.clone())
+					self.finish_starting_actor(&request.actor_id, request.generation)
 						.await;
-					startup_notify.notify_waiters();
 					Ok(())
 				}
 			}
 			Err(error) => {
-				let _ = self
-					.starting_instances
-					.remove_async(&request.actor_id.clone())
+				request.ctx.set_local_alarm_callback(None);
+				request.ctx.configure_lifecycle_events(None);
+				drop(lifecycle_tx);
+				drop(dispatch_tx);
+				if let Some(join) = join.lock().await.take()
+					&& let Err(join_error) = join.await
+				{
+					tracing::warn!(
+						actor_id = %request.actor_id,
+						?join_error,
+						"failed to join actor task after startup failure",
+					);
+				}
+				#[cfg(feature = "native-runtime")]
+				if let Some(lease) = worker_lease.lock().take() {
+					lease.release();
+				}
+				self.finish_starting_actor(&request.actor_id, request.generation)
 					.await;
-				startup_notify.notify_waiters();
 				Err(error)
 			}
 		}
+	}
+
+	async fn finish_starting_actor(&self, actor_id: &str, generation: u32) {
+		let Some((_, starting)) = self
+			.starting_instances
+			.remove_if_async(&actor_id.to_owned(), |starting| {
+				starting.generation == generation
+			})
+			.await
+		else {
+			if let Some(starting) = self
+				.starting_instances
+				.get_async(&actor_id.to_owned())
+				.await
+			{
+				tracing::warn!(
+					actor_id,
+					expected_generation = generation,
+					actual_generation = starting.generation,
+					"refused to remove a different actor generation from the startup tracker",
+				);
+			}
+			return;
+		};
+		starting.notify.notify_waiters();
 	}
 
 	async fn set_actor_instance_state(&self, actor_id: String, state: ActorInstanceState) {
@@ -1166,6 +1377,8 @@ impl RegistryDispatcher {
 			Ok(())
 		};
 		instance.ctx.configure_lifecycle_events(None);
+		#[cfg(feature = "native-runtime")]
+		instance.release_worker_lease();
 
 		if let (Err(shutdown_error), Err(join_error)) = (&shutdown_result, &join_result) {
 			tracing::warn!(
@@ -1218,7 +1431,7 @@ impl RegistryDispatcher {
 		generation: u32,
 		actor_name: &str,
 		key: ActorKey,
-		factory: &ActorFactory,
+		config: &ActorConfig,
 	) -> Result<ActorContext> {
 		let formatted_key = format_actor_key(&key);
 		let ctx = ActorContext::build(
@@ -1228,15 +1441,15 @@ impl RegistryDispatcher {
 			self.region.clone(),
 			Some(generation),
 			handle.get_envoy_key().to_owned(),
-			factory.config().clone(),
+			config.clone(),
 			LegacyActorKv::new(handle.clone(), actor_id.to_owned()),
 			SqliteDb::new_with_remote_sqlite(
 				handle.clone(),
 				actor_id.to_owned(),
 				Some(formatted_key),
 				Some(generation as u64),
-				factory.config().has_database,
-				factory.config().remote_sqlite,
+				config.has_database,
+				config.remote_sqlite,
 			)?,
 		);
 		ctx.configure_envoy(handle, Some(generation));

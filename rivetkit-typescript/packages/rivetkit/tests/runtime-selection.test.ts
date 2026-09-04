@@ -144,6 +144,61 @@ describe("runtime selection", () => {
 		expect(nativeLoads).toBe(0);
 	});
 
+	test("actorsPerThread forces the native runtime without wasm fallback", async () => {
+		const nativeRuntime = fakeRuntime("napi");
+		let wasmLoads = 0;
+		const runtime = await loadConfiguredRuntime(
+			parseConfig({ runtime: "auto", actorsPerThread: 4 }),
+			fakeLoaders({
+				nativeRuntime,
+				onLoadWasm: () => {
+					wasmLoads += 1;
+				},
+			}),
+		);
+
+		expect(runtime).toBe(nativeRuntime);
+		expect(wasmLoads).toBe(0);
+	});
+
+	test("actorsPerThread rejects the wasm runtime", async () => {
+		await expect(
+			loadConfiguredRuntime(
+				parseConfig({ runtime: "wasm", actorsPerThread: 1 }),
+				fakeLoaders({}),
+			),
+		).rejects.toThrow(/requires the native Node.js runtime/);
+	});
+
+	test("actorsPerThread rejects edge-like hosts", async () => {
+		await expect(
+			loadConfiguredRuntime(
+				parseConfig({ actorsPerThread: 1 }),
+				fakeLoaders({ host: "edge-like" }),
+			),
+		).rejects.toThrow(/only supported in Node.js/);
+	});
+
+	test.each([
+		"Bun",
+		"Deno",
+	] as const)("actorsPerThread rejects the %s Node compatibility layer", async (runtimeGlobal) => {
+		const config = parseConfig({ actorsPerThread: 1 });
+		const globals = globalThis as typeof globalThis &
+			Record<"Bun" | "Deno", unknown>;
+		globals[runtimeGlobal] = {};
+		try {
+			await expect(
+				loadConfiguredRuntime(
+					config,
+					fakeLoaders({ host: "node-like" }),
+				),
+			).rejects.toThrow(/Bun and Deno are not supported/);
+		} finally {
+			delete globals[runtimeGlobal];
+		}
+	});
+
 	test("passes explicit wasm init input to the wasm loader", async () => {
 		const initInput = new Uint8Array([0, 1, 2]);
 		let observedInitInput: unknown;

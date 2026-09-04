@@ -6356,6 +6356,7 @@ dependencies = [
  "tracing-logfmt",
  "tracing-stackdriver",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

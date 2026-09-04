@@ -299,6 +299,10 @@ export interface JsKvEntry {
   key: Buffer
   value: Buffer
 }
+export interface JsWorkerRegistration {
+  workerId: number
+  workerEpoch: number
+}
 /** N-API wrapper around `rivetkit-core::ActorContext`. */
 export declare class ActorContext {
   state(): Buffer
@@ -443,6 +447,12 @@ export declare class QueueMessage {
 export declare class CoreRegistry {
   constructor()
   register(name: string, factory: NapiActorFactory): void
+  registerActorConfig(name: string, config: JsActorConfig): void
+  configureWorkerPool(actorsPerThread: number, baselineWorkerLimit: number, requestSpawns: (...args: any[]) => any, retireWorker: (...args: any[]) => any): string
+  attachWorker(poolId: string, workerId: number, spawnToken: string, workerClass: string): JsWorkerRegistration
+  detachWorker(): void
+  workerSpawnFailed(workerId: number, spawnToken: string, reason: string): void
+  workerExited(workerId: number, workerEpoch: number): void
   serve(config: JsServeConfig): Promise<void>
   /**
    * Wait until the serverful envoy has completed its Engine registration.

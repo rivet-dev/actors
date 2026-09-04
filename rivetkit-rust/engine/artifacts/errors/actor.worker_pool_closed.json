@@ -1,0 +1,5 @@
+{
+  "code": "worker_pool_closed",
+  "group": "actor",
+  "message": "Worker pool is closed"
+}

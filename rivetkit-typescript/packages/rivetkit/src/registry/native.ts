@@ -236,6 +236,42 @@ export async function loadConfiguredRuntime(
 	loaders: RuntimeLoaders = defaultRuntimeLoaders,
 ): Promise<CoreRuntime> {
 	const requested = resolveRuntimeKind(config.runtime);
+	if (config.actorsPerThread !== undefined) {
+		if (requested === "wasm") {
+			throw new RivetError(
+				"config",
+				"worker_threads_require_native",
+				"actorsPerThread requires the native Node.js runtime.",
+				{ public: true, statusCode: 400 },
+			);
+		}
+		if (loaders.detectHost() !== "node-like") {
+			throw new RivetError(
+				"config",
+				"worker_threads_require_node",
+				"actorsPerThread is only supported in Node.js server deployments.",
+				{ public: true, statusCode: 400 },
+			);
+		}
+		const workerGlobal = globalThis as typeof globalThis & {
+			Bun?: unknown;
+			Deno?: unknown;
+			process?: { versions?: { node?: string } };
+		};
+		if (
+			workerGlobal.Bun !== undefined ||
+			workerGlobal.Deno !== undefined ||
+			typeof workerGlobal.process?.versions?.node !== "string"
+		) {
+			throw new RivetError(
+				"config",
+				"worker_threads_require_node",
+				"actorsPerThread requires Node.js; Bun and Deno are not supported.",
+				{ public: true, statusCode: 400 },
+			);
+		}
+		return (await loaders.loadNative()).runtime;
+	}
 
 	if (requested === "native") {
 		return (await loaders.loadNative()).runtime;
@@ -3791,7 +3827,7 @@ function withConnContext(
 	});
 }
 
-function buildActorConfig(
+export function buildActorConfig(
 	definition: AnyActorDefinition,
 	registryConfig: RegistryConfig,
 	runtimeKind: "napi" | "wasm",
@@ -5505,6 +5541,8 @@ export async function buildRegistryWithRuntime(
 	runtime: CoreRuntime;
 	registry: RegistryHandle;
 	serveConfig: RuntimeServeConfig;
+	workerPoolId?: string;
+	workerPool?: import("./node-worker-pool").NodeActorWorkerPool;
 }> {
 	if (
 		config.test?.enabled &&
@@ -5521,26 +5559,101 @@ export async function buildRegistryWithRuntime(
 	}
 
 	const registry = runtime.createRegistry();
+	let workerPoolId: string | undefined;
+	let workerPool:
+		| import("./node-worker-pool").NodeActorWorkerPool
+		| undefined;
 
-	for (const [name, definition] of Object.entries(config.use)) {
-		runtime.registerActor(
-			registry,
-			name,
-			buildNativeFactory(runtime, config, definition),
+	if (config.actorsPerThread !== undefined) {
+		if (runtime.kind !== "napi") {
+			throw new Error(
+				"actorsPerThread requires the native Node.js runtime",
+			);
+		}
+		if (!runtime.registerActorConfig) {
+			throw new Error(
+				"actorsPerThread requires native actor-config registration support",
+			);
+		}
+		for (const [name, definition] of Object.entries(config.use)) {
+			runtime.registerActorConfig(
+				registry,
+				name,
+				buildActorConfig(definition, config, runtime.kind),
+			);
+		}
+		const { configureNodeActorWorkerPool } = await import(
+			"./node-worker-pool"
 		);
+		workerPool = await configureNodeActorWorkerPool(
+			runtime,
+			registry,
+			config.actorsPerThread,
+		);
+		workerPoolId = workerPool.poolId;
+	} else {
+		for (const [name, definition] of Object.entries(config.use)) {
+			runtime.registerActor(
+				registry,
+				name,
+				buildNativeFactory(runtime, config, definition),
+			);
+		}
 	}
 
 	return {
 		runtime,
 		registry,
 		serveConfig: await buildServeConfig(config, runtime.kind === "napi"),
+		workerPoolId,
+		workerPool,
 	};
+}
+
+export async function attachActorWorkerRegistry(
+	config: RegistryConfig,
+	bootstrap: import("./node-worker-pool").ActorWorkerBootstrapState,
+): Promise<void> {
+	if (config.actorsPerThread === undefined) {
+		throw new Error(
+			"The worker entrypoint registry must configure actorsPerThread",
+		);
+	}
+	const { runtime } = await loadNapiRuntime();
+	const normalized = normalizeRuntimeConfigForKind(config, "native");
+	const registry = runtime.createRegistry();
+	for (const [name, definition] of Object.entries(normalized.use)) {
+		runtime.registerActor(
+			registry,
+			name,
+			buildNativeFactory(runtime, normalized, definition),
+		);
+	}
+	if (!runtime.attachWorker) {
+		throw new Error(
+			"The native runtime does not support actor worker threads",
+		);
+	}
+	const registration = runtime.attachWorker(
+		registry,
+		bootstrap.poolId,
+		bootstrap.workerId,
+		bootstrap.spawnToken,
+		bootstrap.class,
+	);
+	bootstrap.runtime = runtime;
+	bootstrap.registry = registry;
+	bootstrap.registration = registration;
+	const { postActorWorkerReady } = await import("./node-worker-pool");
+	await postActorWorkerReady(registration);
 }
 
 export async function buildNativeRegistry(config: RegistryConfig): Promise<{
 	runtime: CoreRuntime;
 	registry: RegistryHandle;
 	serveConfig: RuntimeServeConfig;
+	workerPoolId?: string;
+	workerPool?: import("./node-worker-pool").NodeActorWorkerPool;
 }> {
 	const { runtime } = await loadNapiRuntime();
 	return buildRegistryWithRuntime(
@@ -5553,6 +5666,8 @@ export async function buildConfiguredRegistry(config: RegistryConfig): Promise<{
 	runtime: CoreRuntime;
 	registry: RegistryHandle;
 	serveConfig: RuntimeServeConfig;
+	workerPoolId?: string;
+	workerPool?: import("./node-worker-pool").NodeActorWorkerPool;
 }> {
 	const runtime = await loadConfiguredRuntime(config);
 	return buildRegistryWithRuntime(

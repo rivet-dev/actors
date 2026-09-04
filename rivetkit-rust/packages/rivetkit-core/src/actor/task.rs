@@ -40,6 +40,7 @@ use futures::FutureExt;
 use parking_lot::Mutex;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::{JoinError, JoinHandle};
+use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, instrument::WithSubscriber};
 
 use crate::actor::action::ActionDispatchError;
@@ -348,6 +349,8 @@ pub struct ActorTask {
 	pub lifecycle: LifecycleState,
 	pub factory: Arc<ActorFactory>,
 	pub ctx: ActorContext,
+	/// Cancels the foreign-runtime adapter when its owning environment exits.
+	runtime_lost: Option<CancellationToken>,
 
 	// === STARTUP ===
 	pub start_input: Option<Vec<u8>>,
@@ -403,6 +406,31 @@ impl ActorTask {
 		ctx: ActorContext,
 		start_input: Option<Vec<u8>>,
 	) -> Self {
+		Self::new_with_runtime_loss(
+			actor_id,
+			generation,
+			lifecycle_inbox,
+			dispatch_inbox,
+			lifecycle_events,
+			factory,
+			ctx,
+			start_input,
+			None,
+		)
+	}
+
+	#[allow(clippy::too_many_arguments)]
+	pub fn new_with_runtime_loss(
+		actor_id: String,
+		generation: u32,
+		lifecycle_inbox: mpsc::UnboundedReceiver<LifecycleCommand>,
+		dispatch_inbox: mpsc::UnboundedReceiver<DispatchCommand>,
+		lifecycle_events: mpsc::UnboundedReceiver<LifecycleEvent>,
+		factory: Arc<ActorFactory>,
+		ctx: ActorContext,
+		start_input: Option<Vec<u8>>,
+		runtime_lost: Option<CancellationToken>,
+	) -> Self {
 		let (actor_event_tx, actor_event_rx) = mpsc::unbounded_channel();
 		let (inspector_overlay_tx, _) = broadcast::channel(INSPECTOR_OVERLAY_CHANNEL_CAPACITY);
 		let inspector_attach_count = Arc::new(AtomicU32::new(0));
@@ -428,6 +456,7 @@ impl ActorTask {
 			lifecycle: LifecycleState::default(),
 			factory,
 			ctx,
+			runtime_lost,
 			start_input,
 			actor_event_tx: Some(actor_event_tx),
 			actor_event_rx: Some(actor_event_rx),
@@ -1347,10 +1376,26 @@ impl ActorTask {
 			startup_ready: startup_ready_tx,
 		};
 		let factory = self.factory.clone();
+		let runtime_lost = self.runtime_lost.clone();
 		let run_dispatch = tracing::dispatcher::get_default(Clone::clone);
 		self.run_handle = Some(RuntimeSpawner::spawn(
 			async move {
-				match AssertUnwindSafe(factory.start(start)).catch_unwind().await {
+				let outcome = if let Some(runtime_lost) = runtime_lost {
+					if runtime_lost.is_cancelled() {
+						return Err(crate::error::ActorRuntime::WorkerThreadLost.build());
+					}
+					let run = AssertUnwindSafe(factory.start(start)).catch_unwind();
+					tokio::select! {
+						biased;
+						_ = runtime_lost.cancelled() => {
+							return Err(crate::error::ActorRuntime::WorkerThreadLost.build());
+						}
+						outcome = run => outcome,
+					}
+				} else {
+					AssertUnwindSafe(factory.start(start)).catch_unwind().await
+				};
+				match outcome {
 					Ok(result) => result,
 					Err(_) => Err(ActorRuntime::Panicked {
 						operation: "run handler".to_owned(),

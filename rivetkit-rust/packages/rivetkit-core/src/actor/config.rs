@@ -1,8 +1,10 @@
 use std::fmt;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rivet_envoy_client::config::HttpRequest;
+use sha2::{Digest, Sha256};
 
 use crate::inspector::InspectorTabEntry;
 
@@ -216,6 +218,18 @@ pub struct ActorConfigInput {
 }
 
 impl ActorConfig {
+	/// Stable within one runtime build and process. Used to reject worker
+	/// environments that evaluated a different actor configuration before their
+	/// callback factories become schedulable.
+	pub fn worker_pool_fingerprint(&self) -> String {
+		let digest = Sha256::digest(format!("{self:#?}").as_bytes());
+		let mut encoded = String::with_capacity(digest.len() * 2);
+		for byte in digest {
+			let _ = write!(encoded, "{byte:02x}");
+		}
+		encoded
+	}
+
 	pub fn from_input(config: ActorConfigInput) -> Self {
 		let mut actor_config = Self {
 			name: config.name,

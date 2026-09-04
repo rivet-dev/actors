@@ -1,0 +1,51 @@
+---
+title: "Node.js Worker Threads"
+description: "Run Rivet Actors across isolated Node.js event loops in a long-running Node.js process."
+---
+
+Node.js normally runs every actor in a process on one JavaScript event loop. Set `actorsPerThread` to distribute actor JavaScript across worker threads when one actor must not block every other actor in the process.
+
+<CodeSnippet file="examples/docs/general-worker-threads/basic.ts" />
+
+`actorsPerThread` is a hard limit that includes actors which are starting, running, or stopping. Use `1` to give every actor generation its own event loop. Larger values reduce memory usage by allowing several actors to share one event loop.
+
+## Placement and scaling
+
+RivetKit creates baseline threads on demand, up to `os.availableParallelism()`, and spreads the first actors across them. After reaching that baseline, RivetKit fills existing threads before creating overflow threads. There is no configurable maximum thread count.
+
+An actor generation stays on its selected thread for its entire lifetime. RivetKit does not move running actors to compact the pool. An overflow thread becomes eligible to exit after its final actor completely stops, with a short idle delay to prevent thread churn during bursts. A sleeping actor is no longer resident and does not occupy a thread slot.
+
+Requests for an existing actor are delivered directly from the native runtime to that actor's worker thread. They do not pass through the main JavaScript event loop. If the main event loop is blocked, existing actors on other threads can continue running, but RivetKit cannot create or retire threads until the main event loop becomes available.
+
+## Requirements and constraints
+
+Worker threads require the native runtime and a persistent Node.js process. They are not supported with serverless handlers, the wasm runtime, Bun, Deno, `node -e`, stdin, or the Node.js REPL.
+
+RivetKit loads the file named by `process.argv[1]` in every new worker. That entrypoint must build the same actor registry and call `registry.start()` or `registry.startAndWait()` while the module is evaluated. Do not guard the registry startup call with `isMainThread`.
+
+Each worker validates its actor names and runtime configuration against the main registry before it can receive an actor. The waiting actor start fails if the entrypoint cannot load, does not start a registry, loads a different actor configuration, or cannot initialize the native runtime. Worker acquisition times out after 30 seconds; a worker that finishes booting later remains available for the next actor start.
+
+The complete entrypoint module executes independently in every worker. Guard unrelated main-only side effects individually, but do not guard the RivetKit registry startup call. Only one worker-enabled registry may be started from an entrypoint in this first version. Development runners that replace `process.argv[1]` with a launcher or wrapper are not supported unless that file reloads the same registry entrypoint.
+
+## Isolation and memory
+
+Each worker has its own V8 isolate, event loop, module cache, globals, and module-level singletons. JavaScript objects are not shared between workers. Actor definitions are evaluated separately in each worker, while durable actor state continues to use RivetKit state, KV, and SQLite normally.
+
+In one local Node.js 24 Linux benchmark, an idle worker with the RivetKit native addon added approximately 9.2 MiB PSS or 11.0 MiB RSS after the first worker. In a separate run, a minimal live actor added approximately 0.53 MiB PSS or 0.54 MiB RSS. At full occupancy, a lower-bound estimate per actor is `actor memory + thread memory / actorsPerThread`:
+
+| `actorsPerThread` | Approximate PSS per actor | Approximate RSS per actor |
+|---:|---:|---:|
+| 1 | 9.7 MiB | 11.6 MiB |
+| 4 | 2.8 MiB | 3.3 MiB |
+| 8 | 1.7 MiB | 1.9 MiB |
+| 16 | 1.1 MiB | 1.2 MiB |
+
+These are local lower bounds, not product guarantees. Application modules, actor definitions, state, queues, SQLite, and caches add to them. The table also assumes full threads. For a pool-wide estimate, use `live actors × actor memory + live threads × thread memory`.
+
+Node.js and the system allocator may retain high-water RSS after a worker exits. If one actor blocks its worker, other actors assigned to that worker are also delayed.
+
+## Worker failures
+
+If a worker exits unexpectedly, its actors fail through the normal Rivet lifecycle. The control plane decides whether and where to start replacement generations. RivetKit never moves or locally resurrects the failed generation.
+
+Worker-pool failures use the `actor.worker_*` error codes, including `actor.worker_acquire_timed_out`, `actor.worker_spawn_failed`, and `actor.worker_thread_lost`.

@@ -15,8 +15,12 @@ import {
 	RegistryConfigSchema,
 } from "./config";
 import { logger } from "./log";
-import { buildConfiguredRegistry } from "./native";
+import { attachActorWorkerRegistry, buildConfiguredRegistry } from "./native";
 import { convertNativeHttpResponse } from "./native-http";
+import {
+	claimActorWorkerBootstrap,
+	setActorWorkerAttachPromise,
+} from "./node-worker-pool";
 import type {
 	CoreRuntime,
 	RuntimeApplicationFetch,
@@ -154,6 +158,7 @@ export class Registry<A extends RegistryActors> {
 	#runtimeServePromise?: Promise<void>;
 	#runtimeServeLifecyclePromise?: Promise<void>;
 	#runtimeReadyPromise?: Promise<void>;
+	#workerAttachPromise?: Promise<void>;
 	#runtimeServeConfiguredPromise?: ReturnType<typeof buildConfiguredRegistry>;
 	#runtimeServerlessPromise?: ReturnType<typeof buildConfiguredRegistry>;
 	#applicationListenerPromise?: Promise<void>;
@@ -214,6 +219,11 @@ export class Registry<A extends RegistryActors> {
 	 */
 	public async handler(request: Request): Promise<Response> {
 		const config = this.parseConfig();
+		if (config.actorsPerThread !== undefined) {
+			throw new Error(
+				"actorsPerThread is only supported by persistent Node.js registry.start() deployments",
+			);
+		}
 		this.#printWelcome(config, "serverless");
 
 		if (!this.#runtimeServerlessPromise) {
@@ -439,6 +449,14 @@ export class Registry<A extends RegistryActors> {
 		const port = opts.port ?? parsePortEnv(process.env.RIVET_PORT) ?? 3000;
 		const publicDir = opts.publicDir ?? getRivetkitPublicDir();
 		const config = this.parseConfig();
+		if (
+			config.actorsPerThread !== undefined &&
+			(!opts.application || getRivetkitRuntimeMode() === "serverless")
+		) {
+			throw new Error(
+				"actorsPerThread is only supported by persistent Node.js registry.start() deployments",
+			);
+		}
 
 		if (opts.application && getRivetkitRuntimeMode() !== "serverless") {
 			if (config.runtime === "wasm") {
@@ -446,13 +464,16 @@ export class Registry<A extends RegistryActors> {
 					"registry.listen() requires the native runtime; use an application-owned HTTP server with WebAssembly",
 				);
 			}
-			this.#installSignalHandlers(config);
+			const workerAttachPromise = this.#startEnvoy(config, false);
+			if (workerAttachPromise) {
+				await workerAttachPromise;
+				return;
+			}
 			this.#printWelcome(config, "serverful", {
 				port,
 				host: opts.host,
 				publicDir,
 			});
-			this.#startEnvoy(config, true);
 			const readyPromise = this.startAndWait();
 			const configuredRegistryPromise =
 				this.#runtimeServeConfiguredPromise;
@@ -622,7 +643,18 @@ export class Registry<A extends RegistryActors> {
 	/**
 	 * Starts an actor envoy for standalone server deployments.
 	 */
-	#startEnvoy(config: RegistryConfig, printWelcome: boolean) {
+	#startEnvoy(
+		config: RegistryConfig,
+		printWelcome: boolean,
+	): Promise<void> | undefined {
+		if (this.#workerAttachPromise) return this.#workerAttachPromise;
+		const bootstrap = claimActorWorkerBootstrap();
+		if (bootstrap) {
+			const attachPromise = attachActorWorkerRegistry(config, bootstrap);
+			this.#workerAttachPromise = attachPromise;
+			setActorWorkerAttachPromise(bootstrap, attachPromise);
+			return attachPromise;
+		}
 		if (!this.#runtimeServePromise) {
 			const configuredRegistryPromise =
 				this.#buildConfiguredRegistry(config);
@@ -650,6 +682,7 @@ export class Registry<A extends RegistryActors> {
 		if (printWelcome) {
 			this.#printWelcome(config, "serverful");
 		}
+		return undefined;
 	}
 
 	#installSignalHandlers(config: RegistryConfig): void {
@@ -750,8 +783,13 @@ export class Registry<A extends RegistryActors> {
 				registries.push(
 					(async () => {
 						try {
-							const { runtime, registry } = await modeAPromise;
-							await runtime.shutdownRegistry(registry);
+							const { runtime, registry, workerPool } =
+								await modeAPromise;
+							try {
+								await runtime.shutdownRegistry(registry);
+							} finally {
+								await workerPool?.close();
+							}
 						} catch (err) {
 							logger().warn(
 								{ err },
@@ -765,8 +803,13 @@ export class Registry<A extends RegistryActors> {
 				registries.push(
 					(async () => {
 						try {
-							const { runtime, registry } = await modeBPromise;
-							await runtime.shutdownRegistry(registry);
+							const { runtime, registry, workerPool } =
+								await modeBPromise;
+							try {
+								await runtime.shutdownRegistry(registry);
+							} finally {
+								await workerPool?.close();
+							}
 						} catch (err) {
 							logger().warn(
 								{ error: err },
@@ -869,7 +912,11 @@ export class Registry<A extends RegistryActors> {
 				),
 			);
 		}
-		this.#startEnvoy(config, true);
+		const workerAttachPromise = this.#startEnvoy(config, true);
+		if (workerAttachPromise) {
+			this.#runtimeReadyPromise = workerAttachPromise;
+			return workerAttachPromise;
+		}
 		const configuredRegistryPromise = this.#runtimeServeConfiguredPromise;
 		const serveLifecyclePromise = this.#runtimeServeLifecyclePromise;
 		if (!configuredRegistryPromise || !serveLifecyclePromise) {
