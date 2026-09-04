@@ -4,7 +4,7 @@ import * as RivetkitErrors from "rivetkit/errors";
 const ReasonTypeId = "~@rivetkit/effect/RivetError/Reason" as const;
 const TypeId = "~@rivetkit/effect/RivetError" as const;
 
-export class Forbidden extends Schema.TaggedErrorClass<Forbidden>(
+export class Forbidden extends Schema.TaggedError<Forbidden>(
 	`${ReasonTypeId}/Forbidden`,
 )("Forbidden", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -39,7 +39,7 @@ export class Forbidden extends Schema.TaggedErrorClass<Forbidden>(
 	}
 }
 
-export class ActorNotFound extends Schema.TaggedErrorClass<ActorNotFound>(
+export class ActorNotFound extends Schema.TaggedError<ActorNotFound>(
 	`${ReasonTypeId}/ActorNotFound`,
 )("ActorNotFound", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -74,7 +74,7 @@ export class ActorNotFound extends Schema.TaggedErrorClass<ActorNotFound>(
 	}
 }
 
-export class ActorStopping extends Schema.TaggedErrorClass<ActorStopping>(
+export class ActorStopping extends Schema.TaggedError<ActorStopping>(
 	`${ReasonTypeId}/ActorStopping`,
 )("ActorStopping", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -109,7 +109,7 @@ export class ActorStopping extends Schema.TaggedErrorClass<ActorStopping>(
 	}
 }
 
-export class ActorRestarting extends Schema.TaggedErrorClass<ActorRestarting>(
+export class ActorRestarting extends Schema.TaggedError<ActorRestarting>(
 	`${ReasonTypeId}/ActorRestarting`,
 )("ActorRestarting", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -152,7 +152,7 @@ export class ActorRestarting extends Schema.TaggedErrorClass<ActorRestarting>(
 	}
 }
 
-export class ActionNotFound extends Schema.TaggedErrorClass<ActionNotFound>(
+export class ActionNotFound extends Schema.TaggedError<ActionNotFound>(
 	`${ReasonTypeId}/ActionNotFound`,
 )("ActionNotFound", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -187,7 +187,7 @@ export class ActionNotFound extends Schema.TaggedErrorClass<ActionNotFound>(
 	}
 }
 
-export class ActionTimedOut extends Schema.TaggedErrorClass<ActionTimedOut>(
+export class ActionTimedOut extends Schema.TaggedError<ActionTimedOut>(
 	`${ReasonTypeId}/ActionTimedOut`,
 )("ActionTimedOut", { cause: Schema.instanceOf(RivetkitErrors.RivetError) }) {
 	readonly [ReasonTypeId] = ReasonTypeId;
@@ -220,7 +220,7 @@ export class ActionTimedOut extends Schema.TaggedErrorClass<ActionTimedOut>(
 	}
 }
 
-export class ActionAborted extends Schema.TaggedErrorClass<ActionAborted>(
+export class ActionAborted extends Schema.TaggedError<ActionAborted>(
 	`${ReasonTypeId}/ActionAborted`,
 )("ActionAborted", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -255,7 +255,7 @@ export class ActionAborted extends Schema.TaggedErrorClass<ActionAborted>(
 	}
 }
 
-export class ActorOverloaded extends Schema.TaggedErrorClass<ActorOverloaded>(
+export class ActorOverloaded extends Schema.TaggedError<ActorOverloaded>(
 	`${ReasonTypeId}/ActorOverloaded`,
 )("ActorOverloaded", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -290,7 +290,7 @@ export class ActorOverloaded extends Schema.TaggedErrorClass<ActorOverloaded>(
 	}
 }
 
-export class IncomingMessageTooLong extends Schema.TaggedErrorClass<IncomingMessageTooLong>(
+export class IncomingMessageTooLong extends Schema.TaggedError<IncomingMessageTooLong>(
 	`${ReasonTypeId}/IncomingMessageTooLong`,
 )("IncomingMessageTooLong", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -325,7 +325,7 @@ export class IncomingMessageTooLong extends Schema.TaggedErrorClass<IncomingMess
 	}
 }
 
-export class OutgoingMessageTooLong extends Schema.TaggedErrorClass<OutgoingMessageTooLong>(
+export class OutgoingMessageTooLong extends Schema.TaggedError<OutgoingMessageTooLong>(
 	`${ReasonTypeId}/OutgoingMessageTooLong`,
 )("OutgoingMessageTooLong", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -360,7 +360,7 @@ export class OutgoingMessageTooLong extends Schema.TaggedErrorClass<OutgoingMess
 	}
 }
 
-export class InvalidEncoding extends Schema.TaggedErrorClass<InvalidEncoding>(
+export class InvalidEncoding extends Schema.TaggedError<InvalidEncoding>(
 	`${ReasonTypeId}/InvalidEncoding`,
 )("InvalidEncoding", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -395,7 +395,7 @@ export class InvalidEncoding extends Schema.TaggedErrorClass<InvalidEncoding>(
 	}
 }
 
-export class InvalidRequest extends Schema.TaggedErrorClass<InvalidRequest>(
+export class InvalidRequest extends Schema.TaggedError<InvalidRequest>(
 	`${ReasonTypeId}/InvalidRequest`,
 )("InvalidRequest", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -430,7 +430,7 @@ export class InvalidRequest extends Schema.TaggedErrorClass<InvalidRequest>(
 	}
 }
 
-export class GuardActorReadyTimeout extends Schema.TaggedErrorClass<GuardActorReadyTimeout>(
+export class GuardActorReadyTimeout extends Schema.TaggedError<GuardActorReadyTimeout>(
 	`${ReasonTypeId}/GuardActorReadyTimeout`,
 )("GuardActorReadyTimeout", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -465,7 +465,7 @@ export class GuardActorReadyTimeout extends Schema.TaggedErrorClass<GuardActorRe
 	}
 }
 
-export class GuardActorWakeRetriesExceeded extends Schema.TaggedErrorClass<GuardActorWakeRetriesExceeded>(
+export class GuardActorWakeRetriesExceeded extends Schema.TaggedError<GuardActorWakeRetriesExceeded>(
 	`${ReasonTypeId}/GuardActorWakeRetriesExceeded`,
 )("GuardActorWakeRetriesExceeded", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -500,7 +500,7 @@ export class GuardActorWakeRetriesExceeded extends Schema.TaggedErrorClass<Guard
 	}
 }
 
-export class GuardActorRunnerFailed extends Schema.TaggedErrorClass<GuardActorRunnerFailed>(
+export class GuardActorRunnerFailed extends Schema.TaggedError<GuardActorRunnerFailed>(
 	`${ReasonTypeId}/GuardActorRunnerFailed`,
 )("GuardActorRunnerFailed", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -535,7 +535,7 @@ export class GuardActorRunnerFailed extends Schema.TaggedErrorClass<GuardActorRu
 	}
 }
 
-export class GuardServiceUnavailable extends Schema.TaggedErrorClass<GuardServiceUnavailable>(
+export class GuardServiceUnavailable extends Schema.TaggedError<GuardServiceUnavailable>(
 	`${ReasonTypeId}/GuardServiceUnavailable`,
 )("GuardServiceUnavailable", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -570,7 +570,7 @@ export class GuardServiceUnavailable extends Schema.TaggedErrorClass<GuardServic
 	}
 }
 
-export class GuardActorStoppedWhileWaiting extends Schema.TaggedErrorClass<GuardActorStoppedWhileWaiting>(
+export class GuardActorStoppedWhileWaiting extends Schema.TaggedError<GuardActorStoppedWhileWaiting>(
 	`${ReasonTypeId}/GuardActorStoppedWhileWaiting`,
 )("GuardActorStoppedWhileWaiting", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -605,7 +605,7 @@ export class GuardActorStoppedWhileWaiting extends Schema.TaggedErrorClass<Guard
 	}
 }
 
-export class GuardTunnelRequestAborted extends Schema.TaggedErrorClass<GuardTunnelRequestAborted>(
+export class GuardTunnelRequestAborted extends Schema.TaggedError<GuardTunnelRequestAborted>(
 	`${ReasonTypeId}/GuardTunnelRequestAborted`,
 )("GuardTunnelRequestAborted", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -640,7 +640,7 @@ export class GuardTunnelRequestAborted extends Schema.TaggedErrorClass<GuardTunn
 	}
 }
 
-export class GuardTunnelMessageTimeout extends Schema.TaggedErrorClass<GuardTunnelMessageTimeout>(
+export class GuardTunnelMessageTimeout extends Schema.TaggedError<GuardTunnelMessageTimeout>(
 	`${ReasonTypeId}/GuardTunnelMessageTimeout`,
 )("GuardTunnelMessageTimeout", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -675,7 +675,7 @@ export class GuardTunnelMessageTimeout extends Schema.TaggedErrorClass<GuardTunn
 	}
 }
 
-export class GuardTunnelResponseClosed extends Schema.TaggedErrorClass<GuardTunnelResponseClosed>(
+export class GuardTunnelResponseClosed extends Schema.TaggedError<GuardTunnelResponseClosed>(
 	`${ReasonTypeId}/GuardTunnelResponseClosed`,
 )("GuardTunnelResponseClosed", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -710,7 +710,7 @@ export class GuardTunnelResponseClosed extends Schema.TaggedErrorClass<GuardTunn
 	}
 }
 
-export class GuardGatewayResponseStartTimeout extends Schema.TaggedErrorClass<GuardGatewayResponseStartTimeout>(
+export class GuardGatewayResponseStartTimeout extends Schema.TaggedError<GuardGatewayResponseStartTimeout>(
 	`${ReasonTypeId}/GuardGatewayResponseStartTimeout`,
 )("GuardGatewayResponseStartTimeout", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -745,7 +745,7 @@ export class GuardGatewayResponseStartTimeout extends Schema.TaggedErrorClass<Gu
 	}
 }
 
-export class InternalError extends Schema.TaggedErrorClass<InternalError>(
+export class InternalError extends Schema.TaggedError<InternalError>(
 	`${ReasonTypeId}/InternalError`,
 )("InternalError", {
 	cause: Schema.instanceOf(RivetkitErrors.RivetError),
@@ -780,7 +780,7 @@ export class InternalError extends Schema.TaggedErrorClass<InternalError>(
 	}
 }
 
-export class ActionErrorDecodeFailed extends Schema.TaggedErrorClass<ActionErrorDecodeFailed>(
+export class ActionErrorDecodeFailed extends Schema.TaggedError<ActionErrorDecodeFailed>(
 	`${ReasonTypeId}/ActionErrorDecodeFailed`,
 )("ActionErrorDecodeFailed", {
 	cause: Schema.instanceOf(Schema.SchemaError),
@@ -826,7 +826,7 @@ export class ActionErrorDecodeFailed extends Schema.TaggedErrorClass<ActionError
  * receive those errors **typed** in the error channel; this reason is
  * the catch-all for everything else.
  */
-export class UnknownUserError extends Schema.TaggedErrorClass<UnknownUserError>(
+export class UnknownUserError extends Schema.TaggedError<UnknownUserError>(
 	`${ReasonTypeId}/UnknownUserError`,
 )("UnknownUserError", { cause: Schema.instanceOf(RivetkitErrors.RivetError) }) {
 	readonly [ReasonTypeId] = ReasonTypeId;
@@ -864,7 +864,7 @@ export class UnknownUserError extends Schema.TaggedErrorClass<UnknownUserError>(
  * not recognize yet, and for malformed non-Rivet failures. Known wire
  * fields are mirrored when present, while `cause` preserves the raw input.
  */
-export class UnknownError extends Schema.TaggedErrorClass<UnknownError>(
+export class UnknownError extends Schema.TaggedError<UnknownError>(
 	`${ReasonTypeId}/UnknownError`,
 )("UnknownError", {
 	message: Schema.String,
@@ -1018,7 +1018,7 @@ export const isRivetErrorReason = (u: unknown): u is RivetErrorReason =>
  * arrive in the typed error channel separately and do NOT flow through
  * `RivetError`.
  */
-export class RivetError extends Schema.TaggedErrorClass<RivetError>(
+export class RivetError extends Schema.TaggedError<RivetError>(
 	"@rivetkit/effect/RivetError",
 )("RivetError", {
 	reason: RivetErrorReason,

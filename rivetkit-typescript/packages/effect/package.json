@@ -30,13 +30,13 @@
 		"coverage": "vitest run --coverage"
 	},
 	"peerDependencies": {
-		"effect": "^4.0.0-beta.66",
+		"effect": "^4.0.0-rc.109",
 		"rivetkit": "workspace:*"
 	},
 	"devDependencies": {
 		"@arethetypeswrong/cli": "^0.18.3",
 		"@effect/language-service": "^0.85.1",
-		"@effect/vitest": "^4.0.0-beta.66",
+		"@effect/vitest": "^4.0.0-rc.109",
 		"@types/node": "^22.18.1",
 		"@vitest/coverage-v8": "^4.1.7",
 		"publint": "^0.3.21",
