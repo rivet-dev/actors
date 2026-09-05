@@ -344,6 +344,7 @@ impl RegistryDispatcher {
 			conn.clone(),
 			action_name.to_owned(),
 			args,
+			crate::telemetry::IncomingInvocationContext::default(),
 		)
 		.await;
 		match &output {

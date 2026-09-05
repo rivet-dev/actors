@@ -9,6 +9,7 @@ pub mod napi_actor_events;
 pub mod queue;
 pub mod registry;
 pub mod schedule;
+mod telemetry;
 pub mod types;
 pub mod websocket;
 
@@ -16,7 +17,7 @@ use std::sync::Once;
 
 use rivet_error::RivetError as RivetTransportError;
 use rivetkit_core::error::public_error_status_code;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{Layer as _, layer::SubscriberExt, util::SubscriberInitExt};
 
 static INIT_TRACING: Once = Once::new();
 pub(crate) const BRIDGE_RIVET_ERROR_PREFIX: &str = "__RIVET_ERROR_JSON__:";
@@ -115,10 +116,35 @@ pub(crate) fn init_tracing(log_level: Option<&str>) {
 			.or_else(|| std::env::var("RUST_LOG").ok())
 			.unwrap_or_else(|| "warn".to_string());
 
+		let log_filter = format!("{filter},rivetkit::telemetry=off");
 		let log_format = LogFormat::from_env();
+		let (otel_layer, otel_error) = match telemetry::initialize_if_configured() {
+			Ok(tracer) => (
+				tracer.map(|tracer| {
+					tracing_opentelemetry::layer()
+						.with_tracer(tracer)
+						.with_location(false)
+						.with_threads(false)
+						.with_tracked_inactivity(false)
+				}),
+				None,
+			),
+			Err(error) => (None, Some(error)),
+		};
 
 		tracing_subscriber::registry()
-			.with(tracing_subscriber::EnvFilter::new(&filter))
+			.with(otel_layer.map(|layer| {
+				layer.with_filter(tracing_subscriber::EnvFilter::new(
+					"rivetkit::telemetry=info",
+				))
+			}))
+			// The SDK reports dropped spans and export failures on its own
+			// target. Forward those to the JavaScript logger so they appear
+			// with the rest of the actor's logs.
+			.with(
+				telemetry::sdk_log_bridge::SdkLogLayer
+					.with_filter(tracing_subscriber::EnvFilter::new("opentelemetry_sdk=warn")),
+			)
 			.with(match log_format {
 				LogFormat::Logfmt => Some(
 					tracing_logfmt::builder()
@@ -128,7 +154,8 @@ pub(crate) fn init_tracing(log_level: Option<&str>) {
 						.with_location(env_flag("RUST_LOG_LOCATION"))
 						.with_module_path(env_flag("RUST_LOG_MODULE_PATH"))
 						.with_ansi_color(env_flag("RUST_LOG_ANSI_COLOR"))
-						.layer(),
+						.layer()
+						.with_filter(tracing_subscriber::EnvFilter::new(&log_filter)),
 				),
 				LogFormat::Gcp => None,
 			})
@@ -136,10 +163,18 @@ pub(crate) fn init_tracing(log_level: Option<&str>) {
 				LogFormat::Logfmt => None,
 				LogFormat::Gcp => Some(
 					tracing_stackdriver::layer()
-						.with_source_location(env_flag("RUST_LOG_LOCATION")),
+						.with_source_location(env_flag("RUST_LOG_LOCATION"))
+						.with_filter(tracing_subscriber::EnvFilter::new(&log_filter)),
 				),
 			})
 			.init();
+
+		if let Some(error) = otel_error {
+			tracing::warn!(
+				?error,
+				"OpenTelemetry trace export could not be initialized"
+			);
+		}
 	});
 }
 

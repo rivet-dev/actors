@@ -1,4 +1,5 @@
 pub(crate) mod moved_tests {
+	use anyhow::anyhow;
 	use std::collections::{BTreeMap, HashMap};
 	use std::path::PathBuf;
 	use std::process::Command;
@@ -1892,7 +1893,11 @@ pub(crate) mod moved_tests {
 								.lock()
 								.expect("action log lock poisoned")
 								.push(conn.as_ref().map(|conn| conn.id().to_owned()));
-							reply.send(Ok(name.into_bytes()));
+							if name == "failed-action" {
+								reply.send(Err(anyhow!("expected action failure")));
+							} else {
+								reply.send(Ok(name.into_bytes()));
+							}
 						}
 						ActorEvent::BeginSleep => {}
 						ActorEvent::FinalizeSleep { reply } | ActorEvent::Destroy { reply } => {
@@ -1929,6 +1934,7 @@ pub(crate) mod moved_tests {
 		task.handle_dispatch(DispatchCommand::Action {
 			name: "client-action".to_owned(),
 			args: Vec::new(),
+			incoming: crate::telemetry::IncomingInvocationContext::default(),
 			conn: client_conn,
 			reply: reply_tx,
 		})
@@ -1940,6 +1946,21 @@ pub(crate) mod moved_tests {
 				.expect("client action should succeed"),
 			b"client-action".to_vec(),
 		);
+		let (failed_reply_tx, failed_reply_rx) = oneshot::channel();
+		task.handle_dispatch(DispatchCommand::Action {
+			name: "failed-action".to_owned(),
+			args: Vec::new(),
+			incoming: crate::telemetry::IncomingInvocationContext::default(),
+			conn: ConnHandle::new("conn-failed", Vec::new(), Vec::new(), false),
+			reply: failed_reply_tx,
+		})
+		.await;
+		assert!(
+			failed_reply_rx
+				.await
+				.expect("failed action reply should send")
+				.is_err()
+		);
 
 		task.ctx
 			.at(0, "alarm-action", &[])
@@ -1950,7 +1971,7 @@ pub(crate) mod moved_tests {
 			.await
 			.expect("scheduled actions should drain");
 		for _ in 0..50 {
-			if seen_conns.lock().expect("action log lock poisoned").len() >= 2 {
+			if seen_conns.lock().expect("action log lock poisoned").len() >= 3 {
 				break;
 			}
 			sleep(Duration::from_millis(10)).await;
@@ -1958,8 +1979,39 @@ pub(crate) mod moved_tests {
 
 		assert_eq!(
 			seen_conns.lock().expect("action log lock poisoned").clone(),
-			vec![Some("conn-client".to_owned()), None],
+			vec![
+				Some("conn-client".to_owned()),
+				Some("conn-failed".to_owned()),
+				None,
+			],
 		);
+		let mut rendered_metrics = String::new();
+		for _ in 0..50 {
+			rendered_metrics = String::from_utf8(
+				crate::metrics_endpoint::render_prometheus_metrics()
+					.expect("render invocation metrics")
+					.body,
+			)
+			.expect("prometheus metrics should be utf-8");
+			if rendered_metrics.contains(
+				"actor_invocations_total{action_name=\"_OTHER\",actor_name=\"task-action\",invocation_type=\"scheduled\",status=\"ok\"} 1",
+			) {
+				break;
+			}
+			sleep(Duration::from_millis(10)).await;
+		}
+		assert!(rendered_metrics.contains(
+			"actor_invocations_total{action_name=\"_OTHER\",actor_name=\"task-action\",invocation_type=\"action\",status=\"ok\"} 1",
+		));
+		assert!(rendered_metrics.contains(
+			"actor_invocations_total{action_name=\"_OTHER\",actor_name=\"task-action\",invocation_type=\"scheduled\",status=\"ok\"} 1",
+		));
+		assert!(rendered_metrics.contains(
+			"actor_invocations_total{action_name=\"_OTHER\",actor_name=\"task-action\",invocation_type=\"action\",status=\"error\"} 1",
+		));
+		assert!(rendered_metrics.contains(
+			"actor_invocation_duration_seconds_count{action_name=\"_OTHER\",actor_name=\"task-action\",invocation_type=\"action\",status=\"ok\"} 1",
+		));
 
 		task.handle_stop(ShutdownKind::Destroy)
 			.await
@@ -2032,6 +2084,7 @@ pub(crate) mod moved_tests {
 		task.handle_dispatch(DispatchCommand::Action {
 			name: "slow-action".to_owned(),
 			args: Vec::new(),
+			incoming: crate::telemetry::IncomingInvocationContext::default(),
 			conn: client_conn,
 			reply: reply_tx,
 		})
@@ -3734,6 +3787,7 @@ pub(crate) mod moved_tests {
 			.send(DispatchCommand::Action {
 				name: "ping".to_owned(),
 				args: Vec::new(),
+				incoming: crate::telemetry::IncomingInvocationContext::default(),
 				conn: ConnHandle::new("conn-grace", Vec::new(), Vec::new(), false),
 				reply: action_tx,
 			})
@@ -3778,6 +3832,7 @@ pub(crate) mod moved_tests {
 		task.handle_dispatch(DispatchCommand::Action {
 			name: "ping".to_owned(),
 			args: Vec::new(),
+			incoming: crate::telemetry::IncomingInvocationContext::default(),
 			conn: ConnHandle::new("conn-finalize", Vec::new(), Vec::new(), false),
 			reply: reply_tx,
 		})
@@ -4529,6 +4584,7 @@ pub(crate) mod moved_tests {
 			.send(DispatchCommand::Action {
 				name: "ping".to_owned(),
 				args: Vec::new(),
+				incoming: crate::telemetry::IncomingInvocationContext::default(),
 				conn: ConnHandle::new("conn-log-flow", Vec::new(), Vec::new(), false),
 				reply: action_tx,
 			})

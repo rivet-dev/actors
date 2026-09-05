@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, test } from "vitest";
 import {
 	BRIDGE_RIVET_ERROR_PREFIX,
@@ -157,6 +158,14 @@ class FakeActorContext {
 		return this.runtimeBag;
 	}
 
+	invocationTraceContext(): undefined {
+		return undefined;
+	}
+
+	sameActorInstance(other: FakeActorContext): boolean {
+		return this === other;
+	}
+
 	actorId(): string {
 		return "parity-actor";
 	}
@@ -305,6 +314,9 @@ function fakeNapiBindings(scenario: ParityScenario) {
 		NapiActorFactory: FakeActorFactory,
 		CancellationToken: FakeCancellationToken,
 		ActorContext: class {},
+		// The native module exports this, and `createRegistry` calls it on
+		// every registry, so the fake has to carry it too.
+		setTelemetryLogSink: () => {},
 	};
 }
 
@@ -335,7 +347,10 @@ function createRuntimeCase(kind: CoreRuntime["kind"]): RuntimeCase {
 		scenario,
 		runtime:
 			kind === "napi"
-				? new NapiCoreRuntime(fakeNapiBindings(scenario) as never)
+				? new NapiCoreRuntime(
+						fakeNapiBindings(scenario) as never,
+						new AsyncLocalStorage(),
+					)
 				: new WasmCoreRuntime(fakeWasmBindings(scenario)),
 	};
 }

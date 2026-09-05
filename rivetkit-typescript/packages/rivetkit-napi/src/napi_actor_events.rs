@@ -398,6 +398,7 @@ pub(crate) async fn dispatch_event(
 			scheduled_fire,
 			reply,
 		} => {
+			let invocation_telemetry = reply.invocation_telemetry();
 			tracing::info!(
 				actor_id = %ctx.inner().actor_id(),
 				action_name = %name,
@@ -430,6 +431,7 @@ pub(crate) async fn dispatch_event(
 						call_action(
 							&callback,
 							&ctx,
+							invocation_telemetry,
 							conn,
 							name.clone(),
 							args.clone(),
@@ -1177,6 +1179,7 @@ async fn call_run(
 async fn call_action(
 	callback: &crate::actor_factory::CallbackTsfn<ActionPayload>,
 	ctx: &ActorContext,
+	telemetry: Option<rivetkit_core::ActorInvocationTelemetry>,
 	conn: Option<rivetkit_core::ConnHandle>,
 	name: String,
 	args: Vec<u8>,
@@ -1189,6 +1192,7 @@ async fn call_action(
 		callback,
 		ActionPayload {
 			ctx: ctx.inner().clone(),
+			telemetry,
 			conn,
 			name,
 			args,

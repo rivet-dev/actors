@@ -28,6 +28,18 @@ parking_lot.workspace = true
 scc.workspace = true
 hex.workspace = true
 http.workspace = true
+opentelemetry = { version = "0.28", default-features = false, features = [
+	"trace",
+	# Lets the SDK report dropped spans and export failures through tracing.
+	"internal-logs",
+] }
+opentelemetry-otlp = { version = "0.28", default-features = false, features = ["trace", "http-json", "http-proto", "grpc-tonic", "reqwest-blocking-client"] }
+opentelemetry_sdk = { version = "0.28", default-features = false, features = [
+	"trace",
+	# Lets the SDK report dropped spans and export failures through tracing.
+	"internal-logs",
+] }
+tracing-opentelemetry = { version = "0.29", default-features = false }
 rivet-error.workspace = true
 rivetkit-core = { workspace = true, features = ["sqlite"] }
 

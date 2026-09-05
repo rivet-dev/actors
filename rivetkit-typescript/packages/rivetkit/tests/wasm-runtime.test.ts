@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, test, vi } from "vitest";
 import { BRIDGE_RIVET_ERROR_PREFIX, RivetError } from "@/actor/errors";
 import { actor } from "@/actor/mod";
@@ -240,7 +241,9 @@ describe("WasmCoreRuntime", () => {
 		const acceptRuntime = (_runtime: CoreRuntime) => {};
 
 		acceptRuntime(new WasmCoreRuntime(fakeWasmBindings()));
-		acceptRuntime(new NapiCoreRuntime({} as never));
+		acceptRuntime(
+			new NapiCoreRuntime({} as never, new AsyncLocalStorage()),
+		);
 	});
 
 	test("maps raw wasm registry, factory, and cancellation handles", () => {
@@ -370,7 +373,10 @@ describe("WasmCoreRuntime", () => {
 		} as unknown as ActorContextHandle;
 
 		expect(
-			new NapiCoreRuntime({} as never).actorQueueMaxSize(context),
+			new NapiCoreRuntime(
+				{} as never,
+				new AsyncLocalStorage(),
+			).actorQueueMaxSize(context),
 		).toBe(maxSize);
 		expect(
 			new WasmCoreRuntime(fakeWasmBindings()).actorQueueMaxSize(context),

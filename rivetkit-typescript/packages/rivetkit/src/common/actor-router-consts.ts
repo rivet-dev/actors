@@ -20,6 +20,9 @@ export const HEADER_ACTOR_GENERATION = "x-rivet-actor-generation";
 export const HEADER_ACTOR_KEY = "x-rivet-actor-key";
 
 export const HEADER_RIVET_TOKEN = "x-rivet-token";
+export const HEADER_RIVETKIT_RAY_ID = "x-rivetkit-ray-id";
+export const HEADER_TRACEPARENT = "traceparent";
+export const HEADER_TRACESTATE = "tracestate";
 
 // MARK: Manager Gateway Headers
 export const HEADER_RIVET_TARGET = "x-rivet-target";

@@ -47,6 +47,7 @@ For RivetKit runtime or parity bugs, use `rivetkit-typescript/packages/rivetkit`
 
 - Keep RivetKit test fixtures scoped to the engine-only runtime.
 - Prefer targeted integration tests under `rivetkit-typescript/packages/rivetkit/tests/` over shared multi-driver matrices.
+- A span and its parent can arrive in different OTLP export batches, so a trace test that waits for the child and then asserts its `parentSpanId` is racy. Wait on a predicate over the whole exported span list until both are present, then assert the relationship.
 
 ## Frontend testing
 

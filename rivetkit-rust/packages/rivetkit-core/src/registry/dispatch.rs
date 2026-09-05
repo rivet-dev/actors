@@ -7,6 +7,7 @@ pub(super) async fn dispatch_action_through_task(
 	conn: ConnHandle,
 	name: String,
 	args: Vec<u8>,
+	incoming: crate::telemetry::IncomingInvocationContext,
 ) -> std::result::Result<Vec<u8>, ActionDispatchError> {
 	let (reply_tx, reply_rx) = oneshot::channel();
 	try_send_dispatch_command(
@@ -14,6 +15,7 @@ pub(super) async fn dispatch_action_through_task(
 		DispatchCommand::Action {
 			name,
 			args,
+			incoming,
 			conn,
 			reply: reply_tx,
 		},

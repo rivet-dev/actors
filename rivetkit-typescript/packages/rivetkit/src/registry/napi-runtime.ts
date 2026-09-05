@@ -1,3 +1,4 @@
+import type { AsyncLocalStorage } from "node:async_hooks";
 import type {
 	ActorContext as NativeActorContext,
 	NapiActorFactory as NativeActorFactory,
@@ -7,6 +8,8 @@ import type {
 	HttpResponseBodyStream as NativeHttpResponseBodyStream,
 	WebSocket as NativeWebSocket,
 } from "@rivetkit/rivetkit-napi";
+import { logger } from "./log";
+import { runWithActorInvocationSpan } from "./otel-context";
 import type {
 	ActorContextHandle,
 	ActorFactoryHandle,
@@ -16,6 +19,7 @@ import type {
 	CoreRuntime,
 	RegistryHandle,
 	RuntimeActorConfig,
+	RuntimeActorInvocationTraceContext,
 	RuntimeApplicationFetch,
 	RuntimeApplicationListenerConfig,
 	RuntimeBytes,
@@ -255,22 +259,69 @@ export class NapiCoreRuntime implements CoreRuntime {
 
 	#bindings: NativeBindings;
 	#sql = new WeakMap<NativeActorContext, NapiSqlDatabase>();
+	#invocationContext: AsyncLocalStorage<NativeActorContext>;
 
-	constructor(bindings: NativeBindings) {
+	constructor(
+		bindings: NativeBindings,
+		invocationContext: AsyncLocalStorage<NativeActorContext>,
+	) {
 		this.#bindings = bindings;
+		this.#invocationContext = invocationContext;
 	}
 
+	#actorContextForOperation(owner: ActorContextHandle): NativeActorContext {
+		const ownerCtx = asNativeActorContext(owner);
+		const active = this.#invocationContext.getStore();
+		if (active?.sameActorInstance(ownerCtx)) {
+			return active;
+		}
+		return ownerCtx;
+	}
+
+	// Only the actor-owned handle is cached, because it is the one closed on
+	// sleep. Handles resolved inside an invocation carry that invocation's
+	// telemetry and share the same underlying database, so they are created
+	// on demand and dropped with the invocation.
 	#actorSql(ctx: ActorContextHandle): NapiSqlDatabase {
-		const nativeCtx = asNativeActorContext(ctx);
-		let database = this.#sql.get(nativeCtx);
+		const ownerCtx = asNativeActorContext(ctx);
+		const activeCtx = this.#actorContextForOperation(ctx);
+		if (activeCtx !== ownerCtx) {
+			return activeCtx.sql();
+		}
+		let database = this.#sql.get(ownerCtx);
 		if (!database) {
-			database = nativeCtx.sql();
-			this.#sql.set(nativeCtx, database);
+			database = ownerCtx.sql();
+			this.#sql.set(ownerCtx, database);
 		}
 		return database;
 	}
 
 	createRegistry(): RegistryHandle {
+		// The OpenTelemetry SDK reports dropped spans and export failures
+		// through Rust tracing, which writes to stdout in a different format
+		// from the actor logs. Route them into the same logger instead.
+		//
+		// Only the first call in a process installs a sink, matching the
+		// one-shot tracing subscriber behind it. A second registry in the same
+		// process keeps logging through the first registry's callback, so this
+		// reads as idempotent but is not.
+		//
+		// The addon is published as its own platform package, so it can be
+		// older than this one and not export the sink at all. Forwarding those
+		// diagnostics is best effort, and losing them must not stop the actor
+		// from starting.
+		if (this.#bindings.setTelemetryLogSink) {
+			this.#bindings.setTelemetryLogSink((event) => {
+				logger().warn(
+					{ otelEvent: event.name },
+					event.message || event.name,
+				);
+			});
+		} else {
+			logger().warn(
+				"native addon has no telemetry log sink; OpenTelemetry SDK warnings will not reach the actor logs",
+			);
+		}
 		return asRegistryHandle(new this.#bindings.CoreRegistry());
 	}
 
@@ -550,6 +601,23 @@ export class NapiCoreRuntime implements CoreRuntime {
 
 	actorId(ctx: ActorContextHandle): string {
 		return asNativeActorContext(ctx).actorId();
+	}
+
+	runWithActorInvocationContext<T>(ctx: ActorContextHandle, run: () => T): T {
+		const nativeCtx = asNativeActorContext(ctx);
+		const span = nativeCtx.invocationTraceContext()?.span;
+		return this.#invocationContext.run(nativeCtx, () =>
+			runWithActorInvocationSpan(span, run),
+		);
+	}
+
+	actorInvocationTraceContext(
+		ctx: ActorContextHandle,
+	): RuntimeActorInvocationTraceContext | undefined {
+		return (
+			this.#actorContextForOperation(ctx).invocationTraceContext() ??
+			undefined
+		);
 	}
 
 	actorName(ctx: ActorContextHandle): string {
@@ -871,11 +939,7 @@ export class NapiCoreRuntime implements CoreRuntime {
 
 	async actorSqlClose(ctx: ActorContextHandle): Promise<void> {
 		const nativeCtx = asNativeActorContext(ctx);
-		const database = this.#sql.get(nativeCtx);
-		if (!database) {
-			return;
-		}
-
+		const database = this.#sql.get(nativeCtx) ?? nativeCtx.sql();
 		this.#sql.delete(nativeCtx);
 		await database.close();
 	}
@@ -1002,7 +1066,7 @@ export class NapiCoreRuntime implements CoreRuntime {
 		actionName: string,
 		args: RuntimeBytes,
 	): Promise<string> {
-		return await asNativeActorContext(ctx)
+		return await this.#actorContextForOperation(ctx)
 			.schedule()
 			.after(durationMs, actionName, toNapiBuffer(args));
 	}
@@ -1013,13 +1077,13 @@ export class NapiCoreRuntime implements CoreRuntime {
 		actionName: string,
 		args: RuntimeBytes,
 	): Promise<string> {
-		return await asNativeActorContext(ctx)
+		return await this.#actorContextForOperation(ctx)
 			.schedule()
 			.at(timestampMs, actionName, toNapiBuffer(args));
 	}
 
 	async actorScheduleCancel(ctx: ActorContextHandle, id: string) {
-		return await asNativeActorContext(ctx).schedule().cancel(id);
+		return await this.#actorContextForOperation(ctx).schedule().cancel(id);
 	}
 
 	async actorScheduleGet(
@@ -1027,12 +1091,13 @@ export class NapiCoreRuntime implements CoreRuntime {
 		id: string,
 	): Promise<RuntimeScheduledEventInfo | undefined> {
 		return (
-			(await asNativeActorContext(ctx).schedule().get(id)) ?? undefined
+			(await this.#actorContextForOperation(ctx).schedule().get(id)) ??
+			undefined
 		);
 	}
 
 	async actorScheduleList(ctx: ActorContextHandle) {
-		return await asNativeActorContext(ctx).schedule().list();
+		return await this.#actorContextForOperation(ctx).schedule().list();
 	}
 
 	async actorCronSet(
@@ -1044,7 +1109,7 @@ export class NapiCoreRuntime implements CoreRuntime {
 		args: RuntimeBytes,
 		maxHistory: number | undefined,
 	) {
-		await asNativeActorContext(ctx)
+		await this.#actorContextForOperation(ctx)
 			.schedule()
 			.cronSet(
 				name,
@@ -1064,7 +1129,7 @@ export class NapiCoreRuntime implements CoreRuntime {
 		args: RuntimeBytes,
 		maxHistory: number | undefined,
 	) {
-		await asNativeActorContext(ctx)
+		await this.#actorContextForOperation(ctx)
 			.schedule()
 			.cronEvery(
 				name,
@@ -1079,20 +1144,23 @@ export class NapiCoreRuntime implements CoreRuntime {
 		ctx: ActorContextHandle,
 		name: string,
 	): Promise<RuntimeCronJobInfo | undefined> {
-		return ((await asNativeActorContext(ctx).schedule().cronGet(name)) ??
-			undefined) as RuntimeCronJobInfo | undefined;
+		return ((await this.#actorContextForOperation(ctx)
+			.schedule()
+			.cronGet(name)) ?? undefined) as RuntimeCronJobInfo | undefined;
 	}
 
 	async actorCronList(
 		ctx: ActorContextHandle,
 	): Promise<RuntimeCronJobInfo[]> {
-		return (await asNativeActorContext(ctx)
+		return (await this.#actorContextForOperation(ctx)
 			.schedule()
 			.cronList()) as RuntimeCronJobInfo[];
 	}
 
 	async actorCronDelete(ctx: ActorContextHandle, name: string) {
-		return await asNativeActorContext(ctx).schedule().cronDelete(name);
+		return await this.#actorContextForOperation(ctx)
+			.schedule()
+			.cronDelete(name);
 	}
 
 	async actorCronHistory(
@@ -1100,7 +1168,7 @@ export class NapiCoreRuntime implements CoreRuntime {
 		name: string,
 		limit: number | undefined,
 	): Promise<RuntimeCronFire[]> {
-		return (await asNativeActorContext(ctx)
+		return (await this.#actorContextForOperation(ctx)
 			.schedule()
 			.cronHistory(name, limit)) as RuntimeCronFire[];
 	}
@@ -1173,9 +1241,12 @@ export async function loadNapiRuntime(): Promise<{
 	// would snapshot the native `.node` addon into the deploy and 413. The
 	// computed specifier keeps it opaque to static analysis so it is never
 	// bundled. Enforced by scripts/ci/check-edge-native-closure.mjs.
-	const bindings = await import(["@rivetkit", "rivetkit-napi"].join("/"));
+	const [{ AsyncLocalStorage }, bindings] = await Promise.all([
+		import("node:async_hooks"),
+		import(["@rivetkit", "rivetkit-napi"].join("/")),
+	]);
 	return {
 		bindings,
-		runtime: new NapiCoreRuntime(bindings),
+		runtime: new NapiCoreRuntime(bindings, new AsyncLocalStorage()),
 	};
 }

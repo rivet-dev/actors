@@ -3,6 +3,7 @@ import type { ActorQuery } from "@/client/query";
 import type { Encoding } from "@/common/encoding";
 import type { EngineControlClient } from "@/engine-client/driver";
 import type { Registry } from "@/registry";
+import type { CurrentActorInvocation } from "@/registry/runtime";
 import type { ActorActionFunction, ActorGatewayOptions } from "./actor-common";
 import {
 	type ActorConn,
@@ -181,6 +182,13 @@ export const CREATE_ACTOR_CONN_PROXY = Symbol("createActorConnProxy");
  * @template A The actors map type that defines the available actors.
  * @see {@link https://rivet.dev/docs/manage|Create & Manage Actors}
  */
+export interface ClientRawOptions {
+	encoding?: Encoding;
+	gateway?: ActorGatewayOptions;
+	/** Supplies the calling actor's invocation so actor-owned clients propagate its trace and ray. */
+	currentActorInvocation?: CurrentActorInvocation;
+}
+
 export class ClientRaw {
 	#disposed = false;
 
@@ -189,19 +197,20 @@ export class ClientRaw {
 	#driver: EngineControlClient;
 	#encodingKind: Encoding;
 	#gatewayOptions: ActorGatewayOptions;
+	#currentActorInvocation?: CurrentActorInvocation;
 
 	/**
 	 * Creates an instance of Client.
 	 */
 	public constructor(
 		driver: EngineControlClient,
-		encoding: Encoding | undefined,
-		gatewayOptions: ActorGatewayOptions = {},
+		options: ClientRawOptions = {},
 	) {
 		this.#driver = driver;
 
-		this.#encodingKind = encoding ?? "bare";
-		this.#gatewayOptions = gatewayOptions;
+		this.#encodingKind = options.encoding ?? "bare";
+		this.#gatewayOptions = options.gateway ?? {};
+		this.#currentActorInvocation = options.currentActorInvocation;
 	}
 
 	/**
@@ -397,6 +406,7 @@ export class ClientRaw {
 			this.#encodingKind,
 			actorQuery,
 			this.#gatewayOptions,
+			this.#currentActorInvocation,
 		);
 	}
 
@@ -453,9 +463,9 @@ export type AnyClient = Client<Registry<any>>;
 
 export function createClientWithDriver<A extends Registry<any>>(
 	driver: EngineControlClient,
-	config: { encoding?: Encoding; gateway?: ActorGatewayOptions } = {},
+	options: ClientRawOptions = {},
 ): Client<A> {
-	const client = new ClientRaw(driver, config.encoding, config.gateway);
+	const client = new ClientRaw(driver, options);
 
 	// Create proxy for accessing actors by name
 	return new Proxy(client, {

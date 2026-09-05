@@ -3764,6 +3764,7 @@ dependencies = [
  "opentelemetry_sdk",
  "prost 0.13.5",
  "reqwest 0.12.22",
+ "serde_json",
  "thiserror 2.0.12",
  "tokio",
  "tonic",
@@ -3776,9 +3777,12 @@ version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56f8870d3024727e99212eb3bb1762ec16e255e3e6f58eeb3dc8db1aa226746d"
 dependencies = [
+ "base64 0.22.1",
+ "hex",
  "opentelemetry",
  "opentelemetry_sdk",
  "prost 0.13.5",
+ "serde",
  "tonic",
 ]
 
@@ -6312,6 +6316,7 @@ dependencies = [
  "include_dir",
  "js-sys",
  "nix 0.30.1",
+ "opentelemetry",
  "parking_lot",
  "portpicker",
  "rand 0.8.5",
@@ -6341,6 +6346,7 @@ dependencies = [
  "tokio-util",
  "tower-http",
  "tracing",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
  "uuid",
@@ -6389,6 +6395,9 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
  "parking_lot",
  "rivet-depot-client",
  "rivet-error",
@@ -6400,6 +6409,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-logfmt",
+ "tracing-opentelemetry",
  "tracing-stackdriver",
  "tracing-subscriber",
 ]

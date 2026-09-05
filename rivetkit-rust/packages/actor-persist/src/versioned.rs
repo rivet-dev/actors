@@ -1,4 +1,5 @@
 use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
 use vbare::OwnedVersionedData;
 
 use crate::generated::{v1, v2, v3, v4};
@@ -498,6 +499,53 @@ impl OwnedVersionedData for LastPushedAlarm {
 /// optional millisecond timestamp.
 pub enum RunWakeAt {
 	V1(Option<i64>),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ScheduleTraceContextData {
+	pub ray_id: Option<String>,
+	pub traceparent: Option<String>,
+	pub tracestate: Option<String>,
+}
+
+pub enum ScheduleTraceContext {
+	V1(ScheduleTraceContextData),
+}
+
+impl OwnedVersionedData for ScheduleTraceContext {
+	type Latest = ScheduleTraceContextData;
+
+	fn wrap_latest(latest: Self::Latest) -> Self {
+		Self::V1(latest)
+	}
+
+	fn unwrap_latest(self) -> Result<Self::Latest> {
+		match self {
+			Self::V1(data) => Ok(data),
+		}
+	}
+
+	fn deserialize_version(payload: &[u8], version: u16) -> Result<Self> {
+		match version {
+			1 => Ok(Self::V1(serde_bare::from_slice(payload)?)),
+			_ => bail!("invalid schedule trace context version: {version}"),
+		}
+	}
+
+	fn serialize_version(self, version: u16) -> Result<Vec<u8>> {
+		match (self, version) {
+			(Self::V1(data), 1) => serde_bare::to_vec(&data).map_err(Into::into),
+			(_, version) => bail!("unexpected schedule trace context version: {version}"),
+		}
+	}
+
+	fn deserialize_converters() -> Vec<impl Fn(Self) -> Result<Self>> {
+		Vec::<fn(Self) -> Result<Self>>::new()
+	}
+
+	fn serialize_converters() -> Vec<impl Fn(Self) -> Result<Self>> {
+		Vec::<fn(Self) -> Result<Self>>::new()
+	}
 }
 
 impl OwnedVersionedData for RunWakeAt {

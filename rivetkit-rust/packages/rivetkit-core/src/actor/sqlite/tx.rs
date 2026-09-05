@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::RuntimeSpawner;
+use crate::telemetry::SqliteOperation;
 
 #[cfg(feature = "sqlite-local")]
 use super::profiling::{FINGERPRINT_FORMAT_VERSION, TransactionProfile};
@@ -277,7 +278,7 @@ impl SqliteDb {
 		}
 
 		let db = self.clone();
-		run_detached_transaction_task(
+		let task = run_detached_transaction_task(
 			async move {
 				db.begin_transaction_profiled_inner(
 					key,
@@ -289,8 +290,8 @@ impl SqliteDb {
 				.await
 			},
 			"sqlite transaction begin task failed",
-		)
-		.await
+		);
+		self.traced(SqliteOperation::TransactionBegin, task).await
 	}
 
 	#[cfg(test)]
@@ -495,11 +496,11 @@ impl SqliteDb {
 	async fn transaction_exec(&self, key: &str, sql: String) -> Result<QueryResult> {
 		let db = self.clone();
 		let key = key.to_owned();
-		run_detached_transaction_task(
+		let task = run_detached_transaction_task(
 			async move { db.transaction_exec_inner(&key, sql).await },
 			"sqlite transaction exec task failed",
-		)
-		.await
+		);
+		self.traced(SqliteOperation::TransactionExec, task).await
 	}
 
 	async fn transaction_exec_inner(&self, key: &str, sql: String) -> Result<QueryResult> {
@@ -547,11 +548,11 @@ impl SqliteDb {
 	) -> Result<ExecuteResult> {
 		let db = self.clone();
 		let key = key.to_owned();
-		run_detached_transaction_task(
+		let task = run_detached_transaction_task(
 			async move { db.transaction_execute_inner(&key, sql, params).await },
 			"sqlite transaction execute task failed",
-		)
-		.await
+		);
+		self.traced(SqliteOperation::TransactionExecute, task).await
 	}
 
 	async fn transaction_execute_inner(
@@ -616,11 +617,16 @@ impl SqliteDb {
 	async fn finish_transaction(&self, key: &str, commit: bool) -> Result<()> {
 		let db = self.clone();
 		let key = key.to_owned();
-		run_detached_transaction_task(
+		let operation = if commit {
+			SqliteOperation::TransactionCommit
+		} else {
+			SqliteOperation::TransactionRollback
+		};
+		let task = run_detached_transaction_task(
 			async move { db.finish_transaction_inner(&key, commit).await },
 			"sqlite transaction finish task failed",
-		)
-		.await
+		);
+		self.traced(operation, task).await
 	}
 
 	async fn finish_transaction_inner(&self, key: &str, commit: bool) -> Result<()> {

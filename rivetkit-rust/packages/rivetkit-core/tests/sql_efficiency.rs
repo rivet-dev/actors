@@ -295,6 +295,12 @@ fn query_catalog() -> Vec<QueryCase> {
 			}]),
 		},
 		QueryCase {
+			id: "migration.reset_schedule_trace_contexts",
+			sql: internal_storage::RESET_SCHEDULE_TRACE_CONTEXTS_SQL.into(),
+			params: vec![],
+			expectation: indexed(None, &["_rivet_meta"]),
+		},
+		QueryCase {
 			id: "queue.next_id",
 			sql: internal_storage::LOAD_QUEUE_NEXT_ID_SQL.into(),
 			params: vec![],
@@ -489,6 +495,21 @@ fn query_catalog() -> Vec<QueryCase> {
 			expectation: indexed(None, all_schedules),
 		},
 		QueryCase {
+			id: "schedule.delete_orphan_trace_context",
+			sql: queries::DELETE_ORPHAN_SCHEDULE_TRACE_CONTEXT_SQL.into(),
+			params: vec![
+				text("schedule_trace_context:at:00000000"),
+				text("at:00000000"),
+			],
+			expectation: indexed(None, &["_rivet_meta", "_rivet_schedule_events"]),
+		},
+		QueryCase {
+			id: "schedule.delete_trace_context",
+			sql: queries::DELETE_SCHEDULE_TRACE_CONTEXT_SQL.into(),
+			params: vec![text("schedule_trace_context:at:00000000")],
+			expectation: indexed(None, &["_rivet_meta"]),
+		},
+		QueryCase {
 			id: "schedule.get_one_shot",
 			sql: queries::GET_SCHEDULED_EVENT_SQL.into(),
 			params: vec![text("at:00000000"), 0_i64.into()],
@@ -558,7 +579,10 @@ fn query_catalog() -> Vec<QueryCase> {
 			id: "schedule.due",
 			sql: queries::TAKE_DUE_SCHEDULES_SQL.into(),
 			params: vec![5_i64.into()],
-			expectation: indexed(Some("_rivet_schedule_events_trigger_at"), all_schedules),
+			expectation: indexed(
+				Some("_rivet_schedule_events_trigger_at"),
+				&["_rivet_schedule_events", "_rivet_meta"],
+			),
 		},
 		QueryCase {
 			id: "schedule.claim_one_shots",
@@ -573,6 +597,16 @@ fn query_catalog() -> Vec<QueryCase> {
 				6_i64.into(),
 			],
 			expectation: indexed(None, all_schedules),
+		},
+		QueryCase {
+			id: "schedule.delete_claimed_trace_contexts",
+			sql: queries::delete_schedule_trace_contexts_sql(3),
+			params: vec![
+				text("schedule_trace_context:at:00000000"),
+				text("schedule_trace_context:at:00000003"),
+				text("schedule_trace_context:at:00000006"),
+			],
+			expectation: indexed(None, &["_rivet_meta"]),
 		},
 		QueryCase {
 			id: "schedule.advance_skipped",

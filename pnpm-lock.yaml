@@ -3538,6 +3538,9 @@ importers:
       '@hono/zod-openapi':
         specifier: ^1.1.5
         version: 1.1.5(hono@4.11.9)(zod@4.1.13)
+      '@opentelemetry/api':
+        specifier: ^1.1.0
+        version: 1.9.0
       '@rivet-dev/agent-os-core':
         specifier: ^0.1.1
         version: 0.1.1(pyodide@0.28.3)

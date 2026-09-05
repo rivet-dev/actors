@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 #[cfg(feature = "sqlite-local")]
@@ -23,6 +23,7 @@ use crate::time::Instant;
 const ACTOR_LABELS: &[&str] = &["actor_name"];
 const INBOX_LABELS: &[&str] = &["actor_name", "inbox"];
 const USER_TASK_LABELS: &[&str] = &["actor_name", "kind"];
+const INVOCATION_LABELS: &[&str] = &["actor_name", "action_name", "invocation_type", "status"];
 const WORK_LABELS: &[&str] = &["actor_name", "kind"];
 const SHUTDOWN_LABELS: &[&str] = &["actor_name", "reason"];
 const STATE_MUTATION_LABELS: &[&str] = &["actor_name", "reason"];
@@ -129,9 +130,61 @@ pub(crate) struct StartupTimer {
 	finished: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum InvocationType {
+	Action,
+	Scheduled,
+}
+
+impl InvocationType {
+	pub(crate) fn as_label(self) -> &'static str {
+		match self {
+			Self::Action => "action",
+			Self::Scheduled => "scheduled",
+		}
+	}
+
+	/// OpenTelemetry span kind for this invocation. An action is entered from
+	/// outside the actor, while a scheduled fire originates inside it.
+	pub(crate) fn otel_kind(self) -> &'static str {
+		match self {
+			Self::Action => "server",
+			Self::Scheduled => "internal",
+		}
+	}
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum InvocationStatus {
+	Ok,
+	Error,
+	Dropped,
+}
+
+impl InvocationStatus {
+	/// Classifies a failed invocation, distinguishing dropped replies from user or runtime errors.
+	pub(crate) fn from_error(error: &anyhow::Error) -> Self {
+		let structured = rivet_error::RivetError::extract(error);
+		if structured.group() == "actor" && structured.code() == "dropped_reply" {
+			Self::Dropped
+		} else {
+			Self::Error
+		}
+	}
+
+	fn as_label(self) -> &'static str {
+		match self {
+			Self::Ok => "ok",
+			Self::Error => "error",
+			Self::Dropped => "dropped",
+		}
+	}
+}
+
 #[derive(Debug)]
 struct ActorMetricInner {
 	labels: ActorMetricLabels,
+	action_names: BTreeSet<String>,
 	#[cfg(feature = "sqlite-local")]
 	sqlite_profiling: crate::SqliteProfilingConfig,
 	#[cfg(feature = "sqlite-local")]
@@ -182,6 +235,8 @@ struct ActorMetricCollectors {
 	inbox_depth: IntGaugeVec,
 	user_tasks_active: IntGaugeVec,
 	user_task_duration_seconds: HistogramVec,
+	invocations_total: IntCounterVec,
+	invocation_duration_seconds: HistogramVec,
 	http_requests_active: IntGaugeVec,
 	keep_awake_active: IntGaugeVec,
 	shutdown_tasks_active: IntGaugeVec,
@@ -1091,6 +1146,25 @@ impl ActorMetricCollectors {
 			USER_TASK_LABELS,
 		)
 		.expect("create actor_user_task_duration_seconds histogram");
+		let invocations_total = IntCounterVec::new(
+			Opts::new(
+				"rivetkit_actor_invocations_total",
+				"completed actor invocations",
+			),
+			INVOCATION_LABELS,
+		)
+		.expect("create actor_invocations_total counter");
+		let invocation_duration_seconds = HistogramVec::new(
+			HistogramOpts::new(
+				"rivetkit_actor_invocation_duration_seconds",
+				"actor invocation duration in seconds",
+			)
+			// Invocations land in the hundreds of microseconds, which the
+			// Prometheus default buckets collapse into their first bucket.
+			.buckets(rivet_metrics::MICRO_BUCKETS.to_vec()),
+			INVOCATION_LABELS,
+		)
+		.expect("create actor_invocation_duration_seconds histogram");
 		let http_requests_active = IntGaugeVec::new(
 			Opts::new(
 				"rivetkit_actor_http_requests_active",
@@ -1407,6 +1481,11 @@ impl ActorMetricCollectors {
 		register_metric(&rivet_metrics::REGISTRY, inbox_depth.clone());
 		register_metric(&rivet_metrics::REGISTRY, user_tasks_active.clone());
 		register_metric(&rivet_metrics::REGISTRY, user_task_duration_seconds.clone());
+		register_metric(&rivet_metrics::REGISTRY, invocations_total.clone());
+		register_metric(
+			&rivet_metrics::REGISTRY,
+			invocation_duration_seconds.clone(),
+		);
 		register_metric(&rivet_metrics::REGISTRY, http_requests_active.clone());
 		register_metric(&rivet_metrics::REGISTRY, keep_awake_active.clone());
 		register_metric(&rivet_metrics::REGISTRY, shutdown_tasks_active.clone());
@@ -1521,6 +1600,8 @@ impl ActorMetricCollectors {
 			inbox_depth,
 			user_tasks_active,
 			user_task_duration_seconds,
+			invocations_total,
+			invocation_duration_seconds,
 			http_requests_active,
 			keep_awake_active,
 			shutdown_tasks_active,
@@ -1584,11 +1665,24 @@ impl ActorMetricCollectors {
 
 impl ActorMetrics {
 	pub(crate) fn new(actor_name: impl Into<String>) -> Self {
-		Self::new_with_sqlite_profiling(actor_name, crate::SqliteProfilingConfig::default())
+		Self::new_for_actor(
+			actor_name,
+			std::iter::empty(),
+			crate::SqliteProfilingConfig::default(),
+		)
 	}
 
+	#[cfg(all(test, feature = "sqlite-local"))]
 	pub(crate) fn new_with_sqlite_profiling(
 		actor_name: impl Into<String>,
+		_sqlite_profiling: crate::SqliteProfilingConfig,
+	) -> Self {
+		Self::new_for_actor(actor_name, std::iter::empty(), _sqlite_profiling)
+	}
+
+	pub(crate) fn new_for_actor(
+		actor_name: impl Into<String>,
+		action_names: impl IntoIterator<Item = String>,
 		_sqlite_profiling: crate::SqliteProfilingConfig,
 	) -> Self {
 		let labels = ActorMetricLabels {
@@ -1610,6 +1704,7 @@ impl ActorMetrics {
 		Self {
 			inner: Arc::new(ActorMetricInner {
 				labels,
+				action_names: action_names.into_iter().collect(),
 				#[cfg(feature = "sqlite-local")]
 				sqlite_profiling: _sqlite_profiling,
 				#[cfg(feature = "sqlite-local")]
@@ -1861,6 +1956,42 @@ impl ActorMetrics {
 		METRICS
 			.user_task_duration_seconds
 			.with_label_values(&[labels[0], kind])
+			.observe(duration.as_secs_f64());
+	}
+
+	/// Folds an undeclared action name down to a bounded placeholder.
+	///
+	/// Action names arrive from callers, so using one verbatim would mint a new
+	/// series per value wherever the name becomes a dimension. `_OTHER` is the
+	/// fallback OpenTelemetry defines for exactly this, and it cannot collide
+	/// with a declared action name.
+	pub(crate) fn label_action_name<'a>(&'a self, action_name: &'a str) -> &'a str {
+		if self.inner.action_names.contains(action_name) {
+			action_name
+		} else {
+			"_OTHER"
+		}
+	}
+
+	pub(crate) fn record_invocation(
+		&self,
+		action_name: &str,
+		invocation_type: InvocationType,
+		status: InvocationStatus,
+		duration: Duration,
+	) {
+		let actor_labels = self.actor_labels();
+		let action_name = self.label_action_name(action_name);
+		let labels = [
+			actor_labels[0],
+			action_name,
+			invocation_type.as_label(),
+			status.as_label(),
+		];
+		METRICS.invocations_total.with_label_values(&labels).inc();
+		METRICS
+			.invocation_duration_seconds
+			.with_label_values(&labels)
 			.observe(duration.as_secs_f64());
 	}
 

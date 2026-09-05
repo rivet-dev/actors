@@ -150,6 +150,10 @@ pub(crate) async fn import_legacy_actor_snapshot(
 			params: Some(vec![BindParam::Blob(actor.state.clone())]),
 		},
 		SqliteBatchStatement {
+			sql: RESET_SCHEDULE_TRACE_CONTEXTS_SQL.to_owned(),
+			params: None,
+		},
+		SqliteBatchStatement {
 			sql: RESET_SCHEDULES_FOR_LEGACY_IMPORT_SQL.to_owned(),
 			params: None,
 		},
@@ -1163,6 +1167,9 @@ pub(crate) async fn clear_imported_storage(db: &SqliteDb, actor_id: &str) -> Res
 			.await
 			.with_context(|| format!("clear partially imported {table} rows"))?;
 	}
+	db.execute(RESET_SCHEDULE_TRACE_CONTEXTS_SQL, None)
+		.await
+		.context("clear imported schedule trace contexts")?;
 	Ok(())
 }
 

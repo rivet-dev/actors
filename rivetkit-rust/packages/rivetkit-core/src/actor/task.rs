@@ -201,6 +201,7 @@ pub enum DispatchCommand {
 	Action {
 		name: String,
 		args: Vec<u8>,
+		incoming: crate::telemetry::IncomingInvocationContext,
 		conn: ConnHandle,
 		reply: oneshot::Sender<Result<Vec<u8>>>,
 	},
@@ -902,9 +903,13 @@ impl ActorTask {
 			DispatchCommand::Action {
 				name,
 				args,
+				incoming,
 				conn,
 				reply,
 			} => {
+				let invocation =
+					crate::telemetry::ActorInvocation::start_action(&self.ctx, &name, incoming);
+				let invocation_telemetry = invocation.telemetry();
 				tracing::info!(
 					actor_id = %self.ctx.actor_id(),
 					action_name = %name,
@@ -921,7 +926,8 @@ impl ActorTask {
 						args,
 						conn: Some(conn),
 						scheduled_fire: None,
-						reply: Reply::from(tracked_reply_tx),
+						reply: Reply::from(tracked_reply_tx)
+							.with_invocation_telemetry(invocation_telemetry),
 					},
 				) {
 					Ok(()) => {
@@ -934,7 +940,7 @@ impl ActorTask {
 						let actor_id = self.ctx.actor_id().to_owned();
 						let ctx = self.ctx.clone();
 						self.ctx.spawn_work(ActorWorkKind::Action, async move {
-							match tracked_reply_rx.await {
+							let result = match tracked_reply_rx.await {
 								Ok(result) => {
 									let result =
 										result.map_err(|error| ctx.attach_actor_to_error(error));
@@ -944,7 +950,7 @@ impl ActorTask {
 										ok = result.is_ok(),
 										"actor task: tracked reply received, forwarding"
 									);
-									let _ = reply.send(result);
+									result
 								}
 								Err(_) => {
 									tracing::warn!(
@@ -955,9 +961,11 @@ impl ActorTask {
 									let error = ctx.attach_actor_to_error(
 										ActorLifecycleError::DroppedReply.build(),
 									);
-									let _ = reply.send(Err(error));
+									Err(error)
 								}
-							}
+							};
+							invocation.finish(result.as_ref().err());
+							let _ = reply.send(result);
 						});
 					}
 					Err(error) => {
@@ -967,7 +975,9 @@ impl ActorTask {
 							?error,
 							"actor task: failed to enqueue ActorEvent::Action"
 						);
-						let _ = reply.send(Err(self.attach_actor_to_error(error)));
+						let error = self.attach_actor_to_error(error);
+						invocation.finish(Some(&error));
+						let _ = reply.send(Err(error));
 						self.log_dispatch_command_handled(command_kind, "enqueue_failed");
 					}
 				}

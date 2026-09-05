@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::future::Future;
 use std::io::Cursor;
 use std::sync::{
 	Arc,
@@ -22,6 +23,9 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use tokio::sync::Mutex as AsyncMutex;
 #[cfg(feature = "sqlite-local")]
 use tokio::task::JoinHandle;
+use tracing::Instrument as _;
+
+use crate::telemetry::SqliteOperation;
 
 #[cfg(feature = "sqlite-local")]
 mod envoy_sqlite_transport;
@@ -234,6 +238,7 @@ pub struct SqliteDb {
 	/// always sets up sqlite storage under the hood, so handle/actor_id are
 	/// not a reliable signal for whether the user opted in; this flag is.
 	enabled: bool,
+	invocation_telemetry: Option<crate::ActorInvocationTelemetry>,
 	#[cfg(feature = "sqlite-local")]
 	// Forced-sync: native SQLite handles are used inside spawn_blocking and
 	// synchronous diagnostic accessors.
@@ -263,6 +268,7 @@ impl Default for SqliteDb {
 				SqliteBackend::RemoteEnvoy
 			},
 			enabled: false,
+			invocation_telemetry: None,
 			#[cfg(feature = "sqlite-local")]
 			db: Default::default(),
 			#[cfg(feature = "sqlite-local")]
@@ -299,6 +305,7 @@ impl SqliteDb {
 			generation,
 			backend: select_sqlite_backend(remote_sqlite)?,
 			enabled,
+			invocation_telemetry: None,
 			#[cfg(feature = "sqlite-local")]
 			db: Default::default(),
 			#[cfg(feature = "sqlite-local")]
@@ -349,6 +356,34 @@ impl SqliteDb {
 
 	pub fn backend(&self) -> SqliteBackend {
 		self.backend
+	}
+
+	#[doc(hidden)]
+	pub fn with_invocation_telemetry(
+		mut self,
+		telemetry: Option<crate::ActorInvocationTelemetry>,
+	) -> Self {
+		self.invocation_telemetry = telemetry;
+		self
+	}
+
+	/// Runs one SQLite operation inside a `rivet.sqlite.*` span when the
+	/// current invocation is traced.
+	pub(super) async fn traced<T>(
+		&self,
+		operation: SqliteOperation,
+		future: impl Future<Output = Result<T>>,
+	) -> Result<T> {
+		let Some(mut span) = self
+			.invocation_telemetry
+			.as_ref()
+			.and_then(|telemetry| telemetry.start_sqlite(operation))
+		else {
+			return future.await;
+		};
+		let result = future.instrument(span.span()).await;
+		span.finish(result.as_ref().err());
+		result
 	}
 
 	pub async fn get_pages(
@@ -513,6 +548,10 @@ impl SqliteDb {
 
 	pub async fn exec(&self, sql: impl Into<String>) -> Result<QueryResult> {
 		let sql = sql.into();
+		self.traced(SqliteOperation::Exec, self.exec_untraced(sql)).await
+	}
+
+	async fn exec_untraced(&self, sql: String) -> Result<QueryResult> {
 		let sql_for_log = sql.clone();
 		#[cfg(feature = "sqlite-local")]
 		let started_at = self
@@ -566,6 +605,14 @@ impl SqliteDb {
 		params: Option<Vec<BindParam>>,
 	) -> Result<QueryResult> {
 		let sql = sql.into();
+		self.traced(SqliteOperation::Query, self.query_untraced(sql, params)).await
+	}
+
+	async fn query_untraced(
+		&self,
+		sql: String,
+		params: Option<Vec<BindParam>>,
+	) -> Result<QueryResult> {
 		let sql_for_log = sql.clone();
 		let binding_count = bind_param_count(&params);
 		#[cfg(feature = "sqlite-local")]
@@ -626,6 +673,14 @@ impl SqliteDb {
 		params: Option<Vec<BindParam>>,
 	) -> Result<ExecResult> {
 		let sql = sql.into();
+		self.traced(SqliteOperation::Run, self.run_untraced(sql, params)).await
+	}
+
+	async fn run_untraced(
+		&self,
+		sql: String,
+		params: Option<Vec<BindParam>>,
+	) -> Result<ExecResult> {
 		let sql_for_log = sql.clone();
 		let binding_count = bind_param_count(&params);
 		#[cfg(feature = "sqlite-local")]
@@ -685,6 +740,15 @@ impl SqliteDb {
 		params: Option<Vec<BindParam>>,
 	) -> Result<ExecuteResult> {
 		let sql = sql.into();
+		self.traced(SqliteOperation::Execute, self.execute_untraced(sql, params))
+			.await
+	}
+
+	async fn execute_untraced(
+		&self,
+		sql: String,
+		params: Option<Vec<BindParam>>,
+	) -> Result<ExecuteResult> {
 		let sql_for_log = sql.clone();
 		let binding_count = bind_param_count(&params);
 		#[cfg(feature = "sqlite-local")]
@@ -737,6 +801,14 @@ impl SqliteDb {
 		&self,
 		statements: Vec<SqliteBatchStatement>,
 	) -> Result<Vec<ExecuteResult>> {
+		self.traced(SqliteOperation::ExecuteBatch, self.execute_batch_untraced(statements))
+			.await
+	}
+
+	async fn execute_batch_untraced(
+		&self,
+		statements: Vec<SqliteBatchStatement>,
+	) -> Result<Vec<ExecuteResult>> {
 		let statement_count = statements.len();
 		let binding_count = statements
 			.iter()
@@ -749,7 +821,11 @@ impl SqliteDb {
 			}
 		} else {
 			async {
-				let transaction = self.begin_transaction(None).await?;
+				let transaction = self
+					.clone()
+					.with_invocation_telemetry(None)
+					.begin_transaction(None)
+					.await?;
 				let mut results = Vec::with_capacity(statements.len());
 				for statement in statements {
 					match transaction.execute(statement.sql, statement.params).await {

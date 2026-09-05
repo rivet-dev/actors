@@ -18,8 +18,9 @@ use napi_derive::napi;
 use parking_lot::Mutex;
 use rivetkit_core::types::ActorKeySegment;
 use rivetkit_core::{
-	ActorContext as CoreActorContext, ActorWorkKind, ConnHandle as CoreConnHandle, KeepAwakeRegion,
-	Request as CoreRequest, RequestSaveOpts, StateDelta, WebSocketCallbackRegion, WorkflowKvWrite,
+	ActorContext as CoreActorContext, ActorInvocationSpanContext, ActorInvocationTraceContext,
+	ActorWorkKind, ConnHandle as CoreConnHandle, KeepAwakeRegion, Request as CoreRequest,
+	RequestSaveOpts, StateDelta, WebSocketCallbackRegion, WorkflowKvWrite,
 };
 use scc::HashMap as SccHashMap;
 use tokio::sync::mpsc::UnboundedSender;
@@ -77,6 +78,44 @@ pub struct JsActorKeySegment {
 	pub kind: String,
 	pub string_value: Option<String>,
 	pub number_value: Option<f64>,
+}
+
+/// Active actor invocation correlation exposed to the TypeScript runtime adapter.
+#[napi(object)]
+pub struct JsActorInvocationTraceContext {
+	pub ray_id: String,
+	pub span: Option<JsActorInvocationSpanContext>,
+}
+
+/// W3C span context of the current invocation span, present only when tracing is active.
+#[napi(object)]
+pub struct JsActorInvocationSpanContext {
+	pub trace_id: String,
+	pub span_id: String,
+	pub trace_flags: u8,
+	pub traceparent: String,
+	pub tracestate: Option<String>,
+}
+
+impl From<ActorInvocationTraceContext> for JsActorInvocationTraceContext {
+	fn from(value: ActorInvocationTraceContext) -> Self {
+		Self {
+			ray_id: value.ray_id,
+			span: value.span.map(JsActorInvocationSpanContext::from),
+		}
+	}
+}
+
+impl From<ActorInvocationSpanContext> for JsActorInvocationSpanContext {
+	fn from(value: ActorInvocationSpanContext) -> Self {
+		Self {
+			trace_id: value.trace_id,
+			span_id: value.span_id,
+			trace_flags: value.trace_flags,
+			traceparent: value.traceparent,
+			tracestate: value.tracestate,
+		}
+	}
 }
 
 #[napi(object)]
@@ -273,9 +312,19 @@ impl ActorContext {
 	#[napi]
 	pub fn sql(&self) -> JsNativeDatabase {
 		JsNativeDatabase::new(
-			self.inner.sql().clone(),
+			self.inner.invocation_sql(),
 			Some(self.inner.actor_id().to_owned()),
 		)
+	}
+
+	#[napi]
+	pub fn same_actor_instance(&self, other: &ActorContext) -> bool {
+		self.inner.is_same_instance(&other.inner)
+	}
+
+	#[napi]
+	pub fn invocation_trace_context(&self) -> Option<JsActorInvocationTraceContext> {
+		self.inner.invocation_trace_context().map(Into::into)
 	}
 
 	#[napi]

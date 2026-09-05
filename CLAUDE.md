@@ -392,6 +392,7 @@ Load these only when the task touches the topic.
 - **[SQLite VFS parity](docs-internal/engine/sqlite-vfs.md)** — native Rust VFS ↔ WASM TypeScript VFS 1:1 parity rule, v2 storage keys, chunk layout, delete/truncate strategy. Read before touching either VFS.
 - **[SQLite optimizations](docs-internal/engine/SQLITE_OPTIMIZATIONS.md)** — brief tracker for SQLite cold-read, VFS, storage, preload, and benchmark optimization ideas.
 - **[TLS trust roots](docs-internal/engine/tls-trust-roots.md)** — rustls native+webpki union rationale, which clients use which backend.
+- **[RivetKit telemetry](docs-internal/engine/rivetkit-telemetry.md)** — Core-owned invocation and SQLite spans, ray semantics, schedule trace origins in `_rivet_meta`, native OTLP export. Read before touching actor tracing, metrics, or log correlation.
 - **[Sleep sequence](docs-internal/engine/sleep-sequence.md)** — engine lifecycle authority, `keepAwake` vs `waitUntil` semantics, grace deadline shutdown-token abort, `can_arm_sleep_timer` vs `can_finalize_sleep` predicates. Read before touching sleep/destroy lifecycle.
 
 ### Agent procedural (`.claude/reference/`)

@@ -60,6 +60,13 @@ const integrationActor = actor({
 		getCount: async (c) => {
 			return c.state.count;
 		},
+		logContext: async (c, correlationToken: string) => {
+			c.log.warn(
+				{ correlation_token: correlationToken },
+				"native actor log context",
+			);
+			return correlationToken;
+		},
 		validatedAction: async (_c, payload: { amount: number }) => {
 			return payload.amount;
 		},
@@ -113,12 +120,44 @@ const integrationActor = actor({
 				count: c.state.count,
 			};
 		},
+		scheduleTrace: async (c, correlationToken: string) => {
+			await c.schedule.after(50, "scheduledTrace", correlationToken);
+			return correlationToken;
+		},
+		scheduledTrace: async (c, correlationToken: string) => {
+			await c.db.execute("SELECT ? AS trace", correlationToken);
+		},
+		sqliteFailure: async (c) => {
+			await c.db.execute("SELECT value FROM missing_trace_test_table");
+		},
 		stateSnapshot: async (c) => {
 			const kvValue = await c.kv.get("count");
 			return {
 				count: c.state.count,
 				kvCount: kvValue ? Number(kvValue) : null,
 			};
+		},
+		// Interleaves awaits, SQLite, a child actor call and a log so two
+		// overlapping invocations of this action have every chance to observe
+		// each other's telemetry context.
+		isolationProbe: async (c, token: string, fail: boolean) => {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			await c.db.execute("SELECT ? AS probe", token);
+			c.log.warn({ correlation_token: token }, "isolation probe");
+			const client = c.client<any>();
+			await client.integrationActor
+				.getForId(c.actorId, {
+					params: { userId: "internal-integration-test" },
+				})
+				.getCount();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			await c.db.execute("SELECT ? AS probe2", token);
+			if (fail) {
+				throw new UserError("isolation probe failure", {
+					code: "isolation_probe_failed",
+				});
+			}
+			return token;
 		},
 		getCountViaClient: async (c) => {
 			const client = c.client<any>();

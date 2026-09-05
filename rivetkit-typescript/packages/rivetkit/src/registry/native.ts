@@ -8,6 +8,7 @@ import {
 	type ActorCron,
 	type ActorCronEveryOptions,
 	type ActorCronSetOptions,
+	type ActorLogger,
 	type ActorSchedule,
 	CONN_STATE_MANAGER_SYMBOL,
 	type CronFire,
@@ -109,6 +110,7 @@ import type {
 	CoreRuntime,
 	RegistryHandle,
 	RuntimeActorConfig,
+	RuntimeActorInvocationTraceContext,
 	RuntimeBytes,
 	RuntimeCronFire,
 	RuntimeCronJobInfo,
@@ -2694,6 +2696,7 @@ export class ActorContextHandleAdapter {
 	#db?: unknown;
 	#dispatchCancelToken?: CancellationTokenHandle;
 	#kv?: NativeKvAdapter;
+	#log?: ActorLogger;
 	#queue?: NativeQueueAdapter;
 	#request?: Request;
 	#schedule?: NativeScheduleAdapter;
@@ -2930,8 +2933,30 @@ export class ActorContextHandleAdapter {
 		return this.#connMap;
 	}
 
+	#invocationTraceContext(): RuntimeActorInvocationTraceContext | undefined {
+		return callNativeSync(() =>
+			this.#runtime.actorInvocationTraceContext(this.#ctx),
+		);
+	}
+
 	get log() {
-		return logger();
+		if (!this.#log) {
+			// Actor fields follow the camelCase used by the rest of the
+			// TypeScript logs. trace_id and span_id stay snake_case because
+			// that is what OpenTelemetry log correlation tooling looks for.
+			const invocation = this.#invocationTraceContext();
+			this.#log = logger().child({
+				actorId: this.actorId,
+				actorName: this.name,
+				actorKey: this.key,
+				...(invocation && { rayId: invocation.rayId }),
+				...(invocation?.span && {
+					trace_id: invocation.span.traceId,
+					span_id: invocation.span.spanId,
+				}),
+			});
+		}
+		return this.#log;
 	}
 
 	get abortSignal(): AbortSignal {
@@ -3969,12 +3994,18 @@ export function buildNativeFactory(
 		events: config.events,
 		queues: config.queues,
 	};
-	const createClient = () =>
+	const createClient = (ctx: ActorContextHandle) =>
 		createClientWithDriver(
 			new RemoteEngineControlClient(
 				convertRegistryConfigToClientConfig(registryConfig),
 			),
-			{ encoding: "bare" },
+			{
+				encoding: "bare",
+				currentActorInvocation: () =>
+					callNativeSync(() =>
+						runtime.actorInvocationTraceContext(ctx),
+					),
+			},
 		);
 	const run = getRunFunction(config.run);
 	const runHandlerCoordinator =
@@ -4018,7 +4049,7 @@ export function buildNativeFactory(
 		new ActorContextHandleAdapter(
 			runtime,
 			ctx,
-			createClient,
+			() => createClient(ctx),
 			schemaConfig,
 			databaseProvider,
 			request,
@@ -4037,7 +4068,7 @@ export function buildNativeFactory(
 			runtime,
 			ctx,
 			conn,
-			createClient,
+			() => createClient(ctx),
 			schemaConfig,
 			databaseProvider,
 			request,
@@ -5286,21 +5317,29 @@ export function buildNativeFactory(
 							conn != null
 								? makeConnCtx(ctx, conn, undefined, cancelToken)
 								: makeActorCtx(ctx, undefined, cancelToken);
-						try {
-							return encodeValue(
-								await handler(
-									actorCtx,
-									...validateActionArgs(
-										schemaConfig.actionInputSchemas,
-										name,
-										decodeArgs(args),
+						const runAction = async () => {
+							try {
+								return encodeValue(
+									await handler(
+										actorCtx,
+										...validateActionArgs(
+											schemaConfig.actionInputSchemas,
+											name,
+											decodeArgs(args),
+										),
+										...(scheduledFire
+											? [scheduledFire]
+											: []),
 									),
-									...(scheduledFire ? [scheduledFire] : []),
-								),
-							);
-						} finally {
-							await actorCtx.dispose();
-						}
+								);
+							} finally {
+								await actorCtx.dispose();
+							}
+						};
+						return await runtime.runWithActorInvocationContext(
+							ctx,
+							runAction,
+						);
 					},
 				),
 			]),
@@ -5339,7 +5378,7 @@ export function buildNativeFactory(
 					runtime,
 					ctx,
 					conn,
-					createClient,
+					() => createClient(ctx),
 					schemaConfig,
 					databaseProvider,
 					jsRequest,

@@ -8,6 +8,19 @@ export interface JsActorKeySegment {
   stringValue?: string
   numberValue?: number
 }
+/** Active actor invocation correlation exposed to the TypeScript runtime adapter. */
+export interface JsActorInvocationTraceContext {
+  rayId: string
+  span?: JsActorInvocationSpanContext
+}
+/** W3C span context of the current invocation span, present only when tracing is active. */
+export interface JsActorInvocationSpanContext {
+  traceId: string
+  spanId: string
+  traceFlags: number
+  traceparent: string
+  tracestate?: string
+}
 export interface JsHttpRequest {
   method: string
   uri: string
@@ -257,6 +270,12 @@ export interface JsServerlessStreamError {
   code: string
   message: string
 }
+/**
+ * Routes the OpenTelemetry SDK's own warnings, such as dropped spans, to the
+ * JavaScript logger. Call before constructing a registry; later calls are
+ * ignored because the tracing subscriber initializes once.
+ */
+export declare function setTelemetryLogSink(callback: (...args: any[]) => any): void
 export interface JsScheduledEventInfo {
   id: string
   action: string
@@ -306,6 +325,8 @@ export declare class ActorContext {
   endOnStateChange(): void
   kv(): Kv
   sql(): JsNativeDatabase
+  sameActorInstance(other: ActorContext): boolean
+  invocationTraceContext(): JsActorInvocationTraceContext | null
   provisionActorRuntimeSocket(): Promise<JsActorRuntimeSocketEndpointInfo>
   schedule(): Schedule
   queue(): Queue

@@ -13,7 +13,7 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 // interrupted imports can be detected and retried. Fixed core-owned logical
 // metadata may also live here when adding a column would break older runtimes'
 // ability to open the database. This is not a general-purpose runtime KV store.
-// W[bootstrap + core metadata only | point upsert | <100 B | 1-page map]
+// W[bootstrap + bounded core metadata | point upsert | schedule metadata capped by max_schedules]
 pub(crate) const CREATE_META_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS _rivet_meta (
     key   TEXT PRIMARY KEY,

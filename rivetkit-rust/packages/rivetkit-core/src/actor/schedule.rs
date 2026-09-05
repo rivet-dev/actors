@@ -11,6 +11,7 @@ use futures::future::BoxFuture;
 use futures::future::{AbortHandle, Abortable};
 use rivet_envoy_client::handle::EnvoyHandle;
 use rivet_error::RivetError;
+use rivetkit_actor_persist::versioned::{ScheduleTraceContext, ScheduleTraceContextData};
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
@@ -19,8 +20,12 @@ use uuid::Uuid;
 
 use crate::actor::context::ActorContext;
 use crate::actor::internal_storage::queries::*;
+use crate::actor::persist::{
+	decode_latest_with_embedded_version, encode_latest_with_embedded_version,
+};
 use crate::error::{ScheduleRuntimeError, client_error_message, client_error_metadata};
 use crate::sqlite::{BindParam, ColumnValue, SqliteBatchStatement};
+use crate::telemetry::{ActorInvocationTelemetry, ScheduleTraceOrigin};
 use crate::time::{SystemTime, UNIX_EPOCH, sleep};
 
 const CRON_ID_PREFIX: &str = "cron:";
@@ -34,6 +39,8 @@ pub const MAX_ACTOR_HISTORY: i64 = 10_000;
 pub const MIN_INTERVAL_MS: i64 = 5_000;
 const DEFAULT_HISTORY_LIMIT: i64 = 20;
 const CLAIM_ONE_SHOT_BATCH_SIZE: usize = 128;
+const SCHEDULE_TRACE_CONTEXT_META_PREFIX: &str = "schedule_trace_context:";
+const SCHEDULE_TRACE_CONTEXT_VERSION: u16 = 1;
 pub(crate) const GLOBAL_HISTORY_PRUNE_INTERVAL: usize = 100;
 pub(crate) const GLOBAL_HISTORY_RETAINED_ROWS: i64 =
 	MAX_ACTOR_HISTORY - GLOBAL_HISTORY_PRUNE_INTERVAL as i64;
@@ -148,6 +155,7 @@ pub(crate) struct DueScheduleDispatch {
 	pub args: Vec<u8>,
 	pub fire: ScheduledFireInfo,
 	pub history_id: Option<i64>,
+	pub origin: ScheduleTraceOrigin,
 }
 
 #[derive(Clone, Debug)]
@@ -183,6 +191,14 @@ impl ActorContext {
 		system_now_timestamp_ms()
 	}
 
+	/// Trace origin of the invocation defining this schedule, empty when the
+	/// caller is not inside a traced invocation.
+	fn schedule_trace_origin(&self) -> ScheduleTraceOrigin {
+		self.invocation_telemetry()
+			.map(ActorInvocationTelemetry::schedule_trace_origin)
+			.unwrap_or_default()
+	}
+
 	pub async fn after(
 		&self,
 		duration: Duration,
@@ -195,25 +211,29 @@ impl ActorContext {
 	}
 
 	pub async fn at(&self, timestamp_ms: i64, action_name: &str, args: &[u8]) -> Result<String> {
+		let origin = self.schedule_trace_origin();
 		let _mutation = self.0.schedule_mutation_lock.lock().await;
 		self.ensure_schedule_capacity(false).await?;
 		let event_id = Uuid::new_v4().to_string();
+		let schedule_params = vec![
+			BindParam::Text(event_id.clone()),
+			BindParam::Integer(timestamp_ms),
+			BindParam::Text(action_name.to_owned()),
+			args_param(args),
+			BindParam::Integer(ScheduleKind::At.as_i64()),
+			BindParam::Null,
+			BindParam::Null,
+			BindParam::Null,
+			BindParam::Null,
+			BindParam::Integer(0),
+		];
+		let mut statements = vec![SqliteBatchStatement {
+			sql: INSERT_SCHEDULE_EVENT_SQL.to_owned(),
+			params: Some(schedule_params),
+		}];
+		append_schedule_trace_context_upsert(&mut statements, &event_id, origin)?;
 		self.sql()
-			.execute(
-				INSERT_SCHEDULE_EVENT_SQL,
-				Some(vec![
-					BindParam::Text(event_id.clone()),
-					BindParam::Integer(timestamp_ms),
-					BindParam::Text(action_name.to_owned()),
-					args_param(args),
-					BindParam::Integer(ScheduleKind::At.as_i64()),
-					BindParam::Null,
-					BindParam::Null,
-					BindParam::Null,
-					BindParam::Null,
-					BindParam::Integer(0),
-				]),
-			)
+			.execute_batch(statements)
 			.await
 			.context("insert one-shot schedule")?;
 		self.mark_schedule_dirty();
@@ -224,18 +244,21 @@ impl ActorContext {
 
 	pub async fn cancel_schedule(&self, event_id: &str) -> Result<bool> {
 		let _mutation = self.0.schedule_mutation_lock.lock().await;
-		let result = self
+		let results = self
 			.sql()
-			.execute(
-				CANCEL_SCHEDULE_SQL,
-				Some(vec![
-					BindParam::Text(event_id.to_owned()),
-					BindParam::Integer(ScheduleKind::At.as_i64()),
-				]),
-			)
+			.execute_batch(vec![
+				SqliteBatchStatement {
+					sql: CANCEL_SCHEDULE_SQL.to_owned(),
+					params: Some(vec![
+						BindParam::Text(event_id.to_owned()),
+						BindParam::Integer(ScheduleKind::At.as_i64()),
+					]),
+				},
+				delete_orphan_schedule_trace_context(event_id),
+			])
 			.await
 			.context("cancel one-shot schedule")?;
-		let removed = result.changes > 0;
+		let removed = results.first().is_some_and(|result| result.changes > 0);
 		if removed {
 			self.mark_schedule_dirty();
 			self.record_schedules_updated();
@@ -304,6 +327,7 @@ impl ActorContext {
 		args: &[u8],
 		max_history: Option<i64>,
 	) -> Result<()> {
+		let origin = self.schedule_trace_origin();
 		validate_name(name)?;
 		let timezone = timezone.unwrap_or("UTC");
 		let timezone_parsed = parse_timezone(timezone)?;
@@ -334,6 +358,7 @@ impl ActorContext {
 			Some(timezone),
 			None,
 			max_history,
+			origin,
 		)
 		.await?;
 		self.prune_schedule_history(&event_id, max_history).await?;
@@ -350,6 +375,7 @@ impl ActorContext {
 		args: &[u8],
 		max_history: Option<i64>,
 	) -> Result<()> {
+		let origin = self.schedule_trace_origin();
 		validate_name(name)?;
 		if interval_ms < MIN_INTERVAL_MS {
 			return Err(ScheduleRuntimeError::InvalidInterval {
@@ -382,6 +408,7 @@ impl ActorContext {
 			None,
 			Some(interval_ms),
 			max_history,
+			origin,
 		)
 		.await?;
 		self.prune_schedule_history(&event_id, max_history).await?;
@@ -402,23 +429,26 @@ impl ActorContext {
 		timezone: Option<&str>,
 		interval_ms: Option<i64>,
 		max_history: i64,
+		origin: ScheduleTraceOrigin,
 	) -> Result<()> {
+		let mut statements = vec![SqliteBatchStatement {
+			sql: UPSERT_RECURRING_SCHEDULE_SQL.to_owned(),
+			params: Some(vec![
+				BindParam::Text(event_id.to_owned()),
+				BindParam::Integer(trigger_at),
+				BindParam::Text(action_name.to_owned()),
+				args_param(args),
+				BindParam::Integer(kind.as_i64()),
+				optional_text_param(cron_expression),
+				optional_text_param(timezone),
+				optional_i64_param(interval_ms),
+				BindParam::Null,
+				BindParam::Integer(max_history),
+			]),
+		}];
+		append_schedule_trace_context_upsert(&mut statements, event_id, origin)?;
 		self.sql()
-			.execute(
-				UPSERT_RECURRING_SCHEDULE_SQL,
-				Some(vec![
-					BindParam::Text(event_id.to_owned()),
-					BindParam::Integer(trigger_at),
-					BindParam::Text(action_name.to_owned()),
-					args_param(args),
-					BindParam::Integer(kind.as_i64()),
-					optional_text_param(cron_expression),
-					optional_text_param(timezone),
-					optional_i64_param(interval_ms),
-					BindParam::Null,
-					BindParam::Integer(max_history),
-				]),
-			)
+			.execute_batch(statements)
 			.await
 			.context("upsert recurring schedule")?;
 		Ok(())
@@ -442,10 +472,11 @@ impl ActorContext {
 				SqliteBatchStatement {
 					sql: DELETE_CRON_SQL.to_owned(),
 					params: Some(vec![
-						BindParam::Text(event_id),
+						BindParam::Text(event_id.clone()),
 						BindParam::Integer(ScheduleKind::At.as_i64()),
 					]),
 				},
+				delete_orphan_schedule_trace_context(&event_id),
 			])
 			.await
 			.context("delete recurring schedule and history")?;
@@ -463,19 +494,23 @@ impl ActorContext {
 	pub(crate) async fn cron_delete_if_action(&self, name: &str, action: &str) -> Result<bool> {
 		validate_name(name)?;
 		let _mutation = self.0.schedule_mutation_lock.lock().await;
-		let result = self
+		let event_id = cron_event_id(name);
+		let results = self
 			.sql()
-			.execute(
-				DELETE_CRON_IF_ACTION_SQL,
-				Some(vec![
-					BindParam::Text(cron_event_id(name)),
-					BindParam::Integer(ScheduleKind::At.as_i64()),
-					BindParam::Text(action.to_owned()),
-				]),
-			)
+			.execute_batch(vec![
+				SqliteBatchStatement {
+					sql: DELETE_CRON_IF_ACTION_SQL.to_owned(),
+					params: Some(vec![
+						BindParam::Text(event_id.clone()),
+						BindParam::Integer(ScheduleKind::At.as_i64()),
+						BindParam::Text(action.to_owned()),
+					]),
+				},
+				delete_orphan_schedule_trace_context(&event_id),
+			])
 			.await
 			.context("delete recurring schedule with matching action")?;
-		let removed = result.changes > 0;
+		let removed = results.first().is_some_and(|result| result.changes > 0);
 		if removed {
 			self.mark_schedule_dirty();
 			self.record_schedules_updated();
@@ -594,24 +629,38 @@ impl ActorContext {
 		let due_schedules = result
 			.rows
 			.iter()
-			.map(|row| read_stored_schedule(row))
+			.map(|row| read_due_schedule(row))
 			.collect::<Result<Vec<_>>>()?;
 		let claim_statements = due_schedules
 			.iter()
-			.filter(|event| event.kind == ScheduleKind::At)
+			.filter(|(event, _)| event.kind == ScheduleKind::At)
 			.collect::<Vec<_>>()
 			.chunks(CLAIM_ONE_SHOT_BATCH_SIZE)
-			.map(|events| {
+			.flat_map(|events| {
 				let mut params = Vec::with_capacity(events.len() * 2 + 1);
 				params.push(BindParam::Integer(ScheduleKind::At.as_i64()));
-				for event in events {
+				for (event, _) in events {
 					params.push(BindParam::Text(event.event_id.clone()));
 					params.push(BindParam::Integer(event.trigger_at));
 				}
-				SqliteBatchStatement {
-					sql: claim_one_shots_sql(events.len()),
-					params: Some(params),
-				}
+				let delete_contexts = SqliteBatchStatement {
+					sql: delete_schedule_trace_contexts_sql(events.len()),
+					params: Some(
+						events
+							.iter()
+							.map(|(event, _)| {
+								BindParam::Text(schedule_trace_context_key(&event.event_id))
+							})
+							.collect(),
+					),
+				};
+				[
+					delete_contexts,
+					SqliteBatchStatement {
+						sql: claim_one_shots_sql(events.len()),
+						params: Some(params),
+					},
+				]
 			})
 			.collect::<Vec<_>>();
 		if !claim_statements.is_empty() {
@@ -621,7 +670,7 @@ impl ActorContext {
 				.context("claim due one-shot schedules")?;
 		}
 		let mut dispatches = Vec::new();
-		for event in due_schedules {
+		for (event, origin) in due_schedules {
 			if event.kind == ScheduleKind::At {
 				dispatches.push(DueScheduleDispatch {
 					event_id: event.event_id.clone(),
@@ -635,6 +684,7 @@ impl ActorContext {
 						fired_at: now_ms,
 					},
 					history_id: None,
+					origin,
 				});
 				continue;
 			}
@@ -708,6 +758,7 @@ impl ActorContext {
 					fired_at: now_ms,
 				},
 				history_id,
+				origin,
 			});
 		}
 		self.mark_schedule_dirty();
@@ -1351,6 +1402,80 @@ fn read_stored_schedule(row: &[ColumnValue]) -> Result<StoredSchedule> {
 		}
 		_ => Ok(event),
 	}
+}
+
+fn read_due_schedule(row: &[ColumnValue]) -> Result<(StoredSchedule, ScheduleTraceOrigin)> {
+	let event = read_stored_schedule(row)?;
+	let origin = read_optional_blob(row, 10, "schedule trace context")?
+		.and_then(|payload| {
+			decode_latest_with_embedded_version::<ScheduleTraceContext>(
+				&payload,
+				"schedule trace context",
+			)
+			.inspect_err(|error| {
+				tracing::warn!(
+					event_id = %event.event_id,
+					?error,
+					"ignoring undecodable schedule trace context"
+				);
+			})
+			.ok()
+		})
+		.map_or_else(ScheduleTraceOrigin::default, |context| {
+			ScheduleTraceOrigin {
+				ray_id: context.ray_id,
+				traceparent: context.traceparent,
+				tracestate: context.tracestate,
+			}
+		});
+	Ok((event, origin))
+}
+
+/// Stores the defining invocation's trace context beside a schedule row, or
+/// clears a stale one when the definer carried no context.
+fn append_schedule_trace_context_upsert(
+	statements: &mut Vec<SqliteBatchStatement>,
+	event_id: &str,
+	origin: ScheduleTraceOrigin,
+) -> Result<()> {
+	let key = schedule_trace_context_key(event_id);
+	if origin.ray_id.is_none() && origin.traceparent.is_none() && origin.tracestate.is_none() {
+		statements.push(SqliteBatchStatement {
+			sql: DELETE_SCHEDULE_TRACE_CONTEXT_SQL.to_owned(),
+			params: Some(vec![BindParam::Text(key)]),
+		});
+		return Ok(());
+	}
+	let payload = encode_latest_with_embedded_version::<ScheduleTraceContext>(
+		ScheduleTraceContextData {
+			ray_id: origin.ray_id,
+			traceparent: origin.traceparent,
+			tracestate: origin.tracestate,
+		},
+		SCHEDULE_TRACE_CONTEXT_VERSION,
+		"schedule trace context",
+	)?;
+	statements.push(SqliteBatchStatement {
+		sql: UPSERT_SCHEDULE_TRACE_CONTEXT_SQL.to_owned(),
+		params: Some(vec![BindParam::Text(key), BindParam::Blob(payload)]),
+	});
+	Ok(())
+}
+
+/// Removes a schedule's trace context once its row is gone. Runs after the
+/// row delete in the same batch so a mismatched delete leaves the context alone.
+fn delete_orphan_schedule_trace_context(event_id: &str) -> SqliteBatchStatement {
+	SqliteBatchStatement {
+		sql: DELETE_ORPHAN_SCHEDULE_TRACE_CONTEXT_SQL.to_owned(),
+		params: Some(vec![
+			BindParam::Text(schedule_trace_context_key(event_id)),
+			BindParam::Text(event_id.to_owned()),
+		]),
+	}
+}
+
+fn schedule_trace_context_key(event_id: &str) -> String {
+	format!("{SCHEDULE_TRACE_CONTEXT_META_PREFIX}{event_id}")
 }
 
 fn read_cron_fire(row: &[ColumnValue]) -> Result<CronFire> {

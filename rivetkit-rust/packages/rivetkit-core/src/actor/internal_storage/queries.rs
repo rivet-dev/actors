@@ -14,6 +14,7 @@ pub(crate) const DELETE_CONN_STATE_SQL: &str = "DELETE FROM _rivet_conn_state WH
 pub(crate) const DELETE_CONN_SQL: &str = "DELETE FROM _rivet_conns WHERE conn_id = ?";
 
 pub(crate) const RESET_SCHEDULES_FOR_LEGACY_IMPORT_SQL: &str = "DELETE FROM _rivet_schedule_events";
+pub(crate) const RESET_SCHEDULE_TRACE_CONTEXTS_SQL: &str = "DELETE FROM _rivet_meta WHERE key >= 'schedule_trace_context:' AND key < 'schedule_trace_context;'";
 pub(crate) const INSERT_SCHEDULE_EVENT_SQL: &str = "INSERT INTO _rivet_schedule_events (event_id, trigger_at, action, args, kind, cron_expression, timezone, interval_ms, last_started_at, max_history) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 pub(crate) const UPSERT_RECURRING_SCHEDULE_SQL: &str = "INSERT INTO _rivet_schedule_events (event_id, trigger_at, action, args, kind, cron_expression, timezone, interval_ms, last_started_at, max_history) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_id) DO UPDATE SET trigger_at = excluded.trigger_at, action = excluded.action, args = excluded.args, kind = excluded.kind, cron_expression = excluded.cron_expression, timezone = excluded.timezone, interval_ms = excluded.interval_ms, max_history = excluded.max_history";
 pub(crate) const CANCEL_SCHEDULE_SQL: &str =
@@ -29,7 +30,10 @@ pub(crate) const LIST_CRONS_SQL: &str = "SELECT event_id, trigger_at, action, ar
 pub(crate) const CRON_HISTORY_SQL: &str = "SELECT action, scheduled_at, fired_at, finished_at, result, error_group, error_code, error_message, error_metadata FROM _rivet_schedule_history WHERE schedule_id = ? ORDER BY fired_at DESC, id DESC LIMIT ?";
 pub(crate) const LOAD_SCHEDULE_SQL: &str = "SELECT event_id, trigger_at, action, args, kind, cron_expression, timezone, interval_ms, last_started_at, max_history FROM _rivet_schedule_events WHERE event_id = ?";
 pub(crate) const COUNT_SCHEDULES_SQL: &str = "SELECT COUNT(*) FROM _rivet_schedule_events";
-pub(crate) const TAKE_DUE_SCHEDULES_SQL: &str = "SELECT event_id, trigger_at, action, args, kind, cron_expression, timezone, interval_ms, last_started_at, max_history FROM _rivet_schedule_events WHERE trigger_at <= ? ORDER BY trigger_at, event_id";
+pub(crate) const TAKE_DUE_SCHEDULES_SQL: &str = "SELECT event_id, trigger_at, action, args, kind, cron_expression, timezone, interval_ms, last_started_at, max_history, (SELECT value FROM _rivet_meta WHERE key = 'schedule_trace_context:' || event_id) FROM _rivet_schedule_events WHERE trigger_at <= ? ORDER BY trigger_at, event_id";
+pub(crate) const UPSERT_SCHEDULE_TRACE_CONTEXT_SQL: &str = "INSERT INTO _rivet_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value";
+pub(crate) const DELETE_SCHEDULE_TRACE_CONTEXT_SQL: &str = "DELETE FROM _rivet_meta WHERE key = ?";
+pub(crate) const DELETE_ORPHAN_SCHEDULE_TRACE_CONTEXT_SQL: &str = "DELETE FROM _rivet_meta WHERE key = ? AND NOT EXISTS (SELECT 1 FROM _rivet_schedule_events WHERE event_id = ?)";
 pub(crate) const ADVANCE_SKIPPED_SCHEDULE_SQL: &str =
 	"UPDATE _rivet_schedule_events SET trigger_at = ? WHERE event_id = ?";
 pub(crate) const ADVANCE_SCHEDULE_SQL: &str =
@@ -50,6 +54,13 @@ pub(crate) fn claim_one_shots_sql(event_count: usize) -> String {
 	format!(
 		"DELETE FROM _rivet_schedule_events WHERE kind = ? AND (event_id, trigger_at) IN ({placeholders})"
 	)
+}
+
+pub(crate) fn delete_schedule_trace_contexts_sql(event_count: usize) -> String {
+	let placeholders = std::iter::repeat_n("?", event_count)
+		.collect::<Vec<_>>()
+		.join(", ");
+	format!("DELETE FROM _rivet_meta WHERE key IN ({placeholders})")
 }
 
 pub(crate) const LOAD_QUEUE_NEXT_ID_SQL: &str =
