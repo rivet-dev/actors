@@ -29,6 +29,8 @@ function makeGate(): Gate {
 interface FakeState {
 	/** Number of times the injected registry builder was invoked. */
 	builderCalls: number;
+	/** Number of times serveListener was invoked. */
+	listenerCalls: number;
 	/** Registry handles passed to `shutdownRegistry`, in call order. */
 	shutdownRegistries: RegistryHandle[];
 	/** Value returned by `registryActorStopThresholdMs`. */
@@ -37,6 +39,8 @@ interface FakeState {
 	hangShutdown: boolean;
 	/** When set, `shutdownRegistry` blocks on this gate before resolving. */
 	gate: Gate | null;
+	/** When set, `serveListener` blocks on this gate before resolving. */
+	listenerGate: Gate | null;
 }
 
 interface Fake {
@@ -52,15 +56,23 @@ interface Fake {
 function createFake(): Fake {
 	const state: FakeState = {
 		builderCalls: 0,
+		listenerCalls: 0,
 		shutdownRegistries: [],
 		stopThresholdMs: undefined,
 		hangShutdown: false,
 		gate: null,
+		listenerGate: null,
 	};
 
 	const runtime = {
 		kind: "napi",
 		serveRegistry: async () => {},
+		serveListener: async () => {
+			state.listenerCalls += 1;
+			if (state.listenerGate) {
+				await state.listenerGate.promise;
+			}
+		},
 		shutdownRegistry: async (registry: RegistryHandle) => {
 			state.shutdownRegistries.push(registry);
 			if (state.hangShutdown) {
@@ -259,6 +271,31 @@ describe("Registry.shutdown", () => {
 
 		await vi.advanceTimersByTimeAsync(5_000);
 		await drained;
+		expect(settled).toBe(true);
+	});
+
+	test("waits for in-flight serverless application listener before resolving", async () => {
+		const { deps, state } = createFake();
+		const gate = makeGate();
+		state.listenerGate = gate;
+
+		const registry = makeRegistry(deps, {
+			shutdown: { gracePeriodMs: 60_000 },
+		});
+		const listenPromise = registry.listen();
+
+		let settled = false;
+		const drained = registry.shutdown().then(() => {
+			settled = true;
+		});
+
+		await vi.advanceTimersByTimeAsync(0);
+		expect(state.listenerCalls).toBe(1);
+		expect(settled).toBe(false);
+
+		gate.release();
+		await vi.advanceTimersByTimeAsync(0);
+		await Promise.all([listenPromise, drained]);
 		expect(settled).toBe(true);
 	});
 });

@@ -507,7 +507,7 @@ export class Registry<A extends RegistryActors> {
 		const application = opts.application
 			? createApplicationFetch(opts.application, runtime)
 			: undefined;
-		await runtime.serveListener(
+		const listenerPromise = runtime.serveListener(
 			registry,
 			{
 				port,
@@ -517,6 +517,8 @@ export class Registry<A extends RegistryActors> {
 			},
 			serveConfig,
 		);
+		this.#applicationListenerPromise = listenerPromise;
+		await listenerPromise;
 	}
 
 	/**
