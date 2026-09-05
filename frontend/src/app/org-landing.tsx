@@ -173,7 +173,7 @@ export function OrgLanding({ organization }: { organization: string }) {
 									{sorted.map((project) => (
 										<div
 											key={project.id}
-											className="group relative min-h-[130px]"
+											className="group relative min-h-[130px] transition-transform duration-150 hover:-translate-y-0.5 active:translate-y-0"
 										>
 											<Link
 												to="/orgs/$organization/projects/$project"
@@ -182,9 +182,9 @@ export function OrgLanding({ organization }: { organization: string }) {
 													project: project.name,
 												}}
 												className={cn(
-													"flex h-full flex-col items-start gap-2 rounded-lg border border-foreground/10 bg-foreground/[0.02] p-4 text-left transition-all duration-150",
-													"hover:border-foreground/25 hover:bg-foreground/[0.06] hover:shadow-sm hover:-translate-y-0.5",
-													"active:translate-y-0 active:shadow-none",
+													"flex h-full flex-col items-start gap-2 rounded-lg border border-foreground/10 bg-foreground/[0.02] p-4 text-left transition-[background-color,border-color,box-shadow] duration-150",
+													"group-hover:border-foreground/25 group-hover:bg-foreground/[0.06] group-hover:shadow-sm",
+													"group-active:shadow-none",
 													"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
 													"cursor-pointer",
 												)}
@@ -227,7 +227,7 @@ export function OrgLanding({ organization }: { organization: string }) {
 												}}
 												title="Manage billing"
 												aria-label="Manage billing"
-												className="absolute top-3 right-3 z-10 rounded-full transition-all duration-150 group-hover:-translate-y-0.5 group-active:translate-y-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+												className="absolute top-3 right-3 z-10 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 											>
 												<LazyBillingPlanBadge
 													project={project.name}

@@ -70,10 +70,10 @@ export function ComputeUsageCard({
 		<Card className="w-full border border-border bg-card shadow-sm">
 			<CardHeader className="flex flex-row items-start justify-between space-y-0 pb-4">
 				<div className="flex items-start gap-3">
-					<div className="flex h-8 w-8 items-center justify-center rounded-full border border-border">
+					<div className="flex size-7 items-center justify-center rounded-md border border-border">
 						<Icon
 							icon={faServer}
-							className="h-4 w-4 text-foreground"
+							className="size-3.5 text-foreground"
 						/>
 					</div>
 					<div>
@@ -182,10 +182,10 @@ export function ComputeUsageProjectBillingPointer() {
 		<Card className="w-full border border-border bg-card shadow-sm">
 			<CardHeader className="flex flex-row items-start justify-between space-y-0 pb-4">
 				<div className="flex items-start gap-3">
-					<div className="flex h-8 w-8 items-center justify-center rounded-full border border-border">
+					<div className="flex size-7 items-center justify-center rounded-md border border-border">
 						<Icon
 							icon={faServer}
-							className="h-4 w-4 text-foreground"
+							className="size-3.5 text-foreground"
 						/>
 					</div>
 					<div>

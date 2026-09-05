@@ -623,7 +623,7 @@ function ActorDetailsIframePath({
 						ref={tabListRef}
 						className="flex-1 min-w-0 overflow-hidden h-full"
 					>
-						<TabsList className="flex border-none h-full items-end min-w-0 overflow-hidden w-full">
+						<TabsList className="flex border-none h-full items-stretch min-w-0 overflow-hidden w-full">
 							{displayedTabs.map((t) => (
 								<WithTooltip
 									key={t.id}
@@ -637,7 +637,7 @@ function ActorDetailsIframePath({
 												t.kind === "inspector"
 											}
 											className={cn(
-												"text-xs px-2.5 py-1 pb-2 min-w-0 shrink gap-1 isolate before:absolute before:inset-x-0.5 before:top-1 before:bottom-2 before:-z-10 before:rounded-md before:transition-colors hover:before:bg-foreground/[0.06]",
+												"h-full text-xs px-2.5 py-0 min-w-0 shrink gap-1 isolate before:absolute before:inset-x-0.5 before:inset-y-1 before:-z-10 before:rounded-md before:transition-colors hover:before:bg-foreground/[0.06]",
 												inSkeletonMode &&
 													t.kind === "inspector" &&
 													"opacity-60",

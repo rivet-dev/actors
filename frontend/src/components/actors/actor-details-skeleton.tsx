@@ -52,13 +52,13 @@ export function ActorDetailsSkeleton({ shimmer, children, className }: Props) {
 			className={cn("flex-1 min-h-0 min-w-0 flex flex-col", className)}
 		>
 			<div className="relative flex items-center border-b h-[45px]">
-				<TabsList className="flex border-none h-full items-end min-w-0 overflow-hidden w-full">
+				<TabsList className="flex border-none h-full items-stretch min-w-0 overflow-hidden w-full">
 					{PLACEHOLDER_TABS.map((t) => (
 						<TabsTrigger
 							key={t.id}
 							value={t.id}
 							disabled
-							className="text-xs px-2 py-1 pb-2 min-w-0 shrink gap-1 opacity-60"
+							className="h-full text-xs px-2 py-0 min-w-0 shrink gap-1 opacity-60"
 						>
 							<Icon
 								icon={resolveInspectorTabIcon(t.icon)}

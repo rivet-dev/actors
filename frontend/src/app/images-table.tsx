@@ -62,7 +62,9 @@ export function ImagesTable({
 			<TableHeader>
 				<TableRow>
 					<TableHead className="pl-8">Tag</TableHead>
-					<TableHead className="w-full">Deployed To</TableHead>
+					<TableHead className="w-full whitespace-nowrap">
+						Deployed To
+					</TableHead>
 					<TableHead className="min-w-56">Date</TableHead>
 					<TableHead />
 				</TableRow>

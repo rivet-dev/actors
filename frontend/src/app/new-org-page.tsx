@@ -139,7 +139,7 @@ function GradientAvatar({
 }) {
 	return (
 		<div className="relative h-16 w-16 animate-orb-breathe">
-			<div className="absolute inset-0 overflow-hidden rounded-full">
+			<div className="absolute inset-0 overflow-hidden rounded-full [clip-path:circle(50%)]">
 				<div
 					className="absolute -inset-2 animate-conic-rotate"
 					style={{

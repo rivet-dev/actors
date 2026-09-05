@@ -155,7 +155,7 @@ export function HelpButton({ source = "web" }: { source?: string }) {
 							<SelectTrigger className="h-9 text-sm">
 								<SelectValue />
 							</SelectTrigger>
-							<SelectContent>
+							<SelectContent className="z-[80]">
 								{(Object.keys(IMPACT_LABELS) as Impact[]).map(
 									(k) => (
 										<SelectItem key={k} value={k}>

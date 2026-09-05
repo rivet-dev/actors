@@ -22,15 +22,14 @@ import {
 	useCloudNamespaceDataProvider,
 	useDataProvider,
 } from "@/components/actors";
-import { Badge } from "@/components/ui/badge";
+import { NoProvidersAlert } from "@/components/actors/no-providers-alert";
+import { ActorIcon } from "@/components/lazy-icon";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
 	DropdownMenuItem,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { NoProvidersAlert } from "@/components/actors/no-providers-alert";
-import { ActorIcon } from "@/components/lazy-icon";
 import { VisibilitySensor } from "@/components/visibility-sensor";
 import { features } from "@/lib/features";
 import { getRivetRunUrl } from "../lib/env";
@@ -104,16 +103,20 @@ function CreateMenu({
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="end">
 				<DropdownMenuItem onClick={() => openModal("create-actor")}>
+					<img
+						src={`${import.meta.env.BASE_URL}images/brand/actors-mark.svg`}
+						alt=""
+						className="mr-2 size-5 shrink-0"
+					/>
 					Actor
 				</DropdownMenuItem>
 				<DropdownMenuItem onClick={() => openModal("create-agent-os")}>
+					<img
+						src={`${import.meta.env.BASE_URL}images/brand/agentos-mark.svg`}
+						alt=""
+						className="mr-2 size-5 shrink-0"
+					/>
 					agentOS
-					<Badge
-						variant="outline"
-						className="ml-2 text-[10px] leading-none py-0.5 px-1.5 font-medium"
-					>
-						Beta
-					</Badge>
 				</DropdownMenuItem>
 			</DropdownMenuContent>
 		</DropdownMenu>
@@ -293,7 +296,7 @@ export function ActorsGrid({ namespaceLabel }: { namespaceLabel?: string }) {
 										Deploy code that registers an actor to
 										see it here.
 									</SmallText>
-									<CreateMenu buttonVariant="default" />
+									<CreateMenu buttonVariant="outline" />
 								</div>
 							)
 						) : (
