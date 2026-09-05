@@ -83,6 +83,36 @@ const rows = await c.db.execute(
 );
 ```
 
+### Synchronous operations in Node.js
+
+The Node.js native runtime also provides `c.db.executeSync(...)` and `c.db.transactionSync(...)` for integrations that cannot use an asynchronous API. `executeSync(...)` accepts the same SQL and parameters as `execute(...)`.
+
+<Warning>
+**Use synchronous SQLite only when absolutely necessary.** Every synchronous operation blocks the entire Node.js runtime until SQLite finishes. This pauses the current actor and can also prevent other actors hosted by the same runtime from running. Prefer `await c.db.execute(...)` and `await c.db.transaction(...)` whenever possible.
+
+Worker-thread actor isolation is coming soon. It will allow each actor to run on its own thread so a synchronous operation in one actor does not block other actors. Even with that isolation, use the synchronous API only when an integration requires it.
+</Warning>
+
+```ts @nocheck
+const rows = c.db.executeSync(
+  "SELECT id, title FROM todos WHERE title LIKE ?",
+  `%${query}%`,
+);
+```
+
+Use `transactionSync(...)` when multiple synchronous queries must commit or roll back together. The transaction commits before `transactionSync(...)` returns and rolls back if the callback throws.
+
+```ts @nocheck
+const todoId = c.db.transactionSync((tx) => {
+  tx.executeSync("INSERT INTO todos (title) VALUES (?)", title);
+  return tx.executeSync<{ id: number }>(
+    "SELECT last_insert_rowid() AS id",
+  )[0].id;
+});
+```
+
+The callback must be synchronous and must use its `tx` value, which exposes only `executeSync(...)`. It must not return a promise. `{ name, timeout }` options are supported, matching `transaction(...)`. Synchronous operations are unavailable in WebAssembly runtimes.
+
 ### Transactions
 
 Use transactions when multiple writes must succeed or fail together.

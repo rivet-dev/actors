@@ -12,5 +12,7 @@ export type {
 	SqliteProfilingOptions,
 	SqliteQueryResult,
 	SqliteTransactionOptions,
+	SynchronousRawAccess,
+	SynchronousTransactionAccess,
 } from "@/common/database/config";
 export { db } from "@/common/database/mod";

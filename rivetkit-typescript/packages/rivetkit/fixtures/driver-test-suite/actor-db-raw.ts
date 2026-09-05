@@ -254,6 +254,63 @@ export const dbActorRaw = actor({
 			);
 			return results[0].count;
 		},
+		synchronousQueries: async (c, value: string) => {
+			c.db.executeSync(
+				"INSERT INTO test_data (value, payload, created_at) VALUES (?, ?, ?)",
+				value,
+				"",
+				Date.now(),
+			);
+			const selected = c.db.executeSync<{ value: string }>(
+				"SELECT value FROM test_data WHERE value = ?",
+				value,
+			);
+			const multiStatementValues = c.db.executeSync<{ value: number }>(
+				"SELECT 1 AS value; SELECT 2 AS value",
+			);
+			const transactionCount = c.db.transactionSync((tx) => {
+				tx.executeSync(
+					"INSERT INTO test_data (value, payload, created_at) VALUES (?, ?, ?)",
+					`${value}-committed`,
+					"",
+					Date.now(),
+				);
+				return tx.executeSync<{ count: number }>(
+					"SELECT COUNT(*) AS count FROM test_data",
+				)[0]?.count;
+			});
+			const rolledBackValue = `${value}-rolled-back`;
+			try {
+				c.db.transactionSync((tx) => {
+					tx.executeSync(
+						"INSERT INTO test_data (value, payload, created_at) VALUES (?, ?, ?)",
+						rolledBackValue,
+						"",
+						Date.now(),
+					);
+					throw new Error("rollback sync transaction");
+				});
+			} catch (error) {
+				if (
+					!(error instanceof Error) ||
+					error.message !== "rollback sync transaction"
+				) {
+					throw error;
+				}
+			}
+			const rollbackCount = c.db.executeSync<{ count: number }>(
+				"SELECT COUNT(*) AS count FROM test_data WHERE value = ?",
+				rolledBackValue,
+			)[0]?.count;
+			return {
+				value: selected[0]?.value,
+				multiStatementValues: multiStatementValues.map(
+					(row) => row.value,
+				),
+				transactionCount,
+				rollbackCount,
+			};
+		},
 		insertMany: async (c, count: number) => {
 			if (count <= 0) {
 				return { count: 0 };

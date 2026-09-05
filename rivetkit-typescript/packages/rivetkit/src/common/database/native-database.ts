@@ -6,6 +6,7 @@ import type {
 	SqliteExecuteResult,
 	SqliteNativeMetrics,
 	SqliteTransactionDatabase,
+	SynchronousSqliteTransactionDatabase,
 } from "./config";
 
 type NativeBindNoValues = {
@@ -74,10 +75,15 @@ interface NativeBatchStatement {
 
 export interface JsNativeDatabaseLike {
 	exec(sql: string): Promise<NativeExecResult>;
+	execSync(sql: string): NativeExecResult;
 	execute(
 		sql: string,
 		params?: NativeBindParam[] | null,
 	): Promise<NativeExecuteResult>;
+	executeSync(
+		sql: string,
+		params?: NativeBindParam[] | null,
+	): NativeExecuteResult;
 	executeBatch?(
 		statements: NativeBatchStatement[],
 	): Promise<NativeExecuteResult[]>;
@@ -88,7 +94,11 @@ export interface JsNativeDatabaseLike {
 	beginTransaction(
 		timeoutMs?: number,
 		name?: string,
-	): Promise<JsNativeTransactionLike>;
+	): Promise<JsNativeSynchronousTransactionLike>;
+	beginTransactionSync(
+		timeoutMs?: number,
+		name?: string,
+	): JsNativeSynchronousTransactionLike;
 	query(
 		sql: string,
 		params?: NativeBindParam[] | null,
@@ -110,12 +120,34 @@ export type StateAwareSqliteDatabase = SqliteDatabase & {
 
 export interface JsNativeTransactionLike {
 	exec(sql: string): Promise<NativeExecResult>;
+	execSync(sql: string): NativeExecResult;
 	execute(
 		sql: string,
 		params?: NativeBindParam[] | null,
 	): Promise<NativeExecuteResult>;
+	executeSync(
+		sql: string,
+		params?: NativeBindParam[] | null,
+	): NativeExecuteResult;
 	commit(): Promise<void>;
 	rollback(): Promise<void>;
+}
+
+export interface JsNativeSynchronousTransactionLike
+	extends JsNativeTransactionLike {
+	commitSync(): void;
+	rollbackSync(): void;
+}
+
+function isSynchronousTransaction(
+	transaction: JsNativeTransactionLike,
+): transaction is JsNativeSynchronousTransactionLike {
+	const candidate =
+		transaction as Partial<JsNativeSynchronousTransactionLike>;
+	return (
+		typeof candidate.commitSync === "function" &&
+		typeof candidate.rollbackSync === "function"
+	);
 }
 
 function shouldAttachNativeKvError(message: string): boolean {
@@ -358,6 +390,34 @@ export function wrapJsNativeDatabase(
 			release();
 		}
 	};
+	const executeNativeSync = (
+		sql: string,
+		params?: SqliteBindings,
+	): SqliteExecuteResult => {
+		const lastInsertRowIdColumn = lastInsertRowIdColumnName(sql);
+		if (lastInsertRowIdColumn) {
+			return {
+				columns: [lastInsertRowIdColumn],
+				rows: [[lastInsertRowId ?? 0]],
+				changes: 0,
+				lastInsertRowId,
+			};
+		}
+
+		const release = gate.enter();
+		try {
+			const nativeParams = toNativeBindings(sql, params);
+			const result = database.executeSync(sql, nativeParams);
+			if (result.lastInsertRowId !== undefined) {
+				lastInsertRowId = result.lastInsertRowId;
+			}
+			return result;
+		} catch (error) {
+			enrichNativeDatabaseError(database, error);
+		} finally {
+			release();
+		}
+	};
 
 	return {
 		async exec(
@@ -380,11 +440,33 @@ export function wrapJsNativeDatabase(
 				callback(row, result.columns);
 			}
 		},
+		execSync(
+			sql: string,
+			callback?: (row: unknown[], columns: string[]) => void,
+		): void {
+			const release = gate.enter();
+			let result: NativeExecResult;
+			try {
+				result = database.execSync(sql);
+			} catch (error) {
+				enrichNativeDatabaseError(database, error);
+			} finally {
+				release();
+			}
+			if (callback) {
+				for (const row of result.rows) {
+					callback(row, result.columns);
+				}
+			}
+		},
 		async execute(
 			sql: string,
 			params?: SqliteBindings,
 		): Promise<SqliteExecuteResult> {
 			return await executeNative(sql, params);
+		},
+		executeSync(sql: string, params?: SqliteBindings): SqliteExecuteResult {
+			return executeNativeSync(sql, params);
 		},
 		async executeBatch(
 			statements: SqliteBatchStatement[],
@@ -435,9 +517,28 @@ export function wrapJsNativeDatabase(
 			name?: string,
 		): Promise<SqliteTransactionDatabase> {
 			const release = gate.enter();
-			let transaction: JsNativeTransactionLike;
+			let transaction: JsNativeSynchronousTransactionLike;
 			try {
 				transaction = await database.beginTransaction(timeoutMs, name);
+			} catch (error) {
+				enrichNativeDatabaseError(database, error);
+			} finally {
+				release();
+			}
+			return wrapTransaction(database, transaction, gate, (result) => {
+				if (result.lastInsertRowId !== undefined) {
+					lastInsertRowId = result.lastInsertRowId;
+				}
+			});
+		},
+		beginTransactionSync(
+			timeoutMs?: number,
+			name?: string,
+		): SynchronousSqliteTransactionDatabase {
+			const release = gate.enter();
+			let transaction: JsNativeSynchronousTransactionLike;
+			try {
+				transaction = database.beginTransactionSync(timeoutMs, name);
 			} catch (error) {
 				enrichNativeDatabaseError(database, error);
 			} finally {
@@ -493,11 +594,23 @@ export function wrapJsNativeDatabase(
 
 function wrapTransaction(
 	database: JsNativeDatabaseLike,
+	transaction: JsNativeSynchronousTransactionLike,
+	gate: NativeCloseGate,
+	onExecute: (result: NativeExecuteResult) => void,
+): SynchronousSqliteTransactionDatabase;
+function wrapTransaction(
+	database: JsNativeDatabaseLike,
+	transaction: JsNativeTransactionLike,
+	gate: NativeCloseGate,
+	onExecute: (result: NativeExecuteResult) => void,
+): SqliteTransactionDatabase;
+function wrapTransaction(
+	database: JsNativeDatabaseLike,
 	transaction: JsNativeTransactionLike,
 	gate: NativeCloseGate,
 	onExecute: (result: NativeExecuteResult) => void,
 ): SqliteTransactionDatabase {
-	return {
+	const wrapped: SqliteTransactionDatabase = {
 		async exec(sql, callback) {
 			const release = gate.enter();
 			let result: NativeExecResult;
@@ -512,10 +625,39 @@ function wrapTransaction(
 				for (const row of result.rows) callback(row, result.columns);
 			}
 		},
+		execSync(sql, callback) {
+			const release = gate.enter();
+			let result: NativeExecResult;
+			try {
+				result = transaction.execSync(sql);
+			} catch (error) {
+				enrichNativeDatabaseError(database, error);
+			} finally {
+				release();
+			}
+			if (callback) {
+				for (const row of result.rows) callback(row, result.columns);
+			}
+		},
 		async execute(sql, params) {
 			const release = gate.enter();
 			try {
 				const result = await transaction.execute(
+					sql,
+					toNativeBindings(sql, params),
+				);
+				onExecute(result);
+				return result;
+			} catch (error) {
+				enrichNativeDatabaseError(database, error);
+			} finally {
+				release();
+			}
+		},
+		executeSync(sql, params) {
+			const release = gate.enter();
+			try {
+				const result = transaction.executeSync(
 					sql,
 					toNativeBindings(sql, params),
 				);
@@ -548,6 +690,33 @@ function wrapTransaction(
 			}
 		},
 	};
+
+	if (isSynchronousTransaction(transaction)) {
+		return Object.assign(wrapped, {
+			commitSync() {
+				const release = gate.enter();
+				try {
+					transaction.commitSync();
+				} catch (error) {
+					enrichNativeDatabaseError(database, error);
+				} finally {
+					release();
+				}
+			},
+			rollbackSync() {
+				const release = gate.enter();
+				try {
+					transaction.rollbackSync();
+				} catch (error) {
+					enrichNativeDatabaseError(database, error);
+				} finally {
+					release();
+				}
+			},
+		}) as SynchronousSqliteTransactionDatabase;
+	}
+
+	return wrapped;
 }
 
 function lastInsertRowIdColumnName(sql: string): string | undefined {

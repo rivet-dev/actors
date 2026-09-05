@@ -1,4 +1,9 @@
-import type { SqliteBindings } from "./config";
+import type {
+	SqliteBindings,
+	SqliteDatabase,
+	SqliteTransactionOptions,
+	SynchronousSqliteTransactionDatabase,
+} from "./config";
 
 /** Migrations may legitimately do substantially more work than request transactions. */
 export const MIGRATION_TRANSACTION_TIMEOUT_MS = 5 * 60_000;
@@ -21,6 +26,49 @@ export function validateTransactionName(name: string | undefined): void {
 	}
 	if (name.length === 0) {
 		throw new Error("db.transaction() name must not be empty");
+	}
+}
+
+export function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+	return (typeof value === "object" && value !== null) ||
+		typeof value === "function"
+		? typeof (value as { then?: unknown }).then === "function"
+		: false;
+}
+
+export function runSqliteTransactionSync<T>(
+	database: SqliteDatabase,
+	callback: (transaction: SynchronousSqliteTransactionDatabase) => T,
+	options?: Omit<SqliteTransactionOptions, "experimental">,
+): T {
+	validateTransactionTimeout(options?.timeout);
+	validateTransactionName(options?.name);
+	if (!database.beginTransactionSync) {
+		throw new Error(
+			"Synchronous SQLite transactions are only available in the Node.js native runtime.",
+		);
+	}
+
+	const transaction = database.beginTransactionSync(
+		options?.timeout,
+		options?.name,
+	);
+	try {
+		const result = callback(transaction);
+		if (isPromiseLike(result)) {
+			throw new Error(
+				"db.transactionSync() callback must complete synchronously and must not return a promise.",
+			);
+		}
+		transaction.commitSync();
+		return result;
+	} catch (error) {
+		try {
+			transaction.rollbackSync();
+		} catch {
+			// Preserve the callback or commit error after cleanup failure.
+		}
+		throw error;
 	}
 }
 

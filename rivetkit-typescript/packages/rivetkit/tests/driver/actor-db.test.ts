@@ -708,6 +708,38 @@ describeDriverMatrix(
 				);
 
 				test(
+					"supports synchronous queries only in the Node.js native runtime",
+					async (c) => {
+						const { client } = await setupDriverTest(
+							c,
+							driverTestConfig,
+						);
+						const actor = getDbActor(client, variant).getOrCreate([
+							`db-${variant}-sync-${crypto.randomUUID()}`,
+						]);
+
+						if (driverTestConfig.runtime === "wasm") {
+							await expect(
+								actor.synchronousQueries("sync"),
+							).rejects.toThrow(
+								"only available in the Node.js native runtime",
+							);
+							return;
+						}
+
+						await expect(
+							actor.synchronousQueries("sync"),
+						).resolves.toEqual({
+							value: "sync",
+							multiStatementValues: [1, 2],
+							transactionCount: 2,
+							rollbackCount: 0,
+						});
+					},
+					dbTestTimeout,
+				);
+
+				test(
 					"handles transactions",
 					async (c) => {
 						const { client } = await setupDriverTest(

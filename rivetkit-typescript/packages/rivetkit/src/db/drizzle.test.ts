@@ -6,6 +6,7 @@ import type {
 	SqliteDatabase,
 	SqliteExecuteResult,
 	SqliteTransactionDatabase,
+	SynchronousSqliteTransactionDatabase,
 } from "@/common/database/config";
 import { db } from "./drizzle";
 
@@ -14,12 +15,30 @@ class FakeSqliteDatabase implements SqliteDatabase {
 	transactionTimeouts: Array<number | undefined> = [];
 	transactionNames: Array<string | undefined> = [];
 
-	async exec(): Promise<void> {}
+	async exec(
+		sql: string,
+		callback?: (row: unknown[], columns: string[]) => void,
+	): Promise<void> {
+		this.execSync(sql, callback);
+	}
+
+	execSync(
+		sql: string,
+		callback?: (row: unknown[], columns: string[]) => void,
+	): void {
+		this.executeCalls.push({ sql });
+		callback?.([1], ["value"]);
+	}
 
 	async execute(
 		sql: string,
 		params?: SqliteBindings,
 	): Promise<SqliteExecuteResult> {
+		this.executeCalls.push({ sql, params });
+		return emptyResult();
+	}
+
+	executeSync(sql: string, params?: SqliteBindings): SqliteExecuteResult {
 		this.executeCalls.push({ sql, params });
 		return emptyResult();
 	}
@@ -47,19 +66,37 @@ class FakeSqliteDatabase implements SqliteDatabase {
 		timeoutMs?: number,
 		name?: string,
 	): Promise<SqliteTransactionDatabase> {
+		return this.beginTransactionSync(timeoutMs, name);
+	}
+
+	beginTransactionSync(
+		timeoutMs?: number,
+		name?: string,
+	): SynchronousSqliteTransactionDatabase {
 		this.transactionTimeouts.push(timeoutMs);
 		this.transactionNames.push(name);
 		this.executeCalls.push({ sql: "BEGIN" });
 		return {
 			exec: async () => {},
+			execSync: () => {},
 			execute: async (sql, params) => {
+				this.executeCalls.push({ sql, params });
+				return emptyResult();
+			},
+			executeSync: (sql, params) => {
 				this.executeCalls.push({ sql, params });
 				return emptyResult();
 			},
 			commit: async () => {
 				this.executeCalls.push({ sql: "COMMIT" });
 			},
+			commitSync: () => {
+				this.executeCalls.push({ sql: "COMMIT" });
+			},
 			rollback: async () => {
+				this.executeCalls.push({ sql: "ROLLBACK" });
+			},
+			rollbackSync: () => {
 				this.executeCalls.push({ sql: "ROLLBACK" });
 			},
 		};
@@ -148,6 +185,50 @@ describe("Drizzle database transactions", () => {
 			"BEGIN",
 			"INSERT INTO items(value) VALUES (?)",
 			"COMMIT",
+		]);
+	});
+
+	test("exposes synchronous raw queries", async () => {
+		const nativeDb = new FakeSqliteDatabase();
+		const client = await db().createClient(testProviderContext(nativeDb));
+
+		client.executeSync("SELECT ?", 42);
+		expect(
+			client.executeSync<{ value: number }>("SELECT 1; SELECT 2"),
+		).toEqual([{ value: 1 }]);
+
+		expect(nativeDb.executeCalls).toEqual([
+			{ sql: "SELECT ?", params: [42] },
+			{ sql: "SELECT 1; SELECT 2" },
+		]);
+	});
+
+	test("commits and rolls back synchronous raw transactions", async () => {
+		const nativeDb = new FakeSqliteDatabase();
+		const client = await db().createClient(testProviderContext(nativeDb));
+
+		const value = client.transactionSync(
+			(tx) => {
+				tx.executeSync("INSERT INTO items(value) VALUES (?)", "inside");
+				return 42;
+			},
+			{ name: "sync-drizzle", timeout: 120_000 },
+		);
+		expect(value).toBe(42);
+		expect(() =>
+			client.transactionSync(() => {
+				throw new Error("callback failed");
+			}),
+		).toThrow("callback failed");
+
+		expect(nativeDb.transactionTimeouts).toEqual([120_000, undefined]);
+		expect(nativeDb.transactionNames).toEqual(["sync-drizzle", undefined]);
+		expect(nativeDb.executeCalls.map(({ sql }) => sql)).toEqual([
+			"BEGIN",
+			"INSERT INTO items(value) VALUES (?)",
+			"COMMIT",
+			"BEGIN",
+			"ROLLBACK",
 		]);
 	});
 

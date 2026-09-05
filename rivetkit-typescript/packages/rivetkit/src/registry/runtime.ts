@@ -250,10 +250,15 @@ export interface RuntimeSqlRunResult {
 
 export interface RuntimeSqlDatabase {
 	exec(sql: string): Promise<RuntimeSqlExecResult>;
+	execSync(sql: string): RuntimeSqlExecResult;
 	execute(
 		sql: string,
 		params?: RuntimeSqlBindParams,
 	): Promise<RuntimeSqlExecuteResult>;
+	executeSync(
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): RuntimeSqlExecuteResult;
 	executeBatch(
 		statements: RuntimeSqlBatchStatement[],
 	): Promise<RuntimeSqlExecuteResult[]>;
@@ -269,6 +274,10 @@ export interface RuntimeSqlDatabase {
 		timeoutMs?: number,
 		name?: string,
 	): Promise<RuntimeSqlTransactionDatabase>;
+	beginTransactionSync(
+		timeoutMs?: number,
+		name?: string,
+	): RuntimeSqlTransactionDatabase;
 	metrics?(): SqliteNativeMetrics | null;
 	takeLastKvError?(): string | null;
 	close(): Promise<void>;
@@ -276,12 +285,19 @@ export interface RuntimeSqlDatabase {
 
 export interface RuntimeSqlTransactionDatabase {
 	exec(sql: string): Promise<RuntimeSqlExecResult>;
+	execSync(sql: string): RuntimeSqlExecResult;
 	execute(
 		sql: string,
 		params?: RuntimeSqlBindParams,
 	): Promise<RuntimeSqlExecuteResult>;
+	executeSync(
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): RuntimeSqlExecuteResult;
 	commit(): Promise<void>;
+	commitSync(): void;
 	rollback(): Promise<void>;
+	rollbackSync(): void;
 }
 
 export interface RuntimeActorConfig {
@@ -615,11 +631,20 @@ export interface CoreRuntime {
 		ctx: ActorContextHandle,
 		sql: string,
 	): Promise<RuntimeSqlExecResult>;
+	actorSqlExecSync(
+		ctx: ActorContextHandle,
+		sql: string,
+	): RuntimeSqlExecResult;
 	actorSqlExecute(
 		ctx: ActorContextHandle,
 		sql: string,
 		params?: RuntimeSqlBindParams,
 	): Promise<RuntimeSqlExecuteResult>;
+	actorSqlExecuteSync(
+		ctx: ActorContextHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): RuntimeSqlExecuteResult;
 	actorSqlExecuteBatch(
 		ctx: ActorContextHandle,
 		statements: RuntimeSqlBatchStatement[],
@@ -629,21 +654,37 @@ export interface CoreRuntime {
 		timeoutMs?: number,
 		name?: string,
 	): Promise<SqliteTransactionHandle>;
+	actorSqlBeginTransactionSync(
+		ctx: ActorContextHandle,
+		timeoutMs?: number,
+		name?: string,
+	): SqliteTransactionHandle;
 	actorSqlTransactionExec(
 		transaction: SqliteTransactionHandle,
 		sql: string,
 	): Promise<RuntimeSqlExecResult>;
+	actorSqlTransactionExecSync(
+		transaction: SqliteTransactionHandle,
+		sql: string,
+	): RuntimeSqlExecResult;
 	actorSqlTransactionExecute(
 		transaction: SqliteTransactionHandle,
 		sql: string,
 		params?: RuntimeSqlBindParams,
 	): Promise<RuntimeSqlExecuteResult>;
+	actorSqlTransactionExecuteSync(
+		transaction: SqliteTransactionHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): RuntimeSqlExecuteResult;
 	actorSqlTransactionCommit(
 		transaction: SqliteTransactionHandle,
 	): Promise<void>;
+	actorSqlTransactionCommitSync(transaction: SqliteTransactionHandle): void;
 	actorSqlTransactionRollback(
 		transaction: SqliteTransactionHandle,
 	): Promise<void>;
+	actorSqlTransactionRollbackSync(transaction: SqliteTransactionHandle): void;
 	actorBeginStateTransaction(
 		ctx: ActorContextHandle,
 		timeoutMs?: number,
@@ -653,6 +694,11 @@ export interface CoreRuntime {
 		sql: string,
 		params?: RuntimeSqlBindParams,
 	): Promise<RuntimeSqlExecuteResult>;
+	actorStateTransactionExecuteSync(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): RuntimeSqlExecuteResult;
 	actorStateTransactionCommit(
 		transaction: ActorStateTransactionHandle,
 		payload: RuntimeStateDeltaPayload,

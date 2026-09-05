@@ -6,20 +6,22 @@ import {
 import type {
 	DatabaseProvider,
 	DatabaseProviderContext,
-	RawAccess,
-	SqliteProfilingOptions,
-	SqliteTransactionOptions,
 	SqliteDatabase,
+	SqliteProfilingOptions,
 	SqliteTransactionDatabase,
+	SqliteTransactionOptions,
+	SynchronousRawAccess,
+	SynchronousTransactionAccess,
 } from "@/common/database/config";
-import { getLogger } from "@/common/log";
 import {
 	isManualTransactionControl,
 	MIGRATION_TRANSACTION_TIMEOUT_MS,
+	runSqliteTransactionSync,
 	toSqliteBindings,
 	validateTransactionName,
 	validateTransactionTimeout,
 } from "@/common/database/shared";
+import { getLogger } from "@/common/log";
 import { sha256Hex } from "@/utils/crypto";
 
 export type { SQLiteTable } from "drizzle-orm/sqlite-core";
@@ -42,7 +44,7 @@ type DrizzleDatabase<TSchema extends DrizzleSchema> = Omit<
 	SqliteRemoteDatabase<TSchema>,
 	"transaction"
 > &
-	Omit<RawAccess, "transaction"> & {
+	Omit<SynchronousRawAccess, "transaction"> & {
 		transaction: <T>(
 			callback: (tx: DrizzleDatabase<TSchema>) => Promise<T> | T,
 			options?: SqliteTransactionOptions,
@@ -114,10 +116,20 @@ export function db<TSchema extends DrizzleSchema = Record<string, never>>({
 			const nativeDb = await nativeDatabaseProvider.open(ctx.actorId);
 			let closed = false;
 			let manualTransactionWarned = false;
+			let synchronousTransactionActive = false;
 			const ensureOpen = () => {
 				if (closed) {
 					throw new Error(
 						"Database is closed. This usually means a background timer (setInterval, setTimeout) or a stray promise is still running after the actor stopped. Use c.abortSignal to clean up timers before the actor shuts down.",
+					);
+				}
+			};
+			const ensureSynchronousTransactionClient = (
+				transactionScoped: boolean,
+			) => {
+				if (!transactionScoped && synchronousTransactionActive) {
+					throw new Error(
+						"Use the transaction callback's tx value for queries inside db.transactionSync().",
 					);
 				}
 			};
@@ -132,6 +144,7 @@ export function db<TSchema extends DrizzleSchema = Record<string, never>>({
 					method: "run" | "all" | "values" | "get",
 				) => {
 					ensureOpen();
+					ensureSynchronousTransactionClient(transactionScoped);
 					warnForManualTransaction(query, transactionScoped);
 
 					const start = performance.now();
@@ -186,7 +199,28 @@ export function db<TSchema extends DrizzleSchema = Record<string, never>>({
 					query: string,
 					...args: unknown[]
 				): Promise<TRow[]> => {
+					ensureSynchronousTransactionClient(transactionScoped);
 					return await executeRaw<TRow>(
+						target,
+						ctx,
+						ensureOpen,
+						query,
+						args,
+						() =>
+							warnForManualTransaction(query, transactionScoped),
+					);
+				};
+				drizzleDb.executeSync = <
+					TRow extends Record<string, unknown> = Record<
+						string,
+						unknown
+					>,
+				>(
+					query: string,
+					...args: unknown[]
+				): TRow[] => {
+					ensureSynchronousTransactionClient(transactionScoped);
+					return executeRawSync<TRow>(
 						target,
 						ctx,
 						ensureOpen,
@@ -202,6 +236,8 @@ export function db<TSchema extends DrizzleSchema = Record<string, never>>({
 					) => Promise<T> | T,
 					options?: SqliteTransactionOptions,
 				): Promise<T> => {
+					ensureOpen();
+					ensureSynchronousTransactionClient(transactionScoped);
 					validateTransactionTimeout(options?.timeout);
 					validateTransactionName(options?.name);
 					const transaction = await nativeDb.beginTransaction(
@@ -221,6 +257,38 @@ export function db<TSchema extends DrizzleSchema = Record<string, never>>({
 						}
 						throw error;
 					}
+				};
+				drizzleDb.transactionSync = <T>(
+					transactionCallback: (
+						tx: SynchronousTransactionAccess,
+					) => T,
+					options?: Omit<SqliteTransactionOptions, "experimental">,
+				): T => {
+					ensureOpen();
+					if (transactionScoped || synchronousTransactionActive) {
+						throw new Error(
+							"Nested synchronous SQLite transactions are not supported.",
+						);
+					}
+					return runSqliteTransactionSync(
+						nativeDb,
+						(transaction) => {
+							const transactionClient = createDrizzleClient(
+								transaction,
+								true,
+							);
+							const tx: SynchronousTransactionAccess = {
+								executeSync: transactionClient.executeSync,
+							};
+							synchronousTransactionActive = true;
+							try {
+								return transactionCallback(tx);
+							} finally {
+								synchronousTransactionActive = false;
+							}
+						},
+						options,
+					);
 				};
 				drizzleDb.close = async () => {
 					if (!closed) {
@@ -248,7 +316,7 @@ export function db<TSchema extends DrizzleSchema = Record<string, never>>({
 				manualTransactionWarned = true;
 				getLogger("database").warn(
 					{ actorId: ctx.actorId },
-					"Manual cross-call SQLite transactions can interleave with other actor work. Use db.transaction() for coordinated transactions. Set warnOnManualTransactions: false in your db(...) configuration to disable this warning.",
+					"Manual cross-call SQLite transactions can interleave with other actor work. Use db.transaction() or db.transactionSync() for coordinated transactions. Set warnOnManualTransactions: false in your db(...) configuration to disable this warning.",
 				);
 			};
 
@@ -411,6 +479,68 @@ async function executeRaw<TRow extends Record<string, unknown>>(
 		const results: Record<string, unknown>[] = [];
 		let columnNames: string[] | null = null;
 		await db.exec(query, (row, columns) => {
+			if (!columnNames) {
+				columnNames = columns;
+			}
+			results.push(rowToObject(row, columnNames));
+		});
+		return results as TRow[];
+	} finally {
+		const durationMs = performance.now() - start;
+		ctx.metrics?.trackSql(query, durationMs);
+		if (ctx.metrics) {
+			ctx.log?.debug({
+				msg: "sql query",
+				query: query.slice(0, 120),
+				durationMs,
+				kvReads: ctx.metrics.totalKvReads - kvReadsBefore,
+				kvWrites: ctx.metrics.totalKvWrites - kvWritesBefore,
+			});
+		}
+	}
+}
+
+function executeRawSync<TRow extends Record<string, unknown>>(
+	db: SqliteDatabase | SqliteTransactionDatabase,
+	ctx: DatabaseProviderContext,
+	ensureOpen: () => void,
+	query: string,
+	args: unknown[],
+	warnForManualTransaction: () => void,
+): TRow[] {
+	ensureOpen();
+	warnForManualTransaction();
+	if (!db.executeSync) {
+		throw new Error(
+			"Synchronous SQLite queries are only available in the Node.js native runtime.",
+		);
+	}
+
+	const start = performance.now();
+	const kvReadsBefore = ctx.metrics?.totalKvReads ?? 0;
+	const kvWritesBefore = ctx.metrics?.totalKvWrites ?? 0;
+	try {
+		if (args.length > 0) {
+			const { rows, columns } = db.executeSync(
+				query,
+				toSqliteBindings(args),
+			);
+			return rows.map((row) => rowToObject<TRow>(row, columns));
+		}
+
+		if (!hasMultipleStatements(query)) {
+			const { rows, columns } = db.executeSync(query, undefined);
+			return rows.map((row) => rowToObject<TRow>(row, columns));
+		}
+
+		if (!db.execSync) {
+			throw new Error(
+				"Synchronous SQLite queries are only available in the Node.js native runtime.",
+			);
+		}
+		const results: Record<string, unknown>[] = [];
+		let columnNames: string[] | null = null;
+		db.execSync(query, (row, columns) => {
 			if (!columnNames) {
 				columnNames = columns;
 			}
