@@ -25,6 +25,8 @@ export default defineConfig({
 		__APP_BUILD_ID__: JSON.stringify(
 			`${new Date().toISOString()}@${crypto.randomUUID()}`,
 		),
+		__MCP_APP__: JSON.stringify(false),
+		"import.meta.env.VITE_FEATURE_FLAGS": JSON.stringify(""),
 	},
 	optimizeDeps: {
 		include: ["@fortawesome/*", "@rivet-gg/icons", "@rivet-gg/cloud"],

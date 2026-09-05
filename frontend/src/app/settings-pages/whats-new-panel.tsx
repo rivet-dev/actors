@@ -85,7 +85,7 @@ function Entry({
 						<Skeleton className="size-full" />
 					</PictureFallback>
 					<PictureImage
-						className="size-full object-cover animate-in fade-in-0 duration-300 fill-mode-forwards"
+						className="size-full object-cover"
 						src={image.url}
 						width={image.width}
 						height={image.height}

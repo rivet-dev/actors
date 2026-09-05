@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { formatISO } from "date-fns";
 import { isObject } from "lodash";
-import { formatValue } from "@/lib/format-value";
 import { match, P } from "ts-pattern";
+import { formatValue } from "@/lib/format-value";
 import type { RivetActorError } from "@/queries/types";
 import { CodePreview } from "../code-preview/code-preview";
 import { cn } from "../lib/utils";
@@ -67,15 +67,7 @@ export function QueriedActorStatusAdditionalInfo({
 	);
 
 	if (rescheduleTs) {
-		return (
-			<span>
-				Will try to start again{" "}
-				<span>
-					<RelativeTime time={new Date(rescheduleTs)} /> (
-					{formatISO(rescheduleTs)}){" "}
-				</span>
-			</span>
-		);
+		return <ActorRescheduleStatus rescheduleTs={rescheduleTs} />;
 	}
 
 	if (error) {
@@ -83,6 +75,24 @@ export function QueriedActorStatusAdditionalInfo({
 	}
 
 	return null;
+}
+
+export function ActorRescheduleStatus({
+	rescheduleTs,
+}: {
+	rescheduleTs: Date | number;
+}) {
+	const rescheduleAt = new Date(rescheduleTs);
+	const isOverdue = rescheduleAt.getTime() <= Date.now();
+
+	return (
+		<span>
+			{isOverdue ? "Retry was scheduled " : "Will try to start again "}
+			<span>
+				<RelativeTime time={rescheduleAt} /> ({formatISO(rescheduleAt)}){" "}
+			</span>
+		</span>
+	);
 }
 
 export function ActorError({ error }: { error: object | string }) {

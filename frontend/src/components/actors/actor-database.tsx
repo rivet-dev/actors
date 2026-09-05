@@ -814,7 +814,10 @@ function TableSelect({
 
 	return (
 		<Select onValueChange={onSelect} value={value}>
-			<SelectTrigger variant="ghost" className="h-full pr-2 rounded-none">
+			<SelectTrigger
+				variant="ghost"
+				className="h-full pr-2 rounded-none [&>svg]:!size-3"
+			>
 				<SelectValue placeholder="Select table or view..." />
 			</SelectTrigger>
 			<SelectContent>

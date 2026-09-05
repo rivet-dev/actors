@@ -42,15 +42,17 @@ export function LazyBillingPlanBadge({
 	project,
 	organization,
 	className,
+	eager = false,
 }: {
 	project: string;
 	organization: string;
 	className?: string;
+	eager?: boolean;
 }) {
 	const [isVisible, setIsVisible] = useState(false);
 	const dataProvider = useCloudDataProvider();
 	const { data, isLoading } = useQuery({
-		enabled: isVisible,
+		enabled: eager || isVisible,
 		...dataProvider.billingDetailsQueryOptions({ project, organization }),
 	});
 
@@ -58,7 +60,7 @@ export function LazyBillingPlanBadge({
 
 	return (
 		<>
-			{isLoading || !isVisible ? (
+			{isLoading || (!eager && !isVisible) ? (
 				<SkeletonBadge />
 			) : (
 				<Badge
@@ -68,7 +70,9 @@ export function LazyBillingPlanBadge({
 					{PLAN_LABELS[plan]}
 				</Badge>
 			)}
-			<VisibilitySensor onChange={() => setIsVisible(true)} />
+			{eager ? null : (
+				<VisibilitySensor onChange={() => setIsVisible(true)} />
+			)}
 		</>
 	);
 }

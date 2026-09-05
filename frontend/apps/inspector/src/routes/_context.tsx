@@ -4,11 +4,13 @@ import {
 	Outlet,
 	redirect,
 	useNavigate,
+	useRouteContext,
 } from "@tanstack/react-router";
 import { zodValidator } from "@tanstack/zod-adapter";
 import z from "zod";
 import { getInspectorClientEndpoint } from "@/app/data-providers/inspector-data-provider";
 import { useDialog } from "@/components";
+import { DataProviderContext } from "@/components/actors";
 import { ModalRenderer } from "@/components/modal-renderer";
 
 const searchSchema = z
@@ -66,12 +68,17 @@ export const Route = createFileRoute("/_context")({
 });
 
 function RouteComponent() {
+	const dataProvider = useRouteContext({
+		from: "/_context",
+		select: (context) => context.dataProvider,
+	});
+
 	return (
-		<>
+		<DataProviderContext.Provider value={dataProvider}>
 			<Outlet />
 			<ModalRenderer />
 			<Modals />
-		</>
+		</DataProviderContext.Provider>
 	);
 }
 

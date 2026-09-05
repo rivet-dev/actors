@@ -19,10 +19,12 @@
 	--accent-foreground: 240 10% 4%;
 	--destructive: 0 84.2% 60.2%;
 	--destructive-foreground: 0 0% 100%;
+	--warning: 47.9 95.8% 53.1%;
 	--border: 240 6% 90%;
 	--input: 240 6% 90%;
 	--ring: 18.5 100% 50%;
 	--radius: 0.5rem;
+	--background-main: 0 0% 100%;
 }
 :root[class~="dark"] {
 	/* Cool zinc neutrals — mirrors Foundry's #09090b / #0c0c0e / #0f0f11. */

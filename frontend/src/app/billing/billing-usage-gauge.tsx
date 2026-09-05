@@ -11,6 +11,11 @@ const progressColors = {
 		border: "border-emerald-900/30",
 	},
 	medium: {
+		stroke: "stroke-warning",
+		background: "bg-warning/10",
+		border: "border-warning/60",
+	},
+	warning: {
 		stroke: "stroke-amber-500",
 		background: "bg-amber-950/50",
 		border: "border-amber-900/30",
@@ -45,7 +50,13 @@ export function BillingUsageGauge() {
 	const strokeDashoffset = circumference - (progress / 100) * circumference;
 
 	const progressVariant =
-		progress < 50 ? "low" : progress < 80 ? "medium" : "high";
+		progress < 50
+			? "low"
+			: progress < 80
+				? "medium"
+				: progress < 100
+					? "warning"
+					: "high";
 
 	return (
 		<WithTooltip

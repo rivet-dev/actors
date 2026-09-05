@@ -428,7 +428,14 @@ function ProjectSegmentPopover({
 			project: currentProject,
 		}),
 	);
-	const label = projectData?.displayName ?? currentProject;
+	const { data: projects } = useInfiniteQuery(
+		useCloudDataProvider().currentOrgProjectsQueryOptions(),
+	);
+	const label =
+		projectData?.displayName ??
+		projects?.find((project) => project.name === currentProject)
+			?.displayName ??
+		currentProject;
 
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
@@ -451,19 +458,20 @@ function ProjectSegmentPopover({
 							}),
 						});
 					}}
-					className="flex h-auto items-center gap-2 px-2 py-1 text-sm font-medium text-foreground rounded-lg hover:bg-foreground/[0.06]"
+					className="flex h-auto items-center gap-2 px-1 py-1 text-sm font-medium text-foreground rounded-lg hover:bg-foreground/[0.06]"
 				>
 					<span className="truncate">{label}</span>
 					<LazyBillingPlanBadge
 						project={currentProject}
 						organization={organization}
+						eager
 					/>
 				</Button>
 				<PopoverTrigger asChild>
 					<Button
 						variant="ghost"
 						aria-label="Open project switcher"
-						className="flex h-auto items-center self-stretch px-1.5 py-1 text-foreground rounded-lg hover:bg-foreground/[0.06] data-[state=open]:bg-foreground/[0.06]"
+						className="flex h-auto items-center self-stretch px-1 py-1 text-foreground rounded-lg hover:bg-foreground/[0.06] data-[state=open]:bg-foreground/[0.06]"
 					>
 						<UnfoldIcon />
 					</Button>
@@ -501,7 +509,16 @@ function NamespaceSegmentPopover({
 			namespace: currentNamespace,
 		}),
 	);
-	const label = nsData?.displayName ?? currentNamespace;
+	const { data: namespaces } = useInfiniteQuery(
+		useCloudDataProvider().currentOrgProjectNamespacesQueryOptions({
+			project: currentProject,
+		}),
+	);
+	const label =
+		nsData?.displayName ??
+		namespaces?.find((namespace) => namespace.name === currentNamespace)
+			?.displayName ??
+		currentNamespace;
 
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
@@ -568,7 +585,14 @@ function EngineNamespaceSegmentPopover({
 	const { data: nsData } = useQuery(
 		useEngineCompatDataProvider().namespaceQueryOptions(currentNamespace),
 	);
-	const label = nsData?.displayName ?? currentNamespace;
+	const { data: namespaces } = useInfiniteQuery(
+		useEngineCompatDataProvider().namespacesQueryOptions(),
+	);
+	const label =
+		nsData?.displayName ??
+		namespaces?.find((namespace) => namespace.name === currentNamespace)
+			?.displayName ??
+		currentNamespace;
 
 	return (
 		<Popover open={open} onOpenChange={setOpen}>

@@ -134,7 +134,7 @@ export function DatabaseTable({
 				width: table.getTotalSize(),
 			}}
 		>
-			<TableHeader className="border-t">
+			<TableHeader>
 				{table.getHeaderGroups().map((headerGroup) => (
 					<TableRow key={headerGroup.id}>
 						{headerGroup.headers.map((header) => {
@@ -168,6 +168,7 @@ export function DatabaseTable({
 														icon={
 															faArrowUpWideShort
 														}
+														className="size-3 shrink-0 text-muted-foreground"
 													/>
 												) : header.column.getIsSorted() ===
 													"desc" ? (
@@ -175,10 +176,12 @@ export function DatabaseTable({
 														icon={
 															faArrowDownWideShort
 														}
+														className="size-3 shrink-0 text-muted-foreground"
 													/>
 												) : (
 													<Icon
 														icon={faAnglesUpDown}
+														className="size-3 shrink-0 text-muted-foreground"
 													/>
 												)
 											) : null}
@@ -334,9 +337,9 @@ function createColumns(
 		...columns.map((col) =>
 			ch.accessor(col.name, {
 				header: () => (
-					<span className="flex items-center gap-1">
-						{col.name}{" "}
-						<span className="text-muted-foreground text-xs font-mono-console">
+					<span className="flex min-w-0 items-baseline gap-1.5 normal-case">
+						<span className="truncate">{col.name}</span>
+						<span className="shrink-0 font-mono text-[10px] font-normal uppercase leading-none tracking-wide text-muted-foreground">
 							{col.type}
 						</span>
 						<ForeignKey references={references} column={col} />
@@ -356,14 +359,14 @@ export function renderDatabaseCellValue(
 ): ReactNode {
 	if (isBlobColumn(column, value)) {
 		return (
-			<span className="text-xs text-muted-foreground font-mono-console">
+			<span className="font-mono text-[11px] uppercase leading-none tracking-wide text-muted-foreground">
 				BINARY
 			</span>
 		);
 	}
 	if (value === null) {
 		return (
-			<span className="text-xs text-muted-foreground font-mono-console">
+			<span className="font-mono text-[11px] uppercase leading-none tracking-wide text-muted-foreground">
 				NULL
 			</span>
 		);
