@@ -11,6 +11,7 @@ use rivetkit_core::{
 	CoreRegistry as NativeCoreRegistry, CoreServerlessRuntime, EngineSpawnMode,
 	HTTP_BODY_STREAM_CHANNEL_CAPACITY, ServeConfig, ServerlessRequest,
 	registry::CoreEnvoyHandle,
+	registry::worker_pool::{ActorWorkerPoolConfig, WorkerRegistrationHandle},
 	serverless::ServerlessStreamError,
 	serverless_http::{
 		self, ApplicationFetch, ApplicationRequest, ApplicationResponse, ApplicationResponseBody,
@@ -20,9 +21,15 @@ use rivetkit_core::{
 use tokio::sync::{Mutex as TokioMutex, Notify, mpsc};
 use tokio_util::sync::CancellationToken as CoreCancellationToken;
 
-use crate::actor_factory::NapiActorFactory;
+use crate::actor_factory::{
+	CallbackEnvironment, JsActorConfig, NapiActorFactory, actor_config_from_js,
+};
 use crate::cancellation_token::CancellationToken;
 use crate::http::HttpResponseBodyStream;
+use crate::worker_pool::{
+	JsWorkerRegistration, WorkerPoolHost, create_callbacks, lookup_pool, parse_positive_usize,
+	parse_worker_class, parse_worker_epoch, parse_worker_id, registration_result,
+};
 use crate::{NapiInvalidState, napi_anyhow_error};
 
 #[napi(object)]
@@ -109,13 +116,40 @@ enum ServerlessStreamEvent {
 ///
 /// Mode A (`serve`) and Mode B (`handle_serverless_request` -> `Serverless(...)`)
 /// are mutually exclusive per instance: both transition out of `Registering`.
+/// A worker registry instead transitions to `AttachedWorker` and can only detach
+/// or shut down after its factory map is consumed by the process-global pool.
 /// `BuildingServerless` is a sentinel held across the `into_serverless_runtime`
 /// `.await` so a concurrent `shutdown()` can observe an in-flight build and
 /// either wait for it to settle into `Serverless(_)` (then tear it down) or
 /// transition directly to `ShutDown` while the build-side checks terminal
 /// state before installing.
+#[derive(Clone)]
+struct AttachedWorker {
+	handle: WorkerRegistrationHandle,
+	callback_environments: Arc<Vec<Arc<CallbackEnvironment>>>,
+}
+
+impl AttachedWorker {
+	fn close_callbacks(&self) {
+		for environment in self.callback_environments.iter() {
+			environment.close();
+		}
+	}
+
+	fn environment_dropped(&self) {
+		self.close_callbacks();
+		self.handle.environment_dropped();
+	}
+
+	fn detach(&self) {
+		self.close_callbacks();
+		self.handle.detach();
+	}
+}
+
 enum RegistryState {
 	Registering(NativeCoreRegistry),
+	AttachedWorker(AttachedWorker),
 	BuildingServerless,
 	Serving,
 	Serverless(CoreServerlessRuntime),
@@ -138,6 +172,8 @@ pub struct CoreRegistry {
 	/// a build wait for the build to settle and then re-check the fast path
 	/// instead of erroring with a misleading mode-conflict.
 	build_complete: Arc<Notify>,
+	worker_pool_host: Arc<ParkingMutex<Option<WorkerPoolHost>>>,
+	callback_environments: Arc<ParkingMutex<Vec<Arc<CallbackEnvironment>>>>,
 }
 
 #[napi]
@@ -156,11 +192,16 @@ impl CoreRegistry {
 			route_package_version: Arc::new(ParkingMutex::new(None)),
 			shutdown_token: CoreCancellationToken::new(),
 			build_complete: Arc::new(Notify::new()),
+			worker_pool_host: Arc::new(ParkingMutex::new(None)),
+			callback_environments: Arc::new(ParkingMutex::new(Vec::new())),
 		}
 	}
 
 	#[napi]
 	pub fn register(&self, name: String, factory: &NapiActorFactory) -> napi::Result<()> {
+		if self.worker_pool_host.lock().is_some() {
+			return Err(registry_worker_pool_registrations_frozen_error());
+		}
 		// Registration runs on the sync N-API thread before any async work.
 		// `try_lock` must always succeed here: no other path holds the lock at
 		// this point. If somehow contended, surface the structured error rather
@@ -172,14 +213,169 @@ impl CoreRegistry {
 		match &mut *guard {
 			RegistryState::Registering(registry) => {
 				registry.register_shared(&name, factory.actor_factory());
+				self.callback_environments
+					.lock()
+					.push(factory.callback_environment());
 				Ok(())
 			}
 			RegistryState::BuildingServerless
+			| RegistryState::AttachedWorker(_)
 			| RegistryState::Serving
 			| RegistryState::Serverless(_)
 			| RegistryState::ShuttingDown
 			| RegistryState::ShutDown => Err(registry_not_registering_error()),
 		}
+	}
+
+	#[napi(js_name = "registerActorConfig")]
+	pub fn register_actor_config(&self, name: String, config: JsActorConfig) -> napi::Result<()> {
+		if self.worker_pool_host.lock().is_some() {
+			return Err(registry_worker_pool_registrations_frozen_error());
+		}
+		let config = actor_config_from_js(config)?;
+		let mut guard = self
+			.state
+			.try_lock()
+			.map_err(|_| registry_register_busy_error())?;
+		match &mut *guard {
+			RegistryState::Registering(registry) => {
+				registry.register_config(&name, config);
+				Ok(())
+			}
+			_ => Err(registry_not_registering_error()),
+		}
+	}
+
+	#[napi(js_name = "configureWorkerPool")]
+	pub fn configure_worker_pool(
+		&self,
+		env: Env,
+		actors_per_thread: f64,
+		baseline_worker_limit: f64,
+		request_spawns: JsFunction,
+		retire_worker: JsFunction,
+	) -> napi::Result<String> {
+		if self.worker_pool_host.lock().is_some() {
+			return Err(registry_worker_pool_already_configured_error());
+		}
+		let actors_per_thread = parse_positive_usize(actors_per_thread, "actorsPerThread")?;
+		let baseline_worker_limit =
+			parse_positive_usize(baseline_worker_limit, "baselineWorkerLimit")?;
+		let config = ActorWorkerPoolConfig::new(actors_per_thread, baseline_worker_limit)
+			.map_err(napi_anyhow_error)?;
+		let callbacks = create_callbacks(&env, request_spawns, retire_worker)?;
+		let mut guard = self
+			.state
+			.try_lock()
+			.map_err(|_| registry_register_busy_error())?;
+		let RegistryState::Registering(registry) = &mut *guard else {
+			return Err(registry_not_registering_error());
+		};
+		let pool = registry
+			.enable_worker_pool(config, callbacks)
+			.map_err(napi_anyhow_error)?;
+		let pool_id = uuid::Uuid::new_v4().to_string();
+		let host = WorkerPoolHost::new(pool_id.clone(), pool)?;
+		*self.worker_pool_host.lock() = Some(host);
+		Ok(pool_id)
+	}
+
+	#[napi(js_name = "attachWorker")]
+	pub fn attach_worker(
+		&self,
+		mut env: Env,
+		pool_id: String,
+		worker_id: f64,
+		spawn_token: String,
+		worker_class: String,
+	) -> napi::Result<JsWorkerRegistration> {
+		let pool = lookup_pool(&pool_id)?;
+		let worker_id = parse_worker_id(worker_id)?;
+		let class = parse_worker_class(&worker_class)?;
+		let mut guard = self
+			.state
+			.try_lock()
+			.map_err(|_| registry_register_busy_error())?;
+		let registry = match std::mem::replace(&mut *guard, RegistryState::ShutDown) {
+			RegistryState::Registering(registry) => registry,
+			other => {
+				*guard = other;
+				return Err(registry_not_registering_error());
+			}
+		};
+		let factories = registry
+			.into_worker_factories()
+			.map_err(napi_anyhow_error)?;
+		let handle = pool
+			.register_worker(worker_id, &spawn_token, class, factories)
+			.map_err(napi_anyhow_error)?;
+		// Factories created their TSFNs before this hook was registered. Node runs
+		// environment cleanup hooks in reverse registration order, so this removes
+		// the worker from scheduling and cancels its lease signals before the
+		// environment finalizes those callback resources.
+		let attached = AttachedWorker {
+			handle,
+			callback_environments: Arc::new(self.callback_environments.lock().drain(..).collect()),
+		};
+		if let Err(error) = env.add_env_cleanup_hook(attached.clone(), |attached| {
+			attached.environment_dropped();
+		}) {
+			attached.detach();
+			return Err(error);
+		}
+		let result = registration_result(&attached.handle)?;
+		*guard = RegistryState::AttachedWorker(attached);
+		Ok(result)
+	}
+
+	#[napi(js_name = "detachWorker")]
+	pub fn detach_worker(&self) -> napi::Result<()> {
+		let mut guard = self
+			.state
+			.try_lock()
+			.map_err(|_| registry_register_busy_error())?;
+		match std::mem::replace(&mut *guard, RegistryState::ShutDown) {
+			RegistryState::AttachedWorker(handle) => {
+				handle.detach();
+				Ok(())
+			}
+			RegistryState::ShutDown => Ok(()),
+			other => {
+				*guard = other;
+				Err(registry_wrong_mode_error())
+			}
+		}
+	}
+
+	#[napi(js_name = "workerSpawnFailed")]
+	pub fn worker_spawn_failed(
+		&self,
+		worker_id: f64,
+		spawn_token: String,
+		reason: String,
+	) -> napi::Result<()> {
+		let worker_id = parse_worker_id(worker_id)?;
+		let Some(host) = self.worker_pool_host.lock().clone() else {
+			// A queued Worker constructor can fail after registry shutdown has
+			// already removed the pool host. Its pending reservation is gone.
+			return Ok(());
+		};
+		host.pool()
+			.fail_worker_spawn(worker_id, &spawn_token, reason);
+		Ok(())
+	}
+
+	#[napi(js_name = "workerExited")]
+	pub fn worker_exited(&self, worker_id: f64, worker_epoch: f64) -> napi::Result<()> {
+		let worker_id = parse_worker_id(worker_id)?;
+		let worker_epoch = parse_worker_epoch(worker_epoch)?;
+		let Some(host) = self.worker_pool_host.lock().clone() else {
+			// Worker exit is a fallback cleanup signal and can race the main
+			// registry dropping its already-shut-down pool host.
+			return Ok(());
+		};
+		host.pool().worker_lost(worker_id, worker_epoch);
+		Ok(())
 	}
 
 	#[napi]
@@ -231,6 +427,7 @@ impl CoreRegistry {
 				*guard = RegistryState::ShutDown;
 			}
 		}
+		self.finish_worker_pool_host(false);
 		self.serving_envoy_ready.notify_waiters();
 		result.map_err(napi_anyhow_error)
 	}
@@ -258,6 +455,9 @@ impl CoreRegistry {
 					// N-API call reaches its state transition. The already-armed Notify
 					// closes that race without polling.
 					RegistryState::Registering(_) => {}
+					RegistryState::AttachedWorker(_) => {
+						return Err(registry_wrong_mode_error());
+					}
 					RegistryState::BuildingServerless => {
 						return Err(registry_wrong_mode_error());
 					}
@@ -285,16 +485,18 @@ impl CoreRegistry {
 		// already past the state transition observes cancel promptly.
 		self.shutdown_token.cancel();
 
-		let (runtime, was_building) = {
+		let (runtime, attached_worker, was_building, shutdown_pool_now) = {
 			let mut guard = self.state.lock().await;
 			match std::mem::replace(&mut *guard, RegistryState::ShuttingDown) {
-				RegistryState::Registering(_) | RegistryState::Serving => (None, false),
-				RegistryState::Serverless(runtime) => (Some(runtime), false),
+				RegistryState::Registering(_) => (None, None, false, true),
+				RegistryState::AttachedWorker(handle) => (None, Some(handle), false, false),
+				RegistryState::Serving => (None, None, false, false),
+				RegistryState::Serverless(runtime) => (Some(runtime), None, false, false),
 				RegistryState::BuildingServerless => {
 					// An `ensure_serverless_runtime` call is mid-build. Its
 					// post-build re-check will observe `shutdown_token` and
 					// tear down the runtime itself before settling state.
-					(None, true)
+					(None, None, true, false)
 				}
 				RegistryState::ShuttingDown | RegistryState::ShutDown => {
 					// Already in progress / done.
@@ -304,6 +506,16 @@ impl CoreRegistry {
 				}
 			}
 		};
+		if let Some(handle) = attached_worker {
+			handle.detach();
+		}
+		if shutdown_pool_now {
+			self.finish_worker_pool_host(true);
+		} else if let Some(host) = self.worker_pool_host.lock().clone() {
+			// Prevent any new worker environment from attaching once shutdown
+			// starts. Existing registration handles remain usable for cleanup.
+			host.unregister_directory();
+		}
 
 		if let Some(runtime) = runtime {
 			runtime.shutdown().await;
@@ -333,6 +545,7 @@ impl CoreRegistry {
 				RegistryState::Serving => (self.serving_envoy.lock().clone(), None),
 				RegistryState::Serverless(runtime) => (None, Some(runtime.clone())),
 				RegistryState::Registering(_)
+				| RegistryState::AttachedWorker(_)
 				| RegistryState::BuildingServerless
 				| RegistryState::ShuttingDown
 				| RegistryState::ShutDown => (None, None),
@@ -357,6 +570,9 @@ impl CoreRegistry {
 			match &*guard {
 				RegistryState::Registering(_) => {
 					return Ok(health_response(503, "not_started", &version));
+				}
+				RegistryState::AttachedWorker(_) => {
+					return Ok(health_response(503, "attached_worker", &version));
 				}
 				RegistryState::BuildingServerless => {
 					return Ok(health_response(503, "starting", &version));
@@ -602,6 +818,9 @@ impl CoreRegistry {
 				if matches!(*guard, RegistryState::Serving) {
 					return Err(registry_wrong_mode_error());
 				}
+				if matches!(*guard, RegistryState::AttachedWorker(_)) {
+					return Err(registry_wrong_mode_error());
+				}
 				if matches!(*guard, RegistryState::BuildingServerless) {
 					// Another caller is building. Arm the notification before
 					// dropping the lock so a completion we race against still
@@ -680,6 +899,7 @@ impl CoreRegistry {
 				// leaving `BuildingServerless` would produce.
 				*guard = RegistryState::ShutDown;
 				drop(guard);
+				self.finish_worker_pool_host(true);
 				Err(napi_anyhow_error(error))
 			}
 		};
@@ -695,6 +915,15 @@ impl CoreRegistry {
 			.lock()
 			.clone()
 			.unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned())
+	}
+
+	fn finish_worker_pool_host(&self, shutdown: bool) {
+		if let Some(host) = self.worker_pool_host.lock().take() {
+			host.unregister_directory();
+			if shutdown {
+				host.pool().shutdown();
+			}
+		}
 	}
 }
 
@@ -893,6 +1122,26 @@ fn registry_register_busy_error() -> napi::Error {
 		NapiInvalidState {
 			state: "core registry".to_owned(),
 			reason: "register called concurrently with serve or shutdown".to_owned(),
+		}
+		.build(),
+	)
+}
+
+fn registry_worker_pool_already_configured_error() -> napi::Error {
+	napi_anyhow_error(
+		NapiInvalidState {
+			state: "core registry worker pool".to_owned(),
+			reason: "already configured".to_owned(),
+		}
+		.build(),
+	)
+}
+
+fn registry_worker_pool_registrations_frozen_error() -> napi::Error {
+	napi_anyhow_error(
+		NapiInvalidState {
+			state: "core registry worker pool".to_owned(),
+			reason: "actor registrations are frozen after the worker pool is configured".to_owned(),
 		}
 		.build(),
 	)

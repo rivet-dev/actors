@@ -11,6 +11,7 @@ pub mod registry;
 pub mod schedule;
 pub mod types;
 pub mod websocket;
+mod worker_pool;
 
 use std::sync::Once;
 

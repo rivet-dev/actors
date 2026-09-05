@@ -1,0 +1,5 @@
+{
+  "code": "worker_pool_actor_not_registered",
+  "group": "actor",
+  "message": "Actor is not registered"
+}

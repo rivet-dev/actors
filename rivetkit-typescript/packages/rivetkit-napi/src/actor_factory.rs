@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
 use napi::bindgen_prelude::{Buffer, Promise};
 use napi::threadsafe_function::{ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction};
-use napi::{Env, JsFunction, JsObject};
+use napi::{Env, JsFunction, JsObject, Status};
 use napi_derive::napi;
 use rivet_error::{ActorSpecifier, RivetError, RivetErrorKind};
 use rivetkit_core::inspector::InspectorTabEntry;
@@ -23,7 +24,55 @@ use crate::napi_actor_events::run_adapter_loop;
 use crate::websocket::WebSocket;
 use crate::{BRIDGE_RIVET_ERROR_PREFIX, NapiInvalidArgument, napi_anyhow_error};
 
-pub(crate) type CallbackTsfn<T> = ThreadsafeFunction<T, ErrorStrategy::CalleeHandled>;
+/// Shared liveness for every callback created in one Node environment.
+///
+/// Worker cleanup closes this before Node starts finalizing TSFNs. Callback
+/// wrappers intentionally share the TSFN through an `Arc` so moving work to a
+/// task never calls napi-rs' panic-on-clone `ThreadsafeFunction::clone` after
+/// finalization has begun.
+pub(crate) struct CallbackEnvironment {
+	live: AtomicBool,
+}
+
+impl CallbackEnvironment {
+	pub(crate) fn new() -> Self {
+		Self {
+			live: AtomicBool::new(true),
+		}
+	}
+
+	pub(crate) fn close(&self) {
+		self.live.store(false, Ordering::Release);
+	}
+}
+
+pub(crate) struct CallbackTsfn<T: 'static> {
+	inner: Arc<ThreadsafeFunction<T, ErrorStrategy::CalleeHandled>>,
+	environment: Arc<CallbackEnvironment>,
+}
+
+impl<T: 'static> Clone for CallbackTsfn<T> {
+	fn clone(&self) -> Self {
+		Self {
+			inner: self.inner.clone(),
+			environment: self.environment.clone(),
+		}
+	}
+}
+
+impl<T: 'static> CallbackTsfn<T> {
+	pub(crate) async fn call_async<D: 'static + napi::bindgen_prelude::FromNapiValue>(
+		&self,
+		value: napi::Result<T>,
+	) -> napi::Result<D> {
+		if !self.environment.live.load(Ordering::Acquire) {
+			return Err(napi::Error::from_status(Status::Closing));
+		}
+		// `call_async` checks the TSFN's own aborted flag under napi-rs' lock.
+		// Closing between our liveness check and this call is therefore safe.
+		self.inner.call_async(value).await
+	}
+}
 
 pub(crate) trait TsfnPayloadSummary {
 	fn payload_summary(&self) -> String;
@@ -245,6 +294,7 @@ pub(crate) struct AdapterConfig {
 
 #[allow(dead_code)]
 pub(crate) struct CallbackBindings {
+	pub(crate) environment: Arc<CallbackEnvironment>,
 	pub(crate) create_state: Option<CallbackTsfn<CreateStatePayload>>,
 	pub(crate) on_create: Option<CallbackTsfn<CreateStatePayload>>,
 	pub(crate) create_conn_state: Option<CallbackTsfn<CreateConnStatePayload>>,
@@ -316,6 +366,16 @@ impl NapiActorFactory {
 	pub(crate) fn actor_factory(&self) -> Arc<CoreActorFactory> {
 		Arc::clone(&self.inner)
 	}
+
+	pub(crate) fn callback_environment(&self) -> Arc<CallbackEnvironment> {
+		self._bindings.environment.clone()
+	}
+}
+
+pub(crate) fn actor_config_from_js(config: JsActorConfig) -> napi::Result<ActorConfig> {
+	let config = ActorConfig::from_input(ActorConfigInput::from(config));
+	config.validate().map_err(napi_anyhow_error)?;
+	Ok(config)
 }
 
 #[napi]
@@ -334,10 +394,9 @@ impl NapiActorFactory {
 		let adapter_config = Arc::new(AdapterConfig::from_js_config(&js_config));
 		let adapter_bindings = Arc::clone(&bindings);
 		let loop_config = Arc::clone(&adapter_config);
-		let actor_config = ActorConfig::from_input(ActorConfigInput::from(js_config));
 		// Reject malformed config (empty ids/labels, duplicate ids, custom
 		// tabs colliding with built-in ids, etc.) before the actor starts.
-		actor_config.validate().map_err(napi_anyhow_error)?;
+		let actor_config = actor_config_from_js(js_config)?;
 		let inner = Arc::new(
 			CoreActorFactory::new_with_manual_startup_ready(actor_config, move |start| {
 				let bindings = Arc::clone(&adapter_bindings);
@@ -386,6 +445,7 @@ impl AdapterConfig {
 
 impl CallbackBindings {
 	fn from_js(callbacks: JsObject) -> napi::Result<Self> {
+		let environment = Arc::new(CallbackEnvironment::new());
 		let actions = if let Some(actions) = callbacks.get::<_, JsObject>("actions")? {
 			let mut mapped = HashMap::new();
 			for name in JsObject::keys(&actions)? {
@@ -398,7 +458,10 @@ impl CallbackBindings {
 						.build(),
 					)
 				})?;
-				mapped.insert(name, create_tsfn(callback, build_action_payload)?);
+				mapped.insert(
+					name,
+					create_tsfn(callback, build_action_payload, environment.clone())?,
+				);
 			}
 			mapped
 		} else {
@@ -406,68 +469,124 @@ impl CallbackBindings {
 		};
 
 		Ok(Self {
-			create_state: optional_tsfn(&callbacks, "createState", build_create_state_payload)?,
-			on_create: optional_tsfn(&callbacks, "onCreate", build_create_state_payload)?,
+			environment: environment.clone(),
+			create_state: optional_tsfn(
+				&callbacks,
+				"createState",
+				build_create_state_payload,
+				&environment,
+			)?,
+			on_create: optional_tsfn(
+				&callbacks,
+				"onCreate",
+				build_create_state_payload,
+				&environment,
+			)?,
 			create_conn_state: optional_tsfn(
 				&callbacks,
 				"createConnState",
 				build_create_conn_state_payload,
+				&environment,
 			)?,
-			create_vars: optional_tsfn(&callbacks, "createVars", build_lifecycle_payload)?,
-			on_migrate: optional_tsfn(&callbacks, "onMigrate", build_migrate_payload)?,
-			on_wake: optional_tsfn(&callbacks, "onWake", build_lifecycle_payload)?,
+			create_vars: optional_tsfn(
+				&callbacks,
+				"createVars",
+				build_lifecycle_payload,
+				&environment,
+			)?,
+			on_migrate: optional_tsfn(
+				&callbacks,
+				"onMigrate",
+				build_migrate_payload,
+				&environment,
+			)?,
+			on_wake: optional_tsfn(&callbacks, "onWake", build_lifecycle_payload, &environment)?,
 			on_before_actor_start: optional_tsfn(
 				&callbacks,
 				"onBeforeActorStart",
 				build_lifecycle_payload,
+				&environment,
 			)?,
-			on_sleep: optional_tsfn(&callbacks, "onSleep", build_lifecycle_payload)?,
-			on_destroy: optional_tsfn(&callbacks, "onDestroy", build_lifecycle_payload)?,
+			on_sleep: optional_tsfn(&callbacks, "onSleep", build_lifecycle_payload, &environment)?,
+			on_destroy: optional_tsfn(
+				&callbacks,
+				"onDestroy",
+				build_lifecycle_payload,
+				&environment,
+			)?,
 			on_before_connect: optional_tsfn(
 				&callbacks,
 				"onBeforeConnect",
 				build_before_connect_payload,
+				&environment,
 			)?,
-			on_connect: optional_tsfn(&callbacks, "onConnect", build_connection_payload)?,
+			on_connect: optional_tsfn(
+				&callbacks,
+				"onConnect",
+				build_connection_payload,
+				&environment,
+			)?,
 			on_disconnect_final: optional_tsfn(
 				&callbacks,
 				"onDisconnectFinal",
 				build_connection_payload,
+				&environment,
 			)?
 			.or(optional_tsfn(
 				&callbacks,
 				"onDisconnect",
 				build_connection_payload,
+				&environment,
 			)?),
 			on_before_subscribe: optional_tsfn(
 				&callbacks,
 				"onBeforeSubscribe",
 				build_before_subscribe_payload,
+				&environment,
 			)?,
 			actions,
 			on_before_action_response: optional_tsfn(
 				&callbacks,
 				"onBeforeActionResponse",
 				build_before_action_response_payload,
+				&environment,
 			)?,
-			on_request: optional_tsfn(&callbacks, "onRequest", build_http_request_payload)?,
-			on_queue_send: optional_tsfn(&callbacks, "onQueueSend", build_queue_send_payload)?,
-			on_websocket: optional_tsfn(&callbacks, "onWebSocket", build_websocket_payload)?,
-			run: optional_tsfn(&callbacks, "run", build_lifecycle_payload)?,
+			on_request: optional_tsfn(
+				&callbacks,
+				"onRequest",
+				build_http_request_payload,
+				&environment,
+			)?,
+			on_queue_send: optional_tsfn(
+				&callbacks,
+				"onQueueSend",
+				build_queue_send_payload,
+				&environment,
+			)?,
+			on_websocket: optional_tsfn(
+				&callbacks,
+				"onWebSocket",
+				build_websocket_payload,
+				&environment,
+			)?,
+			run: optional_tsfn(&callbacks, "run", build_lifecycle_payload, &environment)?,
 			get_workflow_history: optional_tsfn(
 				&callbacks,
 				"getWorkflowHistory",
 				build_workflow_history_payload,
+				&environment,
 			)?,
 			replay_workflow: optional_tsfn(
 				&callbacks,
 				"replayWorkflow",
 				build_workflow_replay_payload,
+				&environment,
 			)?,
 			serialize_state: optional_tsfn(
 				&callbacks,
 				"serializeState",
 				build_serialize_state_payload,
+				&environment,
 			)?,
 		})
 	}
@@ -477,6 +596,7 @@ fn optional_tsfn<T, F>(
 	callbacks: &JsObject,
 	name: &str,
 	build_args: F,
+	environment: &Arc<CallbackEnvironment>,
 ) -> napi::Result<Option<CallbackTsfn<T>>>
 where
 	T: Send + 'static,
@@ -485,17 +605,25 @@ where
 	let Some(callback) = callbacks.get::<_, JsFunction>(name)? else {
 		return Ok(None);
 	};
-	create_tsfn(callback, build_args).map(Some)
+	create_tsfn(callback, build_args, environment.clone()).map(Some)
 }
 
-fn create_tsfn<T, F>(callback: JsFunction, build_args: F) -> napi::Result<CallbackTsfn<T>>
+fn create_tsfn<T, F>(
+	callback: JsFunction,
+	build_args: F,
+	environment: Arc<CallbackEnvironment>,
+) -> napi::Result<CallbackTsfn<T>>
 where
 	T: Send + 'static,
 	F: Fn(&Env, T) -> napi::Result<Vec<napi::JsUnknown>> + Send + Sync + 'static,
 {
 	let build_args = Arc::new(build_args);
-	callback.create_threadsafe_function(0, move |ctx: ThreadSafeCallContext<T>| {
+	let inner = callback.create_threadsafe_function(0, move |ctx: ThreadSafeCallContext<T>| {
 		build_args(&ctx.env, ctx.value)
+	})?;
+	Ok(CallbackTsfn {
+		inner: Arc::new(inner),
+		environment,
 	})
 }
 

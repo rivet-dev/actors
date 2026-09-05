@@ -321,6 +321,22 @@ export interface RuntimeActorConfig {
 	inspectorTabs?: Array<RuntimeInspectorTabEntry>;
 }
 
+export interface RuntimeWorkerSpawnRequest {
+	workerId: number;
+	spawnToken: string;
+	class: "baseline" | "overflow";
+}
+
+export interface RuntimeWorkerRetireRequest {
+	workerId: number;
+	workerEpoch: number;
+}
+
+export interface RuntimeWorkerRegistration {
+	workerId: number;
+	workerEpoch: number;
+}
+
 export interface RuntimeInspectorTabEntry {
 	id: string;
 	/** Required for custom entries; omitted for built-in hides. */
@@ -445,6 +461,37 @@ export interface CoreRuntime {
 		registry: RegistryHandle,
 		name: string,
 		factory: ActorFactoryHandle,
+	): void;
+	registerActorConfig?(
+		registry: RegistryHandle,
+		name: string,
+		config: RuntimeActorConfig,
+	): void;
+	configureWorkerPool?(
+		registry: RegistryHandle,
+		actorsPerThread: number,
+		baselineWorkerLimit: number,
+		requestSpawns: (requests: RuntimeWorkerSpawnRequest[]) => void,
+		retireWorker: (request: RuntimeWorkerRetireRequest) => void,
+	): string;
+	attachWorker?(
+		registry: RegistryHandle,
+		poolId: string,
+		workerId: number,
+		spawnToken: string,
+		workerClass: "baseline" | "overflow",
+	): RuntimeWorkerRegistration;
+	detachWorker?(registry: RegistryHandle): void;
+	workerSpawnFailed?(
+		registry: RegistryHandle,
+		workerId: number,
+		spawnToken: string,
+		reason: string,
+	): void;
+	workerExited?(
+		registry: RegistryHandle,
+		workerId: number,
+		workerEpoch: number,
 	): void;
 	serveRegistry(
 		registry: RegistryHandle,

@@ -234,6 +234,13 @@ pub enum ActorRuntime {
 		"Actor task panicked while running {operation}."
 	)]
 	Panicked { operation: String },
+
+	#[error(
+		"worker_thread_lost",
+		"Actor worker thread exited.",
+		"The Node.js worker thread hosting this actor exited."
+	)]
+	WorkerThreadLost,
 }
 
 #[derive(RivetError, Debug, Clone, Deserialize, Serialize)]

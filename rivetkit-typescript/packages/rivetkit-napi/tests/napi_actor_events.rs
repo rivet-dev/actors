@@ -31,6 +31,7 @@ mod moved_tests {
 
 	fn empty_bindings() -> CallbackBindings {
 		CallbackBindings {
+			environment: StdArc::new(CallbackEnvironment::new()),
 			create_state: None,
 			on_create: None,
 			create_conn_state: None,
@@ -54,6 +55,34 @@ mod moved_tests {
 			replay_workflow: None,
 			serialize_state: None,
 		}
+	}
+
+	#[tokio::test]
+	async fn dropping_run_handler_guard_aborts_owned_task() {
+		struct DropSignal(Option<oneshot::Sender<()>>);
+
+		impl Drop for DropSignal {
+			fn drop(&mut self) {
+				if let Some(sender) = self.0.take() {
+					let _ = sender.send(());
+				}
+			}
+		}
+
+		let (dropped_tx, dropped_rx) = oneshot::channel();
+		let handle = tokio::spawn(async move {
+			let _drop_signal = DropSignal(Some(dropped_tx));
+			std::future::pending::<()>().await;
+		});
+		tokio::task::yield_now().await;
+		let guard = RunHandlerAbortGuard {
+			run_handler: StdArc::new(Mutex::new(Some(handle))),
+		};
+		drop(guard);
+		tokio::time::timeout(Duration::from_secs(1), dropped_rx)
+			.await
+			.expect("run handler should be aborted")
+			.expect("drop signal should be sent");
 	}
 
 	fn assert_error_code(error: anyhow::Error, code: &str) {

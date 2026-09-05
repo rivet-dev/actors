@@ -1,0 +1,5 @@
+{
+  "code": "worker_thread_lost",
+  "group": "actor",
+  "message": "Actor worker thread exited."
+}

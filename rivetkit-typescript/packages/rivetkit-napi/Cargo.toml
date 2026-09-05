@@ -26,6 +26,7 @@ tracing-stackdriver.workspace = true
 tracing-subscriber.workspace = true
 parking_lot.workspace = true
 scc.workspace = true
+uuid.workspace = true
 hex.workspace = true
 http.workspace = true
 rivet-error.workspace = true
