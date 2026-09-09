@@ -23,7 +23,7 @@ mod services_process;
 pub mod telemetry;
 #[doc(hidden)]
 pub use telemetry::{
-	ActorInvocationSpanContext, ActorInvocationTelemetry, ActorInvocationTraceContext,
+	ActorInvocationSpanContext, ActorInvocationTelemetry, ActorInvocationTraceContext, TraceOrigin,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;

@@ -54,6 +54,8 @@ export interface QueueSendResult<TResponse = unknown> {
 interface QueueSenderOptions {
 	encoding: Encoding;
 	params: unknown;
+	/** Ray ID and trace context headers, read per send. */
+	telemetryHeaders: () => Record<string, string>;
 	customFetch: (request: Request) => Promise<Response>;
 }
 
@@ -90,6 +92,7 @@ export function createQueueSender(
 			method: "POST",
 			headers: {
 				[HEADER_ENCODING]: senderOptions.encoding,
+				...senderOptions.telemetryHeaders(),
 				...(senderOptions.params !== undefined
 					? {
 							[HEADER_CONN_PARAMS]: JSON.stringify(

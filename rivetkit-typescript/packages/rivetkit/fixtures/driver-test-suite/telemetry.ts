@@ -51,5 +51,27 @@ export const telemetryActor = actor({
 		scheduledTrace: async (c, correlationToken: string) => {
 			await c.db.execute("SELECT ? AS trace", correlationToken);
 		},
+		consumeJob: async (c) => {
+			const message = await c.queue.next({
+				names: ["jobs"],
+				timeout: 5_000,
+			});
+			return message?.body ?? null;
+		},
 	},
+});
+
+export const telemetryRunConsumerActor = actor({
+	state: {},
+	queues: {
+		runJobs: jobSchema,
+	},
+	run: async (c) => {
+		while (!c.aborted) {
+			await c.queue.waitForNames(["runJobs"], {
+				signal: c.abortSignal,
+			});
+		}
+	},
+	actions: {},
 });

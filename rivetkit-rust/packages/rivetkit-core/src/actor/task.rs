@@ -209,6 +209,7 @@ pub enum DispatchCommand {
 	QueueSend {
 		name: String,
 		body: Vec<u8>,
+		incoming: crate::telemetry::IncomingInvocationContext,
 		conn: ConnHandle,
 		request: Request,
 		wait: bool,
@@ -985,30 +986,36 @@ impl ActorTask {
 			DispatchCommand::QueueSend {
 				name,
 				body,
+				incoming,
 				conn,
 				request,
 				wait,
 				timeout_ms,
 				reply,
-			} => match self.send_actor_event(
-				"dispatch_queue_send",
-				ActorEvent::QueueSend {
-					name,
-					body,
-					conn,
-					request,
-					wait,
-					timeout_ms,
-					reply: Reply::from(reply),
-				},
-			) {
-				Ok(()) => {
-					self.log_dispatch_command_handled(command_kind, "enqueued");
+			} => {
+				let invocation = ActorInvocation::start_queue_send(&self.ctx, &name, incoming);
+				match self.send_actor_event(
+					"dispatch_queue_send",
+					ActorEvent::QueueSend {
+						name,
+						body,
+						conn,
+						request,
+						wait,
+						timeout_ms,
+						invocation_telemetry: Some(invocation.telemetry()),
+						reply: Reply::from(reply)
+							.on_reply(move |result| invocation.finish(result.as_ref().err())),
+					},
+				) {
+					Ok(()) => {
+						self.log_dispatch_command_handled(command_kind, "enqueued");
+					}
+					Err(_error) => {
+						self.log_dispatch_command_handled(command_kind, "enqueue_failed");
+					}
 				}
-				Err(_error) => {
-					self.log_dispatch_command_handled(command_kind, "enqueue_failed");
-				}
-			},
+			}
 			DispatchCommand::Http { request, reply } => {
 				let incoming = IncomingInvocationContext::from_http_headers(request.headers());
 				let invocation = ActorInvocation::start_request(&self.ctx, &request, incoming);
