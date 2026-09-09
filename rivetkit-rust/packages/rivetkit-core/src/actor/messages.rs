@@ -421,6 +421,8 @@ pub enum ActorEvent {
 		request: Request,
 		wait: bool,
 		timeout_ms: Option<u64>,
+		/// Telemetry of the invocation this send runs as. See `Action`.
+		invocation_telemetry: Option<crate::ActorInvocationTelemetry>,
 		reply: Reply<QueueSendResult>,
 	},
 	WebSocketOpen {

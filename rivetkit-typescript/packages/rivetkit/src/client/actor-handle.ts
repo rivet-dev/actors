@@ -171,6 +171,10 @@ export class ActorHandleRaw {
 					return await createQueueSender({
 						encoding: this.#encoding,
 						params: this.#params,
+						telemetryHeaders: () =>
+							outboundTelemetryHeaders(
+								this.#currentActorInvocation?.(),
+							),
 						customFetch: async (request: Request) => {
 							return await this.#driver.sendRequest(
 								target,
@@ -648,6 +652,7 @@ export class ActorHandleRaw {
 			this.#encoding,
 			this.#actorResolutionState,
 			resolveActorGatewayOptions(this.#gatewayOptions, options),
+			this.#currentActorInvocation,
 		);
 
 		return this.#client[CREATE_ACTOR_CONN_PROXY](

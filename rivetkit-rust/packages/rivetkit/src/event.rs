@@ -119,6 +119,7 @@ impl<A: Actor> RuntimeEvent<A> {
 				request,
 				wait,
 				timeout_ms,
+				invocation_telemetry: _,
 				reply,
 			} => Self::QueueSend(QueueSend {
 				name,

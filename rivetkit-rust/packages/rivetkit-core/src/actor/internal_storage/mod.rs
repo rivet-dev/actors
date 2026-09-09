@@ -385,18 +385,21 @@ pub(crate) async fn persist_queue_message(
 	id: u64,
 	next_id: u64,
 	message: &PersistedQueueMessage,
+	trace_context: IncomingTraceContext,
 ) -> Result<()> {
 	let id = i64::try_from(id).context("queue message id exceeds sqlite integer range")?;
 	let next_id = i64::try_from(next_id).context("queue next id exceeds sqlite integer range")?;
+	let mut params = vec![
+		BindParam::Integer(id),
+		BindParam::Text(message.name.clone()),
+		BindParam::Blob(message.body.clone()),
+		BindParam::Integer(message.created_at),
+	];
+	params.extend(trace_context_params(trace_context));
 	db.execute_batch(vec![
 		SqliteBatchStatement {
 			sql: INSERT_QUEUE_MESSAGE_SQL.to_owned(),
-			params: Some(vec![
-				BindParam::Integer(id),
-				BindParam::Text(message.name.clone()),
-				BindParam::Blob(message.body.clone()),
-				BindParam::Integer(message.created_at),
-			]),
+			params: Some(params),
 		},
 		SqliteBatchStatement {
 			sql: UPSERT_QUEUE_NEXT_ID_SQL.to_owned(),
@@ -421,17 +424,18 @@ pub(crate) async fn persist_queue_messages(
 	for chunk in split_queue_tx_chunks(messages) {
 		let mut statements = Vec::with_capacity(chunk.len());
 		for (id, message) in chunk {
+			let mut params = vec![
+				BindParam::Integer(
+					i64::try_from(*id).context("queue message id exceeds sqlite integer range")?,
+				),
+				BindParam::Text(message.name.clone()),
+				BindParam::Blob(message.body.clone()),
+				BindParam::Integer(message.created_at),
+			];
+			params.extend(trace_context_params(IncomingTraceContext::default()));
 			statements.push(SqliteBatchStatement {
 				sql: INSERT_QUEUE_MESSAGE_SQL.to_owned(),
-				params: Some(vec![
-					BindParam::Integer(
-						i64::try_from(*id)
-							.context("queue message id exceeds sqlite integer range")?,
-					),
-					BindParam::Text(message.name.clone()),
-					BindParam::Blob(message.body.clone()),
-					BindParam::Integer(message.created_at),
-				]),
+				params: Some(params),
 			});
 		}
 		db.execute_batch(statements)
@@ -645,6 +649,7 @@ fn decode_queue_message_rows(rows: &[Vec<ColumnValue>]) -> Result<Vec<QueueMessa
 					in_flight: None,
 					in_flight_at: None,
 				},
+				trace_context: read_trace_context(row, 4, "queue message trace context")?,
 			})
 		})
 		.collect()
@@ -688,6 +693,7 @@ pub(crate) async fn reset_queue(db: &SqliteDb) -> Result<()> {
 pub(crate) struct QueueMessageRow {
 	pub id: u64,
 	pub message: PersistedQueueMessage,
+	pub trace_context: IncomingTraceContext,
 }
 
 pub(crate) async fn user_kv_batch_get(

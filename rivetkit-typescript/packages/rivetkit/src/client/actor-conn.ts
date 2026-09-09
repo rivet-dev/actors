@@ -23,6 +23,7 @@ import {
 import { assertUnreachable, stringifyError } from "@/common/utils";
 import type { UniversalWebSocket } from "@/common/websocket-interface";
 import type { EngineControlClient } from "@/engine-client/driver";
+import type { CurrentActorInvocation } from "@/registry/runtime";
 import {
 	decodeCborCompat,
 	deserializeWithEncoding,
@@ -50,6 +51,7 @@ import { ACTOR_CONNS_SYMBOL, type ClientRaw } from "./client";
 import * as errors from "./errors";
 import { isRetryableLifecycleReconnectSignal } from "./lifecycle-errors";
 import { logger } from "./log";
+import { outboundTelemetryHeaders } from "./outbound-telemetry";
 import {
 	createQueueSender,
 	type QueueSendNoWaitOptions,
@@ -184,6 +186,7 @@ export class ActorConnRaw {
 
 	#client: ClientRaw;
 	#driver: EngineControlClient;
+	#currentActorInvocation?: CurrentActorInvocation;
 	#params: unknown;
 	#getParams?: () => Promise<unknown>;
 	#encoding: Encoding;
@@ -207,8 +210,10 @@ export class ActorConnRaw {
 		encoding: Encoding,
 		actorResolutionState: ActorResolutionState,
 		gatewayOptions: ActorGatewayOptions = {},
+		currentActorInvocation?: CurrentActorInvocation,
 	) {
 		this.#client = client;
+		this.#currentActorInvocation = currentActorInvocation;
 		this.#driver = driver;
 		this.#params = params;
 		this.#getParams = getParams;
@@ -229,6 +234,8 @@ export class ActorConnRaw {
 		this.#queueSender = createQueueSender({
 			encoding: this.#encoding,
 			params: this.#params,
+			telemetryHeaders: () =>
+				outboundTelemetryHeaders(this.#currentActorInvocation?.()),
 			customFetch: async (request: Request) => {
 				return await this.#driver.sendRequest(
 					getGatewayTarget(this.#actorResolutionState),

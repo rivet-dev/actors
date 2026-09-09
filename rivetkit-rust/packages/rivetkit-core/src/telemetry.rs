@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::ActorContext;
+use crate::actor::queue::QueueMessage;
 
 /// Correlation fields accepted at an invocation boundary.
 #[derive(Debug, Default)]
@@ -62,12 +63,34 @@ fn invocation_ray_id(headers: &http::HeaderMap) -> Option<String> {
 /// Name a request invocation is reported under, in place of a caller-supplied path.
 const REQUEST_INVOCATION_NAME: &str = "onRequest";
 
+/// Name a queue send invocation is reported under. The queue itself is an attribute.
+const QUEUE_SEND_INVOCATION_NAME: &str = "queue.send";
+
 /// What an invocation ran, which decides its name and the attributes that
 /// identify it on the span.
 #[derive(Clone, Copy, Debug)]
 enum InvocationSubject<'a> {
 	Action(&'a str),
 	Request { method: &'a str },
+	QueueSend { queue: &'a str },
+}
+
+impl<'a> InvocationSubject<'a> {
+	fn name(self) -> &'a str {
+		match self {
+			Self::Action(name) => name,
+			Self::Request { .. } => REQUEST_INVOCATION_NAME,
+			Self::QueueSend { .. } => QUEUE_SEND_INVOCATION_NAME,
+		}
+	}
+
+	fn record_attributes(self, span: &tracing::Span) {
+		match self {
+			Self::Action(name) => span.record("rivet.action.name", name),
+			Self::Request { method } => span.record("http.request.method", method),
+			Self::QueueSend { queue } => span.record("rivet.queue.name", queue),
+		};
+	}
 }
 
 /// Owns the complete lifecycle of one actor invocation.
@@ -81,6 +104,7 @@ enum InvocationType {
 	Action,
 	Scheduled,
 	Request,
+	QueueSend,
 }
 
 impl InvocationType {
@@ -89,6 +113,7 @@ impl InvocationType {
 			Self::Action => "action",
 			Self::Scheduled => "scheduled",
 			Self::Request => "request",
+			Self::QueueSend => "queue_send",
 		}
 	}
 }
@@ -143,9 +168,9 @@ pub(crate) struct InvocationWorkGuard(ActorInvocationTelemetry);
 /// messages so the work they cause can link back to the invocation that caused it.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct IncomingTraceContext {
-	pub(crate) ray_id: Option<String>,
-	pub(crate) traceparent: Option<String>,
-	pub(crate) tracestate: Option<String>,
+	pub ray_id: Option<String>,
+	pub traceparent: Option<String>,
+	pub tracestate: Option<String>,
 }
 
 /// Active actor invocation fields exposed to foreign-runtime adapters.
@@ -245,6 +270,24 @@ impl ActorInvocation {
 		)
 	}
 
+	/// Starts the invocation for one message sent into `queue_name` from
+	/// outside the actor. It ends when the send is acknowledged, or when the
+	/// sender's wait for a completion ends.
+	pub(crate) fn start_queue_send(
+		ctx: &ActorContext,
+		queue_name: &str,
+		incoming: IncomingInvocationContext,
+	) -> Self {
+		Self::start(
+			ctx,
+			InvocationSubject::QueueSend { queue: queue_name },
+			InvocationType::QueueSend,
+			incoming.ray_id,
+			incoming.remote_parent,
+			None,
+		)
+	}
+
 	/// Starts the invocation for one raw HTTP request served by `onRequest`.
 	/// The span is named after the handler rather than the path, because a
 	/// path is caller-supplied and would make the name a cardinality surface.
@@ -274,16 +317,13 @@ impl ActorInvocation {
 		link: Option<SpanContext>,
 	) -> Self {
 		let identity = ctx.telemetry_identity();
-		let (action_name, http_method) = match subject {
-			InvocationSubject::Action(name) => (name, None),
-			InvocationSubject::Request { method } => (REQUEST_INVOCATION_NAME, Some(method)),
-		};
+		let subject_name = subject.name();
 		let span = if tracing::enabled!(target: "rivetkit::telemetry", tracing::Level::INFO) {
 			let span = tracing::info_span!(
 				target: "rivetkit::telemetry",
 				parent: None,
 				"rivet.actor.invoke",
-				otel.name = %format!("{}/{}", identity.actor_name, action_name),
+				otel.name = %format!("{}/{}", identity.actor_name, subject_name),
 				otel.kind = otel_kind(invocation_type),
 				rivet.invocation.type = invocation_type.as_label(),
 				rivet.actor.id = %identity.actor_id,
@@ -293,16 +333,14 @@ impl ActorInvocation {
 				rivet.ray.id = tracing::field::Empty,
 				http.request.method = tracing::field::Empty,
 				http.response.status_code = tracing::field::Empty,
+				rivet.queue.name = tracing::field::Empty,
 				otel.status_code = tracing::field::Empty,
 				error.type = tracing::field::Empty,
 			);
 			if let Some(ray_id) = ray_id.as_deref() {
 				span.record("rivet.ray.id", ray_id);
 			}
-			match http_method {
-				Some(method) => span.record("http.request.method", method),
-				None => span.record("rivet.action.name", action_name),
-			};
+			subject.record_attributes(&span);
 			if let Some(parent) = parent {
 				span.set_parent(Context::new().with_remote_span_context(parent));
 			}
@@ -590,13 +628,59 @@ fn w3c_trace_headers(span_context: &SpanContext) -> OwnedTraceHeaders {
 	headers
 }
 
-/// An action or a raw HTTP request is entered from outside the actor; a
-/// scheduled fire originates inside it.
+/// An action or a raw HTTP request is entered from outside the actor, a
+/// scheduled fire originates inside it, and a queue send produces a message
+/// the actor consumes later.
 fn otel_kind(invocation_type: InvocationType) -> &'static str {
 	match invocation_type {
 		InvocationType::Action | InvocationType::Request => "server",
 		InvocationType::Scheduled => "internal",
+		InvocationType::QueueSend => "producer",
 	}
+}
+
+/// Opens the span covering the moment one queue message is handed to the
+/// actor. It links to the span that sent the message, which is what connects
+/// the consumer's trace to the sender's. Inside an invocation it sits under
+/// that invocation's application span, or the invocation span, and carries its
+/// ray ID. Outside one, as from the run handler, it is a root span carrying the
+/// ray ID the message was sent under. It closes when the caller drops it, which
+/// `try_receive_batch` does as it hands the message back.
+pub(crate) fn start_queue_receive(ctx: &ActorContext, message: &QueueMessage) -> tracing::Span {
+	if !tracing::enabled!(target: "rivetkit::telemetry", tracing::Level::INFO) {
+		return tracing::Span::none();
+	}
+	let identity = ctx.telemetry_identity();
+	let span = tracing::info_span!(
+		target: "rivetkit::telemetry",
+		parent: None,
+		"rivet.queue.receive",
+		otel.name = %format!("{}/queue.receive", identity.actor_name),
+		otel.kind = "consumer",
+		rivet.actor.id = %identity.actor_id,
+		rivet.actor.name = %identity.actor_name,
+		rivet.actor.key = %identity.actor_key,
+		rivet.queue.name = message.name,
+		rivet.ray.id = tracing::field::Empty,
+	);
+	let invocation_parent = ctx
+		.invocation_telemetry()
+		.and_then(|telemetry| telemetry.parent_context().map(|parent| (telemetry, parent)));
+	if let Some((telemetry, parent)) = invocation_parent {
+		if let Some(ray_id) = telemetry.inner.ray_id.as_deref() {
+			span.record("rivet.ray.id", ray_id);
+		}
+		span.set_parent(parent);
+	} else if let Some(ray_id) = &message.trace_context.ray_id {
+		span.record("rivet.ray.id", ray_id);
+	}
+	if let Some(link) = parse_remote_parent(
+		message.trace_context.traceparent.as_deref(),
+		message.trace_context.tracestate.as_deref(),
+	) {
+		span.add_link(link);
+	}
+	span
 }
 
 /// Records the terminal status and error identity of a finished span.
