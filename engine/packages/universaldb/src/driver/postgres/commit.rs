@@ -74,14 +74,20 @@ async fn submit_local(
 
 	if commit_tx.send(job).await.is_err() {
 		// The leader drain loop is gone (driver shutting down). Retryable.
-		return Err(DatabaseError::NotCommitted.into());
+		return Err(
+			anyhow::Error::from(DatabaseError::NotCommitted).context("leader drain loop is gone")
+		);
 	}
 
 	match response_rx.await {
 		Ok(CommitOutcome::Committed { .. }) => Ok(()),
-		Ok(CommitOutcome::Conflict) => Err(DatabaseError::NotCommitted.into()),
+		// The leader resolved this commit as a loser. A cold-window rejection during leader recovery
+		// arrives as the same outcome, so the leader's batch log is what separates the two.
+		Ok(CommitOutcome::Conflict) => Err(anyhow::Error::from(DatabaseError::NotCommitted)
+			.context("leader resolved the commit as a conflict")),
 		// The leader dropped the job without responding; it was not applied.
-		Err(_) => Err(DatabaseError::NotCommitted.into()),
+		Err(_) => Err(anyhow::Error::from(DatabaseError::NotCommitted)
+			.context("leader dropped the commit without responding")),
 	}
 }
 
@@ -128,7 +134,9 @@ async fn submit_nats(
 					return Ok(());
 				}
 				Ok(CommitOutcome::Conflict) => {
-					return Err(DatabaseError::NotCommitted.into());
+					// As in the single-node path, a cold-window rejection is reported as a conflict.
+					return Err(anyhow::Error::from(DatabaseError::NotCommitted)
+						.context("leader resolved the commit as a conflict"));
 				}
 				Err(err) => {
 					tracing::warn!(?err, client_seq, "malformed udb commit reply; resending");
@@ -161,7 +169,11 @@ async fn submit_nats(
 		wait_ms = submit_start.elapsed().as_millis() as u64,
 		"udb commit exhausted resend attempts; treating as not committed"
 	);
-	Err(DatabaseError::NotCommitted.into())
+	Err(
+		anyhow::Error::from(DatabaseError::NotCommitted).context(format!(
+			"exhausted {MAX_SUBMIT_ATTEMPTS} commit resend attempts without a determinate reply"
+		)),
+	)
 }
 
 /// Wait for a known leader, returning a retryable error if none is elected in time.
@@ -172,7 +184,12 @@ async fn wait_for_leader(shared: &Arc<PostgresShared>) -> Result<LeaseInfo> {
 			return Ok(lease);
 		}
 		if Instant::now() >= deadline {
-			return Err(DatabaseError::NotCommitted.into());
+			return Err(
+				anyhow::Error::from(DatabaseError::NotCommitted).context(format!(
+					"no leader elected within {}s",
+					LEADER_WAIT_TIMEOUT.as_secs()
+				)),
+			);
 		}
 		tokio::time::sleep(LEADER_POLL_INTERVAL).await;
 	}

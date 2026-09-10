@@ -403,7 +403,7 @@ async fn writer_conflicts_when_a_key_it_read_was_written(db: Database) {
 	assert!(
 		err.chain().any(|x| matches!(
 			x.downcast_ref::<universaldb::error::DatabaseError>(),
-			Some(universaldb::error::DatabaseError::MaxRetriesReached)
+			Some(universaldb::error::DatabaseError::MaxRetriesReached(_))
 		)),
 		"expected the conflict to exhaust retries, got {err:?}"
 	);

@@ -7,8 +7,10 @@ pub enum DatabaseError {
 	#[error("transaction is too old to perform reads or be committed")]
 	TransactionTooOld,
 
-	#[error("max number of transaction retries reached")]
-	MaxRetriesReached,
+	// Stores the last error. The alternate format prints the whole context chain, so the cause the
+	// context names is reported alongside the underlying variant.
+	#[error("max number of transaction retries reached, last error: {0:#}")]
+	MaxRetriesReached(anyhow::Error),
 
 	#[error("operation issued while a commit was outstanding")]
 	UsedDuringCommit,
@@ -22,7 +24,7 @@ impl DatabaseError {
 		use DatabaseError::*;
 
 		match self {
-			NotCommitted | TransactionTooOld | MaxRetriesReached => true,
+			NotCommitted | TransactionTooOld | MaxRetriesReached(_) => true,
 			_ => false,
 		}
 	}

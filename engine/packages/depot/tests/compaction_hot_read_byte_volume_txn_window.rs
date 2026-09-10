@@ -196,7 +196,7 @@ async fn hot_input_read_stays_bounded_at_byte_scale() -> Result<()> {
 		let aged_out = err.chain().any(|cause| {
 			matches!(
 				cause.downcast_ref::<DatabaseError>(),
-				Some(DatabaseError::TransactionTooOld | DatabaseError::MaxRetriesReached)
+				Some(DatabaseError::TransactionTooOld | DatabaseError::MaxRetriesReached(_))
 			)
 		});
 		assert!(
