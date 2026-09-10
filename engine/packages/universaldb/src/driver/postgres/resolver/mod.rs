@@ -418,6 +418,7 @@ async fn drain_batch(
 		.start()
 		.await
 		.context("failed to start drain batch txn")?;
+	let begin_ms = batch_start.elapsed().as_millis() as u64 - pool_wait.as_millis() as u64;
 
 	// Build the failover dedup keys: a job whose (client_node_id, client_seq) is already recorded in
 	// udb_applied was committed by a prior leader; respond with the recorded version and do not
@@ -475,7 +476,9 @@ async fn drain_batch(
 			.collect::<Vec<i64>>();
 		anyhow::Ok(versions)
 	};
+	let prepare_start = Instant::now();
 	let (applied, mut versions) = tokio::try_join!(dedup_fut, versions_fut)?;
+	let prepare_ms = prepare_start.elapsed().as_millis() as u64;
 
 	// Postgres does not guarantee nextval is evaluated in row order, so the versions are sorted and
 	// assigned to to-resolve jobs in arrival order to keep versionstamps monotonic with commit order
@@ -496,6 +499,7 @@ async fn drain_batch(
 		resolve_indices.push(i);
 	}
 
+	let resolve_start = Instant::now();
 	let cold_window = Instant::now() < recovery_deadline;
 	let mut winners: Vec<apply::Winner> = Vec::new();
 	let mut winner_dedup_nids: Vec<Vec<u8>> = Vec::new();
@@ -545,6 +549,9 @@ async fn drain_batch(
 
 	// Bulk-read the pre-batch value of every key a winner's atomic op reads, then fold all winners
 	// into one materialized write-set in memory.
+	let resolve_ms = resolve_start.elapsed().as_millis() as u64;
+
+	let atomic_start = Instant::now();
 	let atomic_keys = apply::atomic_read_keys(&winners);
 	let base = if atomic_keys.is_empty() {
 		HashMap::new()
@@ -560,11 +567,21 @@ async fn drain_batch(
 		.collect()
 	};
 
+	let atomic_read_count = atomic_keys.len();
+	let atomic_ms = atomic_start.elapsed().as_millis() as u64;
+
+	let fold_start = Instant::now();
 	let apply::WriteSet {
 		upserts,
 		point_deletes,
 		range_deletes,
 	} = apply::fold_winners(winners, &base).context("failed to fold batch winners")?;
+	let fold_ms = fold_start.elapsed().as_millis() as u64;
+
+	let upsert_count = upserts.len();
+	let point_delete_count = point_deletes.len();
+	let range_delete_count = range_deletes.len();
+	let upsert_bytes: usize = upserts.iter().map(|(k, v)| k.len() + v.len()).sum();
 
 	let (upsert_keys, upsert_values): (Vec<Vec<u8>>, Vec<Vec<u8>>) = upserts.into_iter().unzip();
 	let (range_begins, range_ends): (Vec<Vec<u8>>, Vec<Vec<u8>>) =
@@ -573,6 +590,7 @@ async fn drain_batch(
 	// Range deletes run in their own statement before the apply CTE: a range delete and an in-range
 	// upsert in one CTE would have unspecified ordering, so the clear must commit its effect first and
 	// the upsert then re-inserts the key.
+	let range_delete_start = Instant::now();
 	if !range_begins.is_empty() {
 		txn.execute(
 			"DELETE FROM kv USING unnest($1::bytea[], $2::bytea[]) AS r(b, e)
@@ -582,6 +600,8 @@ async fn drain_batch(
 		.await
 		.context("failed to clear ranges")?;
 	}
+	let range_delete_ms = range_delete_start.elapsed().as_millis() as u64;
+	let apply_start = Instant::now();
 
 	// Apply the rest of the batch in one CTE: point deletes, the kv upsert, the dedup records for
 	// multi-node winners, and the epoch-fenced watermark advance. A zombie old leader whose epoch was
@@ -625,7 +645,11 @@ async fn drain_batch(
 		}
 	};
 
+	let apply_ms = apply_start.elapsed().as_millis() as u64;
+
+	let commit_start = Instant::now();
 	txn.commit().await.context("failed to commit drain batch")?;
+	let commit_ms = commit_start.elapsed().as_millis() as u64;
 
 	// The watermark advances strictly after the apply txn is durably committed and visible, so a
 	// reader handed this read_version can never miss a write with commit_version <= read_version.
@@ -666,6 +690,23 @@ async fn drain_batch(
 		cold_window,
 		new_durable,
 		batch_ms = batch_start.elapsed().as_millis() as u64,
+		// Phase breakdown, so a slow batch says which statement was slow instead of only that the
+		// apply was slow overall. Every phase is milliseconds and they sum to roughly `batch_ms`.
+		pool_wait_ms = pool_wait.as_millis() as u64,
+		begin_ms,
+		prepare_ms,
+		resolve_ms,
+		atomic_ms,
+		fold_ms,
+		range_delete_ms,
+		apply_ms,
+		commit_ms,
+		// Work volume, to separate a large batch from a slow one.
+		upserts = upsert_count,
+		point_deletes = point_delete_count,
+		range_deletes = range_delete_count,
+		atomic_reads = atomic_read_count,
+		upsert_bytes,
 		"udb leader processed commit batch"
 	);
 
