@@ -1,4 +1,5 @@
 use std::{
+	collections::HashMap,
 	sync::{
 		Arc,
 		atomic::{AtomicU64, Ordering},
@@ -71,7 +72,7 @@ impl PegboardGateway3 {
 			req_ctx.request_body_is_end_stream(),
 		);
 		let request_id = req_ctx.in_flight_request_id()?;
-		let headers = req_ctx
+		let mut headers: HashMap<String, String> = req_ctx
 			.headers()
 			.iter()
 			.filter_map(|(name, value)| {
@@ -81,6 +82,7 @@ impl PegboardGateway3 {
 					.map(|value| (name.to_string(), value.to_owned()))
 			})
 			.collect();
+		req_ctx.forward_ray(&mut headers);
 		let (mut stopped_sub, _) = tokio::try_join!(
 			ctx.subscribe::<pegboard::workflows::actor2::Stopped>(("actor_id", self.actor_id)),
 			pegboard::utils::ensure_ns_metrics_exporter_for_namespace(ctx, self.namespace_id),
