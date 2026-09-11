@@ -1,3 +1,4 @@
+mod chunks;
 mod codec;
 mod commit;
 mod database;

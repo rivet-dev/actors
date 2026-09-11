@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rivet_universaldb_commit::{self as proto, versioned};
 use vbare::OwnedVersionedData;
 
@@ -7,7 +7,11 @@ use crate::{
 	tx_ops::Operation,
 };
 
-use super::transport::CommitOutcome;
+use super::{chunks::CommitChunk, transport::CommitOutcome};
+
+/// Protocol version that introduced [`proto::CommitRequestChunk`]. A fleet negotiated below it has
+/// leaders that cannot reassemble a chunked request.
+pub const CHUNKED_COMMIT_PROTOCOL_VERSION: u16 = 2;
 
 /// Decoded form of a commit request payload sent from a follower to the leader over NATS.
 pub struct DecodedCommit {
@@ -77,6 +81,60 @@ pub fn decode_commit_request(payload: &[u8]) -> Result<DecodedCommit> {
 		operations,
 		client_node_id: request.client_node_id,
 		client_seq: request.client_seq,
+	})
+}
+
+/// Split an encoded commit request into chunk messages that each fit within `max_payload` bytes,
+/// encoded at `protocol_version`, which must be at least [`CHUNKED_COMMIT_PROTOCOL_VERSION`].
+pub fn encode_commit_request_chunks(
+	request: &[u8],
+	client_node_id: &[u8],
+	client_seq: u64,
+	attempt: u32,
+	max_payload: usize,
+	protocol_version: u16,
+) -> Result<Vec<Vec<u8>>> {
+	let encode = |index: u32, count: u32, data: Vec<u8>| {
+		versioned::CommitRequestChunk::wrap_latest(proto::CommitRequestChunk {
+			client_node_id: client_node_id.to_vec(),
+			client_seq,
+			attempt,
+			index,
+			count,
+			data,
+		})
+		.serialize_with_embedded_version(protocol_version)
+	};
+
+	// Every field except `data` has the same encoded width in every chunk, so an empty chunk measures
+	// the envelope. The length prefix of `data` grows from one byte to at most five as a piece grows.
+	let overhead = encode(0, 0, Vec::new())?.len() + 4;
+	let piece_len = max_payload
+		.checked_sub(overhead)
+		.filter(|len| *len > 0)
+		.with_context(|| {
+			format!("nats max_payload of {max_payload} bytes cannot fit a commit request chunk")
+		})?;
+	let count = u32::try_from(request.len().div_ceil(piece_len))
+		.context("commit request needs too many chunks")?;
+
+	request
+		.chunks(piece_len)
+		.zip(0..)
+		.map(|(piece, index)| encode(index, count, piece.to_vec()))
+		.collect()
+}
+
+/// Decode one chunk produced by [`encode_commit_request_chunks`].
+pub fn decode_commit_request_chunk(payload: &[u8]) -> Result<CommitChunk> {
+	let chunk = versioned::CommitRequestChunk::deserialize_with_embedded_version(payload)?;
+	Ok(CommitChunk {
+		client_node_id: chunk.client_node_id,
+		client_seq: chunk.client_seq,
+		attempt: chunk.attempt,
+		index: chunk.index,
+		count: chunk.count,
+		data: chunk.data,
 	})
 }
 

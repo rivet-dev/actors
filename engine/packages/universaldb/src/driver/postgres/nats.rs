@@ -1,10 +1,11 @@
-use std::{str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc, time::Instant};
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use super::{
+	chunks::{ChunkAssembler, PENDING_CHUNK_MAX_IDLE},
 	codec,
 	shared::PostgresShared,
 	transport::{CommitJob, DedupKey, Responder},
@@ -49,6 +50,12 @@ impl Subjects {
 		format!("{}.commit.{leader_id}", self.prefix)
 	}
 
+	/// Subject a follower sends the pieces of a chunked commit request to. It is separate from
+	/// [`Subjects::commit`] so a leader that predates chunking never receives a piece it cannot decode.
+	pub fn commit_chunk(&self, leader_id: &str) -> String {
+		format!("{}.commit_chunk.{leader_id}", self.prefix)
+	}
+
 	/// Subject the leader publishes each watermark advance to; every node subscribes.
 	pub fn watermark(&self) -> String {
 		format!("{}.watermark", self.prefix)
@@ -86,56 +93,107 @@ pub async fn connect(config: &NatsConfig) -> Result<async_nats::Client> {
 		.context("failed to connect udb nats client")
 }
 
-/// Leader-side task: subscribe to this leader's commit subject, decode each request into a
-/// [`CommitJob`], and forward it into the drain loop's job queue. Returns when the subscription ends
-/// (client closed) or the drain loop's receiver is dropped (step-down).
+/// Leader-side task: subscribe to this leader's commit and commit chunk subjects, decode each request
+/// into a [`CommitJob`], and forward it into the drain loop's job queue. Returns when a subscription
+/// ends (client closed) or the drain loop's receiver is dropped (step-down).
 pub async fn run_commit_subscriber(
 	shared: &Arc<PostgresShared>,
 	client: async_nats::Client,
 	subject: String,
+	chunk_subject: String,
 	jobs_tx: mpsc::Sender<CommitJob>,
 ) -> Result<()> {
 	let mut sub = client
 		.subscribe(subject.clone())
 		.await
 		.with_context(|| format!("failed to subscribe to udb commit subject {subject}"))?;
+	let mut chunk_sub = client
+		.subscribe(chunk_subject.clone())
+		.await
+		.with_context(|| {
+			format!("failed to subscribe to udb commit chunk subject {chunk_subject}")
+		})?;
 
-	while let Some(msg) = sub.next().await {
-		let Some(reply) = msg.reply.clone() else {
-			tracing::warn!("udb commit request missing reply subject; dropping");
-			continue;
-		};
+	let mut assembler = ChunkAssembler::default();
+	let mut evict_interval = tokio::time::interval(PENDING_CHUNK_MAX_IDLE);
+	evict_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-		let decoded = match codec::decode_commit_request(&msg.payload) {
-			Ok(decoded) => decoded,
-			Err(err) => {
-				tracing::warn!(?err, "failed to decode udb commit request; dropping");
-				continue;
+	loop {
+		tokio::select! {
+			msg = sub.next() => {
+				let Some(msg) = msg else {
+					break;
+				};
+				if !enqueue_request(shared, &client, msg.reply, &msg.payload, &jobs_tx).await {
+					break;
+				}
 			}
-		};
-
-		let job = CommitJob {
-			read_version: decoded.read_version,
-			conflict_ranges: decoded.conflict_ranges,
-			operations: decoded.operations,
-			dedup_key: Some(DedupKey {
-				client_node_id: decoded.client_node_id,
-				client_seq: decoded.client_seq as i64,
-			}),
-			responder: Responder::Nats {
-				client: client.clone(),
-				reply,
-				protocol_version: shared.commit_protocol_version(),
-			},
-		};
-
-		// A full queue applies backpressure; a closed queue means the drain loop stepped down.
-		if jobs_tx.send(job).await.is_err() {
-			break;
+			msg = chunk_sub.next() => {
+				let Some(msg) = msg else {
+					break;
+				};
+				let chunk = match codec::decode_commit_request_chunk(&msg.payload) {
+					Ok(chunk) => chunk,
+					Err(err) => {
+						tracing::warn!(?err, "failed to decode udb commit request chunk; dropping");
+						continue;
+					}
+				};
+				let Some(payload) = assembler.push(chunk, Instant::now()) else {
+					continue;
+				};
+				if !enqueue_request(shared, &client, msg.reply, &payload, &jobs_tx).await {
+					break;
+				}
+			}
+			_ = evict_interval.tick() => {
+				assembler.evict_idle(Instant::now());
+			}
 		}
 	}
 
 	Ok(())
+}
+
+/// Decode one complete commit request and queue it for the drain loop. Returns false once the drain
+/// loop has stepped down and no longer accepts jobs.
+async fn enqueue_request(
+	shared: &Arc<PostgresShared>,
+	client: &async_nats::Client,
+	reply: Option<async_nats::Subject>,
+	payload: &[u8],
+	jobs_tx: &mpsc::Sender<CommitJob>,
+) -> bool {
+	let Some(reply) = reply else {
+		tracing::warn!("udb commit request missing reply subject; dropping");
+		return true;
+	};
+
+	let decoded = match codec::decode_commit_request(payload) {
+		Ok(decoded) => decoded,
+		Err(err) => {
+			tracing::warn!(?err, "failed to decode udb commit request; dropping");
+			return true;
+		}
+	};
+
+	let job = CommitJob {
+		read_version: decoded.read_version,
+		conflict_ranges: decoded.conflict_ranges,
+		operations: decoded.operations,
+		dedup_key: Some(DedupKey {
+			client_node_id: decoded.client_node_id,
+			client_seq: decoded.client_seq as i64,
+		}),
+		responder: Responder::Nats {
+			client: client.clone(),
+			reply,
+			protocol_version: shared.commit_protocol_version(),
+		},
+	};
+
+	// A full queue applies backpressure; a closed queue means the drain loop stepped down.
+	jobs_tx.send(job).await.is_ok()
 }
 
 /// FNV-1a 64-bit hash. Deterministic across processes (unlike `DefaultHasher`), used only to derive a

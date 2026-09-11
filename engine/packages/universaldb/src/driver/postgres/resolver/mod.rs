@@ -187,9 +187,12 @@ fn spawn_commit_subscriber(
 	};
 	let client = nats.client.clone();
 	let subject = nats.subjects.commit(&shared.node_id);
+	let chunk_subject = nats.subjects.commit_chunk(&shared.node_id);
 	let shared = shared.clone();
 	Some(AbortOnDropHandle::new(tokio::spawn(async move {
-		if let Err(err) = super::nats::run_commit_subscriber(&shared, client, subject, tx).await {
+		if let Err(err) =
+			super::nats::run_commit_subscriber(&shared, client, subject, chunk_subject, tx).await
+		{
 			tracing::warn!(?err, "udb commit subscriber ended");
 		}
 	})))
