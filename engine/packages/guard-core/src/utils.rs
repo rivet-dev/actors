@@ -9,7 +9,6 @@ use rivet_api_builder::{ErrorResponse, RawErrorResponse};
 use rivet_error::{INTERNAL_ERROR, RivetError};
 use rivet_metrics::{GaugeGuardExt, IntGaugeGuard};
 use rivet_runner_protocol as protocol;
-use rivet_util::Id;
 use rivet_util::throttle::{RateLimitMethod, RateLimiter};
 use std::sync::Arc;
 use std::time::Duration;
@@ -418,7 +417,7 @@ pub fn is_ws_hibernate(err: &anyhow::Error) -> bool {
 	}
 }
 
-pub(crate) fn err_to_close_frame(err: anyhow::Error, ray_id: Id) -> CloseFrame {
+pub(crate) fn err_to_close_frame(err: anyhow::Error, ray_id: &str) -> CloseFrame {
 	metrics::WEBSOCKET_CLOSE_ERROR_TOTAL
 		.with_label_values(&[&error_metric_label(&err)])
 		.inc();
