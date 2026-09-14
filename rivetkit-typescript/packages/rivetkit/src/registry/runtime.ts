@@ -1,4 +1,7 @@
-import type { ActorInvocationTraceContext } from "@/common/actor-telemetry-context";
+import type {
+	ActorInvocationSpanContext,
+	ActorInvocationTraceContext,
+} from "@/common/actor-telemetry-context";
 import type {
 	SqliteNativeMetrics,
 	SqliteProfilingOptions,
@@ -34,6 +37,30 @@ export interface RuntimeActorKeySegment {
 export type CurrentActorInvocation = () =>
 	| ActorInvocationTraceContext
 	| undefined;
+
+/** One open call from an actor out to another actor. */
+export interface RuntimeOutboundCall {
+	/**
+	 * W3C context of the call's own span, to send to the callee so it parents to
+	 * the call. Absent when tracing is disabled.
+	 */
+	readonly span?: ActorInvocationSpanContext;
+	/**
+	 * Records the call's outcome. `error` is the failure encoded the way the
+	 * bridge encodes errors, so a structured error keeps its group and code.
+	 */
+	finish(error?: string): void;
+}
+
+/**
+ * Opens the span covering one call out to another actor, or returns `undefined`
+ * outside an invocation or on a runtime without invocation telemetry. Callers
+ * send their own context when it returns nothing.
+ */
+export type BeginOutboundCall = (
+	actorName: string,
+	actionName: string,
+) => RuntimeOutboundCall | undefined;
 
 export interface RuntimeHttpRequest {
 	method: string;
@@ -563,6 +590,15 @@ export interface CoreRuntime {
 	actorInvocationTraceContext(
 		ctx: ActorContextHandle,
 	): ActorInvocationTraceContext | undefined;
+	/**
+	 * Opens the span covering one call this actor makes to another actor. See
+	 * `BeginOutboundCall` for when this returns nothing.
+	 */
+	beginOutboundCall(
+		ctx: ActorContextHandle,
+		actorName: string,
+		actionName: string,
+	): RuntimeOutboundCall | undefined;
 	actorName(ctx: ActorContextHandle): string;
 	actorKey(ctx: ActorContextHandle): RuntimeActorKeySegment[];
 	actorRegion(ctx: ActorContextHandle): string;

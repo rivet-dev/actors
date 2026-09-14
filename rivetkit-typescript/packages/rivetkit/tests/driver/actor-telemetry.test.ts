@@ -1,11 +1,12 @@
 import { context, propagation, trace } from "@opentelemetry/api";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import getPort from "get-port";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import type { registry } from "../../fixtures/driver-test-suite/registry-static";
 import { type Client, createClient } from "../../src/client/mod";
 import { RAY_BAGGAGE_KEY } from "../../src/common/otel-context";
 import { startOtlpCollector } from "../fixtures/otlp-collector";
+import { TOKEN } from "./shared-harness";
 import { describeDriverMatrix } from "./shared-matrix";
 import type { DriverDeployOutput, DriverTestConfig } from "./shared-types";
 
@@ -14,6 +15,7 @@ new NodeTracerProvider().register();
 const OTLP_STATUS_OK = 1;
 const OTLP_STATUS_ERROR = 2;
 const OTLP_SPAN_KIND_SERVER = 2;
+const OTLP_SPAN_KIND_CLIENT = 3;
 
 interface ExportedSpan {
 	name: string;
@@ -165,6 +167,26 @@ async function startTracedRuntime(
 			await runtime.cleanup();
 		},
 	};
+}
+
+async function waitForRuntimeLog(
+	runtime: DriverDeployOutput,
+	correlationToken: string,
+): Promise<string> {
+	const marker = `correlation_token=${correlationToken}`;
+	let line: string | undefined;
+	// The actor process writes the line after the action has replied, so it has to be polled.
+	await vi.waitFor(
+		() => {
+			line = runtime
+				.getRuntimeOutput?.()
+				.split("\n")
+				.find((candidate) => candidate.includes(marker));
+			expect(line).toBeDefined();
+		},
+		{ timeout: 10_000, interval: 100 },
+	);
+	return line as string;
 }
 
 /** Runs `run` with `rayId` in OpenTelemetry baggage under `rivet.ray.id`. */
@@ -573,6 +595,220 @@ describeDriverMatrix(
 					{ traceId: runSend?.traceId, spanId: runSend?.spanId },
 				]);
 			});
+
+			test("keeps overlapping invocations of one actor telemetrically isolated", async () => {
+				const okToken = crypto.randomUUID();
+				const failToken = crypto.randomUUID();
+				const results = Promise.allSettled([
+					handle.isolationProbe(okToken, false),
+					handle.isolationProbe(failToken, true),
+				]);
+				const [okLog, failLog] = await Promise.all([
+					waitForRuntimeLog(traced.runtime, okToken),
+					waitForRuntimeLog(traced.runtime, failToken),
+				]);
+				await handle.send("jobs", { id: okToken });
+				await handle.send("jobs", { id: failToken });
+				const [ok, failed] = await results;
+				expect(ok.status).toBe("fulfilled");
+				expect(failed.status).toBe("rejected");
+
+				const isProbe = (span: ExportedSpan) =>
+					span.attributes["rivet.action.name"] === "isolationProbe";
+				const hopOf = (spans: ExportedSpan[], probe: ExportedSpan) =>
+					spans.find(
+						(span) =>
+							span.kind === OTLP_SPAN_KIND_CLIENT &&
+							span.parentSpanId === probe.spanId,
+					);
+				const spans = await waitForSpans(
+					traceExports,
+					"both isolation probe invocations and the calls each one made",
+					(exported) => {
+						const probes = exported.filter(isProbe);
+						return (
+							probes.length >= 2 &&
+							probes.every((probe) => {
+								const hop = hopOf(exported, probe);
+								return (
+									!!hop &&
+									exported.some(
+										(span) =>
+											span.parentSpanId === hop.spanId,
+									) &&
+									exported.filter(
+										(span) =>
+											isSqliteSpan(span) &&
+											span.parentSpanId === probe.spanId,
+									).length >= 2
+								);
+							})
+						);
+					},
+					20_000,
+				);
+
+				const probes = spans.filter(isProbe);
+				expect(probes).toHaveLength(2);
+				const rays = probes.map(
+					(probe) => probe.attributes["rivet.ray.id"],
+				);
+				expect(new Set(rays).size).toBe(2);
+				expect(new Set(probes.map((probe) => probe.traceId)).size).toBe(
+					2,
+				);
+				expect(
+					probes.filter(
+						(probe) => probe.attributes["error.type"] !== undefined,
+					),
+				).toMatchObject([
+					{
+						attributes: {
+							"error.type": "user.isolation_probe_failed",
+						},
+					},
+				]);
+
+				for (const probe of probes) {
+					const owned = spans.filter(
+						(span) =>
+							isSqliteSpan(span) &&
+							span.parentSpanId === probe.spanId,
+					);
+					expect(owned.length).toBeGreaterThanOrEqual(2);
+					const hop = hopOf(spans, probe);
+					const callee = spans.find(
+						(span) =>
+							span.attributes["rivet.action.name"] ===
+								"getCount" && span.parentSpanId === hop?.spanId,
+					);
+					expect(hop?.attributes["rivet.actor.name"]).toBe(
+						"telemetryActor",
+					);
+					expect(callee).toBeDefined();
+					for (const span of [...owned, hop, callee]) {
+						expect(span?.traceId).toBe(probe.traceId);
+						expect(span?.attributes["rivet.ray.id"]).toBe(
+							probe.attributes["rivet.ray.id"],
+						);
+					}
+				}
+
+				const actorId = await handle.resolve();
+				for (const line of [okLog, failLog]) {
+					const probe = probes.find((candidate) =>
+						line.includes(
+							`rayId=${candidate.attributes["rivet.ray.id"]}`,
+						),
+					);
+					expect(probe).toBeDefined();
+					expect(line).toContain(`actorId=${actorId}`);
+					expect(line).toContain(`traceId=${probe?.traceId}`);
+					expect(line).toContain(`spanId=${probe?.spanId}`);
+				}
+			}, 60_000);
+
+			test("parents SQLite and outgoing calls under the actor's own application span", async () => {
+				const underApp = await handle.getCountUnderApplicationSpan();
+				const hopOf = (spans: ExportedSpan[]) =>
+					spans.find(
+						(span) =>
+							span.kind === OTLP_SPAN_KIND_CLIENT &&
+							span.parentSpanId === underApp.spanId,
+					);
+				const sqlOf = (spans: ExportedSpan[]) =>
+					spans.find(
+						(span) =>
+							isSqliteSpan(span) &&
+							span.parentSpanId === underApp.spanId,
+					);
+				const spans = await waitForSpans(
+					traceExports,
+					"SQLite, outgoing call, and callee under the application span",
+					(exported) => {
+						const hop = hopOf(exported);
+						return (
+							!!hop &&
+							exported.some(
+								(span) => span.parentSpanId === hop.spanId,
+							) &&
+							sqlOf(exported) !== undefined
+						);
+					},
+				);
+				const hop = hopOf(spans);
+				expect(
+					spans.find((span) => span.parentSpanId === hop?.spanId)
+						?.attributes["rivet.action.name"],
+				).toBe("getCount");
+				expect(sqlOf(spans)?.attributes["rivet.operation.name"]).toBe(
+					"execute",
+				);
+			});
+
+			test("preserves vendor trace state across actor calls and ignores invalid trace versions", async () => {
+				const traceId = "1234567890abcdef1234567890abcdef";
+				const parentSpanId = "1234567890abcdef";
+				const traceState = "vendor=opaque-value";
+				const actorId = await handle.resolve();
+				const url = new URL(await handle.getGatewayUrl());
+				url.pathname = `${url.pathname.replace(/\/$/, "")}/action/getCountViaClient`;
+				const claimed = new Set<string>();
+				const callChain = (spans: ExportedSpan[]) => {
+					const caller = spans.find(
+						(span) =>
+							span.attributes["rivet.actor.id"] === actorId &&
+							span.attributes["rivet.action.name"] ===
+								"getCountViaClient" &&
+							!claimed.has(span.spanId),
+					);
+					const hop =
+						caller &&
+						spans.find(
+							(span) =>
+								span.kind === OTLP_SPAN_KIND_CLIENT &&
+								span.parentSpanId === caller.spanId,
+						);
+					const callee =
+						hop &&
+						spans.find((span) => span.parentSpanId === hop.spanId);
+					return { caller, hop, callee };
+				};
+				for (const version of ["00", "0A", "zz", "ff"]) {
+					const response = await fetch(url, {
+						method: "POST",
+						headers: {
+							"content-type": "application/json",
+							"x-rivet-encoding": "json",
+							"x-rivet-token": TOKEN,
+							traceparent: `${version}-${traceId}-${parentSpanId}-01`,
+							tracestate: traceState,
+						},
+						body: JSON.stringify({ args: [] }),
+					});
+					expect(response.status).toBe(200);
+					await response.arrayBuffer();
+					const { caller, hop, callee } = callChain(
+						await waitForSpans(
+							traceExports,
+							"caller and callee trace contexts",
+							(spans) => callChain(spans).callee !== undefined,
+						),
+					);
+					if (caller) claimed.add(caller.spanId);
+					if (version === "00" || version === "0A") {
+						expect(caller?.traceId).toBe(traceId);
+						expect(caller?.parentSpanId).toBe(parentSpanId);
+						for (const span of [caller, hop, callee])
+							expect(span?.traceState).toBe(traceState);
+					} else {
+						expect(caller?.traceId).not.toBe(traceId);
+						expect(caller?.parentSpanId).toBeUndefined();
+						for (const span of [caller, hop, callee])
+							expect(span?.traceState || "").toBe("");
+					}
+				}
+			}, 60_000);
 		});
 	},
 	{

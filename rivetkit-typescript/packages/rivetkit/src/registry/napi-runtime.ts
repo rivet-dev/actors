@@ -32,6 +32,7 @@ import type {
 	RuntimeKvEntry,
 	RuntimeKvListOptions,
 	RuntimeListenerConfig,
+	RuntimeOutboundCall,
 	RuntimeQueueEnqueueAndWaitOptions,
 	RuntimeQueueMessage,
 	RuntimeQueueNextBatchOptions,
@@ -596,6 +597,22 @@ export class NapiCoreRuntime implements CoreRuntime {
 			this.#actorContextForOperation(ctx).invocationTraceContext() ??
 			undefined
 		);
+	}
+
+	beginOutboundCall(
+		ctx: ActorContextHandle,
+		actorName: string,
+		actionName: string,
+	): RuntimeOutboundCall | undefined {
+		const call = this.#actorContextForOperation(ctx).beginOutboundCall(
+			actorName,
+			actionName,
+		);
+		if (!call) return undefined;
+		return {
+			span: call.spanContext() ?? undefined,
+			finish: (error?: string) => call.finish(error),
+		};
 	}
 
 	actorName(ctx: ActorContextHandle): string {

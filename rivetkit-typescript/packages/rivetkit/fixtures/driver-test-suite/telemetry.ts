@@ -1,5 +1,14 @@
-import { actor, queue } from "rivetkit";
+import { trace } from "@opentelemetry/api";
+import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
+import { actor, queue, UserError } from "rivetkit";
 import { db } from "@/common/database/mod";
+
+// Only a traced runtime gets a JavaScript tracer, so the other driver
+// fixtures keep running without an OpenTelemetry context manager.
+if (process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT) {
+	new NodeTracerProvider().register();
+}
+const applicationTracer = trace.getTracer("driver-telemetry-fixture");
 
 const jobSchema = queue<{ id: string }>();
 
@@ -57,6 +66,43 @@ export const telemetryActor = actor({
 				timeout: 5_000,
 			});
 			return message?.body ?? null;
+		},
+		getCountViaClient: async (c) => {
+			const client = c.client<any>();
+			return await client.telemetryActor.getForId(c.actorId).getCount();
+		},
+		isolationProbe: async (c, token: string, fail: boolean) => {
+			c.log.warn({ correlation_token: token }, "isolation probe");
+			if (!(await c.queue.next({ names: ["jobs"], timeout: 10_000 }))) {
+				throw new Error("isolation probe was not released");
+			}
+			await c.db.execute("SELECT ? AS probe", token);
+			const client = c.client<any>();
+			await client.telemetryActor.getForId(c.actorId).getCount();
+			await c.db.execute("SELECT ? AS probe2", token);
+			if (fail) {
+				throw new UserError("isolation probe failure", {
+					code: "isolation_probe_failed",
+				});
+			}
+			return token;
+		},
+		getCountUnderApplicationSpan: async (c) => {
+			return await applicationTracer.startActiveSpan(
+				"agent.generate",
+				async (span) => {
+					try {
+						await c.db.execute("SELECT 1 AS under_span");
+						const client = c.client<any>();
+						const count = await client.telemetryActor
+							.getForId(c.actorId)
+							.getCount();
+						return { count, spanId: span.spanContext().spanId };
+					} finally {
+						span.end();
+					}
+				},
+			);
 		},
 	},
 });
