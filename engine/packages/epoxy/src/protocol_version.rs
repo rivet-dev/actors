@@ -47,10 +47,13 @@ static PEER_VERSIONS: LazyLock<scc::HashMap<String, u16>> = LazyLock::new(scc::H
 /// A replica the service has not reached yet falls back to our own negotiated version, which
 /// reproduces the behavior from before peer discovery existed rather than downgrading whenever a
 /// peer is briefly unreachable.
-pub fn negotiate(config: &rivet_config::Config, replica_url: &str) -> u16 {
+pub async fn negotiate(config: &rivet_config::Config, replica_url: &str) -> u16 {
 	let local_version = config.protocols().epoxy.version();
 
-	match PEER_VERSIONS.read_sync(replica_url, |_, version| *version) {
+	match PEER_VERSIONS
+		.read_async(replica_url, |_, version| *version)
+		.await
+	{
 		Some(peer_version) => local_version.min(peer_version),
 		None => local_version,
 	}
@@ -108,7 +111,9 @@ async fn refresh(replica_id: ReplicaId, cluster_config: &protocol::ClusterConfig
 		.collect::<Vec<_>>();
 
 	// Drop replicas that left the topology so the map cannot grow without bound.
-	PEER_VERSIONS.retain_sync(|url, _| peer_urls.iter().any(|peer_url| peer_url == url));
+	PEER_VERSIONS
+		.retain_async(|url, _| peer_urls.iter().any(|peer_url| peer_url == url))
+		.await;
 
 	let mut probes = peer_urls
 		.into_iter()
@@ -121,7 +126,7 @@ async fn refresh(replica_id: ReplicaId, cluster_config: &protocol::ClusterConfig
 	while let Some((url, result)) = probes.next().await {
 		match result {
 			Ok(version) => {
-				PEER_VERSIONS.upsert_sync(url, version);
+				PEER_VERSIONS.upsert_async(url, version).await;
 			}
 			// A probe failure must not change which version we speak. The peer answered at its
 			// stored version recently and a datacenter never moves its version backwards, so

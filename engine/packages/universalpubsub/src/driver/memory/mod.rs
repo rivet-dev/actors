@@ -73,7 +73,9 @@ impl MemoryDriver {
 					inner
 						.queue_subscribers
 						.retain_async(|_, queues| {
-							// TODO: Is retain_sync bad here?
+							// The closure cannot await, so this uses the sync variant. It never waits:
+							// the inner map is only accessed while holding this subject's outer entry
+							// lock, so nothing else can hold one of its locks.
 							// Retain only queues with senders
 							queues.retain_sync(|_, senders| {
 								// Retain only senders that are not closed

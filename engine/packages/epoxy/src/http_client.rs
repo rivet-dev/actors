@@ -166,7 +166,7 @@ async fn send_request_to_address(
 
 	// The peer decodes at whatever version the path names, so send at one it actually speaks. Its
 	// heartbeats are in another datacenter's database, so ask the replica itself.
-	let protocol_version = crate::protocol_version::negotiate(ctx.config(), &replica_url);
+	let protocol_version = crate::protocol_version::negotiate(ctx.config(), &replica_url).await;
 
 	let mut replica_url = url::Url::parse(&replica_url)?;
 	replica_url.set_path(&format!("/v{protocol_version}/epoxy/{endpoint}"));
