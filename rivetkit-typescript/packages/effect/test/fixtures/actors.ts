@@ -526,6 +526,52 @@ export const CounterLive = Counter.toLayer(
 		}),
 	},
 );
+// --- ScheduledNoPayload ---
+
+export const ScheduleExpiration = Action.make("ScheduleExpiration", {
+	payload: { delay: Schema.Number },
+	success: Schema.String,
+});
+
+export const Expire = Action.make("Expire");
+
+export const GetExpirationCount = Action.make("GetExpirationCount", {
+	success: Schema.Number,
+});
+
+export const ScheduledNoPayload = Actor.make("ScheduledNoPayload", {
+	actions: [ScheduleExpiration, Expire, GetExpirationCount],
+});
+
+export const ScheduledNoPayloadLive = ScheduledNoPayload.toLayer(
+	({ rawRivetkitContext }) =>
+		Effect.gen(function* () {
+			const expirationCount = yield* Ref.make(0);
+			const flags = yield* Flags;
+			const address = yield* Actor.CurrentAddress;
+			const firedFlag = `scheduled-no-payload:${address.key.join("/")}`;
+
+			return ScheduledNoPayload.of({
+				ScheduleExpiration: ({ payload }) =>
+					Effect.promise(() =>
+						rawRivetkitContext.schedule.after(
+							payload.delay,
+							"Expire",
+						),
+					),
+				Expire: () =>
+					Ref.update(expirationCount, (count) => count + 1).pipe(
+						Effect.tap(() =>
+							Effect.sync(() => {
+								flags.set(firedFlag, true);
+							}),
+						),
+						Effect.asVoid,
+					),
+				GetExpirationCount: () => Ref.get(expirationCount),
+			});
+		}),
+);
 
 // --- Strict ---
 

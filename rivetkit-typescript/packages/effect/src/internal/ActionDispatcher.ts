@@ -82,13 +82,19 @@ export const make = <
 					] as (
 						envelope: ActionRequest<typeof action>,
 					) => Action.ResultFrom<typeof action, any>;
-					// Raw RivetKit clients call no-argument actions with an
-					// absent first argument. The Effect JSON Void codec expects
-					// null, so adapt only actions that declared no payload.
-					const payloadForDecode =
-						!action.hasPayload && payload === undefined
-							? null
-							: payload;
+					// RivetKit appends schedule metadata after positional arguments.
+					// For actions without payloads, this metadata occupies the payload
+					// slot. Effect's JSON Void codec expects that slot to contain null.
+					const actionExpectsVoid = !action.hasPayload;
+					const payloadWasOmitted = payload === undefined;
+					const scheduleMetadataIsPayload =
+						actionExpectsVoid &&
+						meta === undefined &&
+						isScheduledFireInfo(payload);
+					const shouldDecodeAsVoid =
+						(actionExpectsVoid && payloadWasOmitted) ||
+						scheduleMetadataIsPayload;
+					const payloadForDecode = shouldDecodeAsVoid ? null : payload;
 					const decodedPayload = yield* decodePayload(
 						payloadForDecode,
 					).pipe(
@@ -182,6 +188,17 @@ export const make = <
 			},
 		];
 	});
+
+const ScheduledFireInfoSchema: Schema.Schema<Rivetkit.ScheduledFireInfo> =
+	Schema.Struct({
+		kind: Schema.Literals(["at", "cron", "every"]),
+		id: Schema.String,
+		name: Schema.optionalKey(Schema.UndefinedOr(Schema.String)),
+		scheduledAt: Schema.Finite,
+		firedAt: Schema.Finite,
+	});
+
+const isScheduledFireInfo = Schema.is(ScheduledFireInfoSchema);
 
 const makeActorAbortedError = () =>
 	new Rivetkit.RivetError("actor", "aborted", "Actor aborted", {
