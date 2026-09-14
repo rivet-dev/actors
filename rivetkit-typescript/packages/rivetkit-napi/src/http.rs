@@ -30,6 +30,7 @@ pub struct JsHttpResponse {
 #[derive(Clone)]
 pub(crate) struct HttpRequestPayload {
 	pub(crate) ctx: CoreActorContext,
+	pub(crate) telemetry: Option<rivetkit_core::ActorInvocationTelemetry>,
 	pub(crate) request: Request,
 	pub(crate) cancel_token: Option<tokio_util::sync::CancellationToken>,
 	pub(crate) response_stream: Option<HttpResponseBodyStream>,
@@ -220,7 +221,10 @@ pub(crate) fn build_http_request_payload(
 	payload: HttpRequestPayload,
 ) -> napi::Result<Vec<napi::JsUnknown>> {
 	let mut object = env.create_object()?;
-	object.set("ctx", ActorContext::new(payload.ctx))?;
+	object.set(
+		"ctx",
+		ActorContext::new(payload.ctx.with_invocation_telemetry(payload.telemetry)),
+	)?;
 	object.set("request", build_request_object(env, payload.request)?)?;
 	match payload.response_stream {
 		Some(response_stream) => object.set("responseBodyStream", response_stream)?,
