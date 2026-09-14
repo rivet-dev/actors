@@ -267,6 +267,7 @@ When the user asks to track something in a note, store it in `~/.agents/notes/` 
 - Never use `Mutex<HashMap<...>>` or `RwLock<HashMap<...>>`. Use `scc::HashMap` (preferred), `moka::Cache` (for TTL/bounded), or `DashMap` for concurrent maps.
 - Use `scc::HashSet` instead of `Mutex<HashSet<...>>` for concurrent sets.
 - `scc` async methods do not hold locks across `.await` points. Use `entry_async` for atomic read-then-write.
+- In async code always use `scc` `*_async` methods. A `*_sync` call parks the Tokio worker and can deadlock against an async waiter queued on the same map, so reserve `*_sync` for forced-sync contexts (`Drop`, VFS/FFI callbacks, sync APIs) on maps that no async code waits on.
 - Hold lock guards for as short as possible, including `scc` guards from `get_async` and related methods. Clone/copy needed data and `drop(...)` before async work, as in `send_and_check_ping` in `engine/packages/pegboard-gateway2/src/shared_state.rs`.
 - Never poll a shared-state counter with `loop { if ready; sleep(Nms).await; }`. Pair the counter with a `tokio::sync::Notify` (or `watch::channel`) that every decrement-to-zero site pings, and wait with `AsyncCounter::wait_zero(deadline)` or an equivalent `notify.notified()` + re-check guard that arms the permit before the check.
 - Every shared counter with an awaiter must have a paired `Notify`, `watch`, or permit. Waiters must arm the notification before re-checking the counter so decrement-to-zero cannot race past them.
