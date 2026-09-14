@@ -3,7 +3,8 @@ use std::{
 	time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use futures_util::FutureExt;
 use tokio::sync::oneshot;
 
 use crate::{
@@ -30,6 +31,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_SUBMIT_ATTEMPTS: usize = 8;
 /// Backoff between multi-node resends.
 const RESEND_BACKOFF: Duration = Duration::from_millis(100);
+/// The NATS server's `max_payload` when it is not configured.
+const NATS_DEFAULT_MAX_PAYLOAD: usize = 1024 * 1024;
 
 /// Submit a follower transaction's commit to the leader and await the result.
 ///
@@ -106,22 +109,51 @@ async fn submit_nats(
 	// One dedup key for this logical commit, reused across every resend so the leader applies it at
 	// most once even if an earlier attempt was applied but its reply was lost to a failover.
 	let client_seq = shared.next_commit_seq();
+	let protocol_version = shared.commit_protocol_version();
 	let payload = codec::encode_commit_request(
 		read_version.max(0) as u64,
 		&conflict_ranges,
 		&operations,
 		shared.node_id.as_bytes(),
 		client_seq as u64,
-		shared.commit_protocol_version(),
+		protocol_version,
 	)
 	.context("failed to encode commit request")?;
 
 	let submit_start = Instant::now();
 	for attempt in 0..MAX_SUBMIT_ATTEMPTS {
 		let lease = wait_for_leader(shared).await?;
-		let subject = nats.subjects.commit(&lease.leader_addr);
 
-		let request = nats.client.request(subject, payload.clone().into());
+		// async-nats does not check a request against the server's max_payload, and the server
+		// answers an oversized message by closing the whole connection. A request that would not fit
+		// is split into chunks instead, which only a leader at the chunked protocol version accepts.
+		let max_payload = nats_max_payload(&nats.client);
+		let request = if payload.len() <= max_payload {
+			let subject = nats.subjects.commit(&lease.leader_addr);
+			let request = nats.client.request(subject, payload.clone().into());
+			async { request.await.map_err(anyhow::Error::from) }.boxed()
+		} else {
+			if protocol_version < codec::CHUNKED_COMMIT_PROTOCOL_VERSION {
+				bail!(
+					"commit request is {} bytes, over the nats server max_payload of {max_payload} bytes, \
+					 and the fleet has not negotiated chunked commit requests (protocol version \
+					 {protocol_version}); raise the nats max_payload or finish upgrading every node",
+					payload.len()
+				);
+			}
+			let chunks = codec::encode_commit_request_chunks(
+				&payload,
+				shared.node_id.as_bytes(),
+				client_seq as u64,
+				attempt as u32,
+				max_payload,
+				protocol_version,
+			)
+			.context("failed to chunk commit request")?;
+			let subject = nats.subjects.commit_chunk(&lease.leader_addr);
+			send_chunks(&nats.client, subject, chunks).boxed()
+		};
+
 		match tokio::time::timeout(REQUEST_TIMEOUT, request).await {
 			Ok(Ok(msg)) => match codec::decode_commit_reply(&msg.payload) {
 				Ok(CommitOutcome::Committed { .. }) => {
@@ -174,6 +206,38 @@ async fn submit_nats(
 			"exhausted {MAX_SUBMIT_ATTEMPTS} commit resend attempts without a determinate reply"
 		)),
 	)
+}
+
+/// The largest message the connected NATS server accepts.
+fn nats_max_payload(client: &async_nats::Client) -> usize {
+	match client.server_info().max_payload {
+		// A client that has not received the server's INFO yet reports zero, so assume the server
+		// default rather than refusing to send.
+		0 => NATS_DEFAULT_MAX_PAYLOAD,
+		max_payload => max_payload,
+	}
+}
+
+/// Send every chunk except the last as a plain publish and the last as the request, so the reply
+/// arrives once the leader holds the whole commit.
+async fn send_chunks(
+	client: &async_nats::Client,
+	subject: String,
+	mut chunks: Vec<Vec<u8>>,
+) -> Result<async_nats::Message> {
+	let last = chunks
+		.pop()
+		.context("chunked commit request has no chunks")?;
+	for chunk in chunks {
+		client
+			.publish(subject.clone(), chunk.into())
+			.await
+			.context("failed to publish commit request chunk")?;
+	}
+	client
+		.request(subject, last.into())
+		.await
+		.context("commit request chunk got no reply")
 }
 
 /// Wait for a known leader, returning a retryable error if none is elected in time.
