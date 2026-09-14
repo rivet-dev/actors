@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use futures_util::StreamExt;
+use futures_util::{StreamExt, future::try_join_all};
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
 
@@ -389,6 +389,30 @@ enum BatchOutcome {
 	LostLease,
 }
 
+/// Clears each key range with its own statement.
+///
+/// Passing every range to one statement as `unnest` arrays turns the bounds into join columns, so the
+/// planner cannot estimate a range's width and prices each one as a fixed fraction of `kv`. Once `kv`
+/// outgrows the page cache that estimate makes a full table scan per range look cheaper than the
+/// primary key, and the batch transaction runs for minutes while holding its locks. As plain
+/// parameters the bounds are planned with their real values, so each range walks the primary key.
+///
+/// The statements are sent concurrently so tokio-postgres pipelines them, and each is prepared fresh
+/// so a cached generic plan never replaces the planner's per-range estimate.
+async fn clear_ranges(
+	txn: &tokio_postgres::Transaction<'_>,
+	ranges: &[(Vec<u8>, Vec<u8>)],
+) -> Result<()> {
+	try_join_all(ranges.iter().map(|(begin, end)| async move {
+		txn.execute("DELETE FROM kv WHERE key >= $1 AND key < $2", &[begin, end])
+			.await
+	}))
+	.await
+	.context("failed to clear ranges")?;
+
+	Ok(())
+}
+
 async fn drain_batch(
 	shared: &Arc<PostgresShared>,
 	epoch: i64,
@@ -584,22 +608,12 @@ async fn drain_batch(
 	let upsert_bytes: usize = upserts.iter().map(|(k, v)| k.len() + v.len()).sum();
 
 	let (upsert_keys, upsert_values): (Vec<Vec<u8>>, Vec<Vec<u8>>) = upserts.into_iter().unzip();
-	let (range_begins, range_ends): (Vec<Vec<u8>>, Vec<Vec<u8>>) =
-		range_deletes.into_iter().unzip();
 
-	// Range deletes run in their own statement before the apply CTE: a range delete and an in-range
-	// upsert in one CTE would have unspecified ordering, so the clear must commit its effect first and
-	// the upsert then re-inserts the key.
+	// Range deletes run before the apply CTE: a range delete and an in-range upsert in one CTE would
+	// have unspecified ordering, so the clear must take effect first and the upsert then re-inserts the
+	// key.
 	let range_delete_start = Instant::now();
-	if !range_begins.is_empty() {
-		txn.execute(
-			"DELETE FROM kv USING unnest($1::bytea[], $2::bytea[]) AS r(b, e)
-			 WHERE key >= r.b AND key < r.e",
-			&[&range_begins, &range_ends],
-		)
-		.await
-		.context("failed to clear ranges")?;
-	}
+	clear_ranges(&txn, &range_deletes).await?;
 	let range_delete_ms = range_delete_start.elapsed().as_millis() as u64;
 	let apply_start = Instant::now();
 
@@ -712,3 +726,7 @@ async fn drain_batch(
 
 	Ok(BatchOutcome::Processed)
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/unit/postgres_resolver.rs"]
+mod tests;

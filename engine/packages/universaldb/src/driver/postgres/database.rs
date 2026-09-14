@@ -47,6 +47,35 @@ const POOL_METRICS_INTERVAL: Duration = Duration::from_secs(1);
 /// deleted while a resend that needs it could still arrive.
 const DEDUP_ROW_MAX_AGE_SECS: i64 = 120;
 
+/// The schema every node applies on startup. `kv` is the durable latest-value store; the rest is the
+/// leader lease, commit version allocation, and failover dedup.
+pub(super) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS kv (
+		key BYTEA PRIMARY KEY,
+		value BYTEA NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS udb_lease (
+		id              INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+		epoch           BIGINT NOT NULL,
+		leader_addr     TEXT   NOT NULL,
+		durable_version BIGINT NOT NULL DEFAULT 0,
+		expires_at      TIMESTAMPTZ NOT NULL
+	);
+
+	CREATE SEQUENCE IF NOT EXISTS udb_version_seq AS BIGINT
+		START WITH 1 INCREMENT BY 1 MINVALUE 1;
+
+	CREATE TABLE IF NOT EXISTS udb_applied (
+		client_node_id BYTEA  NOT NULL,
+		client_seq     BIGINT NOT NULL,
+		commit_version BIGINT NOT NULL,
+		created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+		PRIMARY KEY (client_node_id, client_seq)
+	);
+
+	CREATE INDEX IF NOT EXISTS udb_applied_created_at_idx
+		ON udb_applied (created_at);";
+
 #[derive(Clone, Debug)]
 pub struct PostgresConfig {
 	pub connection_string: String,
@@ -224,37 +253,9 @@ impl PostgresDatabaseDriver {
 	}
 
 	async fn init_schema(conn: &deadpool_postgres::Client) -> Result<()> {
-		// Durable latest-value store.
-		conn.batch_execute(
-			"CREATE TABLE IF NOT EXISTS kv (
-				key BYTEA PRIMARY KEY,
-				value BYTEA NOT NULL
-			);
-
-			CREATE TABLE IF NOT EXISTS udb_lease (
-				id              INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-				epoch           BIGINT NOT NULL,
-				leader_addr     TEXT   NOT NULL,
-				durable_version BIGINT NOT NULL DEFAULT 0,
-				expires_at      TIMESTAMPTZ NOT NULL
-			);
-
-			CREATE SEQUENCE IF NOT EXISTS udb_version_seq AS BIGINT
-				START WITH 1 INCREMENT BY 1 MINVALUE 1;
-
-			CREATE TABLE IF NOT EXISTS udb_applied (
-				client_node_id BYTEA  NOT NULL,
-				client_seq     BIGINT NOT NULL,
-				commit_version BIGINT NOT NULL,
-				created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-				PRIMARY KEY (client_node_id, client_seq)
-			);
-
-			CREATE INDEX IF NOT EXISTS udb_applied_created_at_idx
-				ON udb_applied (created_at);",
-		)
-		.await
-		.context("failed to initialize postgres schema")?;
+		conn.batch_execute(SCHEMA)
+			.await
+			.context("failed to initialize postgres schema")?;
 
 		Ok(())
 	}
