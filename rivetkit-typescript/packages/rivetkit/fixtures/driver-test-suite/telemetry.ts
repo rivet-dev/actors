@@ -9,6 +9,10 @@ export const telemetryActor = actor({
 	queues: {
 		jobs: jobSchema,
 	},
+	onRequest: async (c, request) => {
+		await c.db.execute("SELECT ? AS path", new URL(request.url).pathname);
+		return new Response("ok", { status: 200 });
+	},
 	actions: {
 		getCount: (c) => c.state.count,
 		increment: (c, amount: number) => {
