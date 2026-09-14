@@ -12,6 +12,10 @@
 #   workflow_dispatch (with version) → trigger=release npm_tag=latest              build_mode=release
 #                                       (npm_tag becomes `rc` if version contains `-rc.`, or
 #                                        `next` if `latest=false`)
+#   workflow_dispatch (no version, release_build=true)
+#                                    → trigger=branch  build_mode=release, and Docker tags plus R2
+#                                       paths use `{sha}-release` so they never overwrite the
+#                                       debug preview of the same commit
 #
 # Selective preview builds: the `targets` input (all | rivetkit | container-runner
 # | engine | cli) narrows a preview to one target family so unrelated builds are
@@ -53,6 +57,11 @@ on:
         description: "Preview only: custom name for the version label + npm dist-tag (default: sanitized branch). Ignored on release."
         required: false
         type: string
+      release_build:
+        description: "Preview only: build engine binaries and Docker images in release mode. Docker tags and R2 paths get a -release suffix. Ignored on release."
+        required: false
+        type: boolean
+        default: false
 
 env:
   # Depot project ID (rivet-dev/rivet-engine).
@@ -69,7 +78,7 @@ jobs:
       trigger: ${{ steps.ctx.outputs.trigger }}
       version: ${{ steps.ctx.outputs.version }}
       npm_tag: ${{ steps.ctx.outputs.npm_tag }}
-      sha: ${{ steps.ctx.outputs.sha }}
+      sha: ${{ steps.ctx.outputs.sha }}${{ inputs.release_build && steps.ctx.outputs.trigger != 'release' && '-release' || '' }}
       latest: ${{ steps.ctx.outputs.latest }}
       targets: ${{ steps.ctx.outputs.targets }}
       build_targets: ${{ steps.ctx.outputs.build_targets }}
@@ -272,7 +281,7 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         id: mode
         run: |
-          if [ "${{ needs.context.outputs.trigger }}" = "release" ]; then
+          if [ "${{ needs.context.outputs.trigger }}" = "release" ] || [ "${{ inputs.release_build }}" = "true" ]; then
             echo "build_mode=release" >> $GITHUB_OUTPUT
           else
             echo "build_mode=debug" >> $GITHUB_OUTPUT
@@ -368,7 +377,7 @@ jobs:
       - name: Compute build mode
         id: mode
         run: |
-          if [ "${{ needs.context.outputs.trigger }}" = "release" ]; then
+          if [ "${{ needs.context.outputs.trigger }}" = "release" ] || [ "${{ inputs.release_build }}" = "true" ]; then
             echo "cargo_build_mode=release" >> $GITHUB_OUTPUT
             echo "build_frontend=true" >> $GITHUB_OUTPUT
           else
