@@ -339,18 +339,6 @@ impl DatabaseDriver for PostgresDatabaseDriver {
 
 			let mut attempt = 0;
 			loop {
-				// Re-read every iteration. The first attempt always runs, because nothing has called
-				// `retry_limit` yet; from then on the closure's limit wins over the database-wide one.
-				let limit = retry_limit.load(Ordering::SeqCst);
-				let max_attempts = if limit == RETRY_LIMIT_UNSET {
-					max_retries
-				} else {
-					limit.saturating_add(1)
-				};
-				if attempt >= max_attempts {
-					break;
-				}
-
 				let tx = Transaction::new(Arc::new(PostgresTransactionDriver::with_retry_limit(
 					self.shared.clone(),
 					retry_limit.clone(),
@@ -380,17 +368,31 @@ impl DatabaseDriver for PostgresDatabaseDriver {
 							maybe_committed = MaybeCommitted(true);
 						}
 
+						// Re-read every iteration. Nothing has called `retry_limit` before the first
+						// attempt; from then on the closure's limit wins over the database-wide one.
+						// The check runs after an attempt failed, so both values bound retries rather
+						// than total attempts.
+						let limit = retry_limit.load(Ordering::SeqCst);
+						let retry_budget = if limit == RETRY_LIMIT_UNSET {
+							max_retries
+						} else {
+							limit
+						};
+						if attempt >= retry_budget {
+							return Err(DatabaseError::MaxRetriesReached(error).into());
+						}
+
+						attempt += 1;
+
 						let backoff_ms = calculate_tx_retry_backoff(attempt as usize);
 						tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
-						attempt += 1;
-						continue;
+					} else {
+						return Err(error);
 					}
+				} else {
+					return Err(error);
 				}
-
-				return Err(error);
 			}
-
-			Err(DatabaseError::MaxRetriesReached.into())
 		})
 	}
 

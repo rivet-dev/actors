@@ -131,7 +131,7 @@ async fn get_pages_ages_out_unbounded_bounded_survives() -> Result<()> {
 	let aged_out = err.chain().any(|cause| {
 		matches!(
 			cause.downcast_ref::<DatabaseError>(),
-			Some(DatabaseError::TransactionTooOld | DatabaseError::MaxRetriesReached)
+			Some(DatabaseError::TransactionTooOld | DatabaseError::MaxRetriesReached(_))
 		)
 	});
 	assert!(
