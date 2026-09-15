@@ -12,7 +12,7 @@ use serde::Serialize;
 use tracing::Instrument;
 use universaldb::utils::{FormalChunkedKey, FormalKey, IsolationLevel::*, end_of_key_range};
 use universaldb::{
-	RangeOption,
+	KeySelector, RangeOption,
 	options::{ConflictRangeType, StreamingMode},
 	tuple::{PackResult, TupleDepth, TupleUnpack},
 	value::Value,
@@ -39,6 +39,11 @@ use crate::{
 };
 
 const EARLY_TXN_TIMEOUT: Duration = Duration::from_secs(3);
+
+// These tests seed private workflow keys and exercise the real RocksDB-backed debug operation.
+#[cfg(test)]
+#[path = "../../../tests/modules/dead_workflow_backfill.rs"]
+mod dead_workflow_backfill_tests;
 
 impl DatabaseKv {
 	#[tracing::instrument(level = "debug", skip_all)]
@@ -1281,6 +1286,7 @@ impl DatabaseDebug for DatabaseKv {
 		limit: usize,
 		last_key: Option<&[u8]>,
 	) -> Result<(usize, Option<Vec<u8>>)> {
+		ensure!(limit > 0, "backfill workflow limit must be positive");
 		let last_key = last_key.map(|x| x.to_vec());
 
 		self.pools
@@ -1289,113 +1295,81 @@ impl DatabaseDebug for DatabaseKv {
 				let last_key = &last_key;
 				async move {
 					let tx = tx.with_subspace(self.subspace.clone());
-
+					let (start, end) = self
+						.subspace
+						.subspace(&keys::workflow::DataSubspaceKey::new())
+						.range();
 					let mut total = 0;
-
-					let entire_subspace_key = keys::workflow::DataSubspaceKey::new();
-					let subspace_range = self.subspace.subspace(&entire_subspace_key).range();
-					let start = if let Some(last_key) = last_key {
-						last_key.clone()
-					} else {
-						subspace_range.0
-					};
-					let end = subspace_range.1;
-
-					let mut stream = tx.get_ranges_keyvalues(
-						RangeOption {
-							mode: StreamingMode::WantAll,
-							..(start.clone(), end).into()
-						},
-						Snapshot,
-					);
-
-					// Points at the first key of the workflow currently being scanned. Resuming
-					// from here rescans that workflow from the start, which is required because a
-					// workflow is only indexed once all of its keys have been read.
-					let mut new_last_key = Some(start);
-					let mut current_workflow_id = None;
-					let mut name = None;
-					let mut error = None;
-					let mut state_matches = true;
+					// This remains a raw range boundary, accepting previously persisted first-key cursors.
+					let mut new_last_key = Some(last_key.clone().unwrap_or(start));
 
 					let fut = async {
-						while let Some(entry) = stream.try_next().await? {
-							let workflow_id = *self.subspace.unpack::<JustId>(entry.key())?;
-
-							if let Some(curr) = current_workflow_id {
-								if workflow_id != curr {
-									// Save if matches query
-									if let (Some(name), Some(error)) = (name.take(), error.take())
-										&& state_matches
-									{
-										tx.write(
-											&keys::workflow::DeadIdxKey::new(name, error, curr),
-											(),
-										)?;
-									}
-
-									total += 1;
-
-									// Reset state
-									new_last_key = Some(entry.key().to_vec());
-									state_matches = true;
-
-									// Stop on a workflow boundary so the cursor never points in
-									// the middle of a workflow's keys
-									if total >= limit {
-										return anyhow::Ok(());
-									}
-								}
+						while total < limit {
+							let Some(start) = &new_last_key else { break };
+							// A RocksDB range stream materializes all values before yielding. Seek only
+							// the next key so input, state, and output payloads never enter this scan.
+							let first_key = tx
+								.get_key(
+									&KeySelector::first_greater_or_equal(start.as_slice()),
+									Snapshot,
+								)
+								.await?;
+							if first_key.is_empty() || first_key.as_slice() >= end.as_slice() {
+								new_last_key = None;
+								break;
 							}
-
-							current_workflow_id = Some(workflow_id);
-
-							if let Ok(name_key) =
-								self.subspace.unpack::<keys::workflow::NameKey>(entry.key())
-							{
-								name = Some(name_key.deserialize(entry.value())?);
-							} else if let Ok(_) = self
+							let workflow_id = *self.subspace.unpack::<JustId>(&first_key)?;
+							let output_range = self
 								.subspace
-								.unpack::<keys::workflow::OutputChunkKey>(entry.key())
+								.subspace(&keys::workflow::OutputKey::new(workflow_id))
+								.range();
+							// get_key tracks the returned key, not the empty seek gap. Cover the entire
+							// output prefix so a concurrent completion cannot leave a stale dead index.
+							tx.add_conflict_range(
+								&output_range.0,
+								&output_range.1,
+								ConflictRangeType::Read,
+							)?;
+							let name_key = keys::workflow::NameKey::new(workflow_id);
+							let error_key = keys::workflow::ErrorKey::new(workflow_id);
+							let worker_key = keys::workflow::WorkerIdKey::new(workflow_id);
+							let wake_key = keys::workflow::HasWakeConditionKey::new(workflow_id);
+							let silence_key = keys::workflow::SilenceTsKey::new(workflow_id);
+							let output_selector =
+								KeySelector::first_greater_or_equal(output_range.0.as_slice());
+							let (name, error, worker, wake, silenced, output_key) = tokio::try_join!(
+								tx.read_opt(&name_key, Serializable),
+								tx.read_opt(&error_key, Serializable),
+								tx.exists(&worker_key, Serializable),
+								tx.exists(&wake_key, Serializable),
+								tx.exists(&silence_key, Serializable),
+								tx.get_key(&output_selector, Snapshot),
+							)?;
+							let has_output = !output_key.is_empty()
+								&& output_key.as_slice() < output_range.1.as_slice();
+							if let (Some(name), Some(error)) = (name, error)
+								&& !worker && !wake && !silenced
+								&& !has_output
 							{
-								state_matches = false;
-							} else if let Ok(_) = self
-								.subspace
-								.unpack::<keys::workflow::WorkerIdKey>(entry.key())
-							{
-								state_matches = false;
-							} else if let Ok(_) = self
-								.subspace
-								.unpack::<keys::workflow::HasWakeConditionKey>(entry.key())
-							{
-								state_matches = false;
-							} else if let Ok(_) = self
-								.subspace
-								.unpack::<keys::workflow::SilenceTsKey>(entry.key())
-							{
-								state_matches = false;
-							} else if let Ok(error_key) = self
-								.subspace
-								.unpack::<keys::workflow::ErrorKey>(entry.key())
-							{
-								error = Some(error_key.deserialize(entry.value())?);
+								tx.write(
+									&keys::workflow::DeadIdxKey::new(name, error, workflow_id),
+									(),
+								)?;
 							}
-						}
-
-						// Save the last workflow in the range
-						if let Some(curr) = current_workflow_id {
-							if let (Some(name), Some(error)) = (name.take(), error.take())
-								&& state_matches
-							{
-								tx.write(&keys::workflow::DeadIdxKey::new(name, error, curr), ())?;
-							}
-
+							// Do not await between indexing and advancing. A timeout leaves an unfinished
+							// workflow at the cursor, while completed writes and progress commit together.
+							new_last_key = Some(
+								self.subspace
+									.subspace(
+										&keys::workflow::DataSubspaceKey::new_with_workflow_id(
+											workflow_id,
+										),
+									)
+									.range()
+									.1,
+							);
 							total += 1;
 						}
-
-						// Reached the end of all workflows
-						new_last_key = None;
-
 						anyhow::Ok(())
 					};
 
@@ -1403,7 +1377,6 @@ impl DatabaseDebug for DatabaseKv {
 						Ok(res) => res?,
 						Err(_) => tracing::debug!("timed out reading workflows"),
 					}
-
 					Ok((total, new_last_key))
 				}
 			})
