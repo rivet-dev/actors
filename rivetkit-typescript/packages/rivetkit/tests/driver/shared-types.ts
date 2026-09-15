@@ -26,8 +26,14 @@ export interface DriverDeployOutput {
 	cleanup(): Promise<void>;
 }
 
+/** Per-start overrides for the runtime process a test spawns. */
+export interface DriverStartOptions {
+	/** Extra environment for the runtime process, layered over the harness defaults. */
+	env?: Record<string, string>;
+}
+
 export interface DriverTestConfig {
-	start(): Promise<DriverDeployOutput>;
+	start(options?: DriverStartOptions): Promise<DriverDeployOutput>;
 	runtime: DriverRuntime;
 	sqliteBackend: DriverSqliteBackend;
 	useRealTimers?: boolean;

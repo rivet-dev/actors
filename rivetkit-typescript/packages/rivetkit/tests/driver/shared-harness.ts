@@ -275,6 +275,7 @@ export async function startNativeDriverRuntime(
 	variant: DriverRegistryVariant,
 	engine: SharedEngine,
 	sqliteBackend: DriverSqliteBackend,
+	env: Record<string, string> = {},
 ): Promise<DriverDeployOutput> {
 	const startedAt = performance.now();
 	const endpoint = engine.endpoint;
@@ -297,6 +298,7 @@ export async function startNativeDriverRuntime(
 			RIVETKIT_TEST_POOL_NAME: poolName,
 			RIVETKIT_TEST_SQLITE_BACKEND: sqliteBackend,
 			RIVET_RUN_SERVICES: "0",
+			...env,
 		},
 		stdio: ["ignore", "pipe", "pipe"],
 	});
@@ -448,12 +450,13 @@ export function createNativeDriverTestConfig(
 			...options.features,
 		},
 		useRealTimers: options.useRealTimers ?? true,
-		start: async () => {
+		start: async (startOptions) => {
 			const engine = await getOrStartSharedEngine(options.engine);
 			return startNativeDriverRuntime(
 				options.variant,
 				engine,
 				options.sqliteBackend,
+				startOptions?.env,
 			);
 		},
 	};
