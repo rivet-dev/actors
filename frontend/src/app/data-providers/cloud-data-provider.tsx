@@ -1300,6 +1300,55 @@ export const createProjectContext = ({
 				},
 			});
 		},
+		// Disables Rivet Compute across the whole project by deleting every
+		// managed pool in every namespace. Compute is scoped per (namespace,
+		// pool), so there is no single project-level toggle to flip; the sweep
+		// walks all namespaces and destroys their pools. Pools already tearing
+		// down are skipped. Idempotent: a project with no pools deletes nothing.
+		disableComputeMutationOptions() {
+			return mutationOptions({
+				mutationKey: [organization, project, "compute", "disable"],
+				mutationFn: async () => {
+					const namespaces: string[] = [];
+					let cursor: string | undefined;
+					do {
+						const page = await client.namespaces.list(project, {
+							org: organization,
+							limit: 100,
+							cursor,
+						});
+						for (const ns of page.namespaces) {
+							namespaces.push(ns.name);
+						}
+						cursor =
+							page.namespaces.length < 100
+								? undefined
+								: page.pagination.cursor;
+					} while (cursor);
+
+					let deletedPools = 0;
+					for (const namespace of namespaces) {
+						const { managedPools } = await client.managedPools.list(
+							project,
+							namespace,
+							{ org: organization },
+						);
+						for (const pool of managedPools) {
+							if (pool.status === "destroying") continue;
+							await client.managedPools.delete(
+								project,
+								namespace,
+								pool.name,
+								{ org: organization },
+							);
+							deletedPools += 1;
+						}
+					}
+
+					return { namespaces: namespaces.length, deletedPools };
+				},
+			});
+		},
 	};
 };
 

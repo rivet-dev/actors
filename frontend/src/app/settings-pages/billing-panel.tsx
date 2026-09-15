@@ -4,9 +4,11 @@ import {
 	faDatabase,
 	faInfoCircle,
 	faPencil,
+	faPlug,
 	faRunning,
 	faServer,
 	faSignalStream,
+	faTriangleExclamation,
 	Icon,
 	type IconProp,
 } from "@rivet-gg/icons";
@@ -14,6 +16,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMatch } from "@tanstack/react-router";
 import { endOfMonth, startOfMonth } from "date-fns";
 import { Suspense, useState } from "react";
+import { useDialog } from "@/app/use-dialog";
 import { BillingPlans } from "@/app/billing/billing-plans";
 import { useBilledComputeCost } from "@/app/billing/hooks";
 import { ManageBillingButton } from "@/app/billing/manage-billing-button";
@@ -223,6 +226,70 @@ function BillingDrawerBody() {
 					) : null}
 				</SettingsCard>
 			</div>
+
+			{features.compute ? <DisableComputeSection /> : null}
+		</div>
+	);
+}
+
+// Project-wide kill switch for Rivet Compute. Lives in the Billing panel
+// because Compute is the project's primary metered cost. Deleting the pools
+// across every namespace is the only way the backend models "off"; there is
+// no project-level enabled flag.
+function DisableComputeSection() {
+	const dataProvider = useCloudProjectDataProvider();
+	const { data: project } = useQuery(
+		dataProvider.currentProjectQueryOptions(),
+	);
+	const DisableComputeDialog = useDialog.DisableCompute.Dialog;
+	const [isOpen, setIsOpen] = useState(false);
+
+	return (
+		<div>
+			<div className="flex items-center gap-1.5 mb-4">
+				<Icon
+					icon={faTriangleExclamation}
+					className="size-3.5 text-destructive"
+				/>
+				<h3 className="text-sm font-semibold text-foreground">
+					Danger zone
+				</h3>
+			</div>
+
+			<SettingsCard>
+				<div className="flex items-start justify-between gap-4">
+					<div className="min-w-0">
+						<div className="text-sm font-medium text-foreground">
+							Disable Rivet Compute
+						</div>
+						<p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+							Tears down every Rivet Compute deployment across all
+							namespaces in this project. Running Rivet Actors on
+							those pools become unreachable. You can re-enable
+							Compute later by deploying again.
+						</p>
+					</div>
+					<Button
+						variant="destructive-outline"
+						size="sm"
+						startIcon={<Icon icon={faPlug} />}
+						disabled={!project}
+						onClick={() => setIsOpen(true)}
+					>
+						Disable
+					</Button>
+				</div>
+			</SettingsCard>
+
+			{project ? (
+				<DisableComputeDialog
+					slug={project.name}
+					dialogProps={{
+						open: isOpen,
+						onOpenChange: setIsOpen,
+					}}
+				/>
+			) : null}
 		</div>
 	);
 }

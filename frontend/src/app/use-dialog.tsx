@@ -53,6 +53,9 @@ export const useDialog = {
 	DeleteProject: createDialogHook(
 		() => import("@/app/dialogs/confirm-delete-project-frame"),
 	),
+	DisableCompute: createDialogHook(
+		() => import("@/app/dialogs/confirm-disable-compute-frame"),
+	),
 	Billing: createDialogHook(() => import("@/app/dialogs/billing-frame")),
 	ProvideEngineCredentials: createDialogHook(
 		() => import("@/app/dialogs/provide-engine-credentials-frame"),
