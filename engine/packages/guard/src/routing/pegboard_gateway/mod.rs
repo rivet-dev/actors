@@ -905,16 +905,13 @@ fn read_gateway_token_for_path_based<'a>(
 	}
 
 	if req_ctx.is_websocket() {
-		let protocols_header = req_ctx
+		let Some(protocols_header) = req_ctx
 			.headers()
 			.get(SEC_WEBSOCKET_PROTOCOL)
 			.and_then(|protocols| protocols.to_str().ok())
-			.ok_or_else(|| {
-				crate::errors::MissingHeader {
-					header: "sec-websocket-protocol".to_string(),
-				}
-				.build()
-			})?;
+		else {
+			return Ok(None);
+		};
 
 		let protocols = protocols_header
 			.split(',')
