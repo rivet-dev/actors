@@ -348,7 +348,8 @@ jobs:
   # ---------------------------------------------------------------------------
   docker-images:
     needs: [context]
-    if: needs.context.outputs.build_docker == 'true'
+    # This ID identifies the OSS repository and remains stable across renames.
+    if: needs.context.outputs.build_docker == 'true' && github.repository_id == '654560183'
     name: "Docker ${{ matrix.arch_suffix }}"
     strategy:
       fail-fast: false
@@ -439,6 +440,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - uses: ./.github/actions/docker-setup
+        if: github.repository_id == '654560183'
         with:
           docker_username: ${{ secrets.DOCKER_CI_USERNAME }}
           docker_password: ${{ secrets.DOCKER_CI_ACCESS_TOKEN }}
@@ -702,7 +704,7 @@ jobs:
             --allow-dirty
 
       - name: Create Docker multi-arch manifests
-        if: needs.context.outputs.build_docker == 'true'
+        if: needs.context.outputs.build_docker == 'true' && github.repository_id == '654560183'
         run: pnpm --filter=publish exec tsx src/ci/bin.ts docker-manifest --sha ${{ needs.context.outputs.sha }}
 
       # ---- release-only tail ----
@@ -719,7 +721,7 @@ jobs:
 
 
       - name: Retag Docker manifests to version
-        if: needs.context.outputs.trigger == 'release'
+        if: needs.context.outputs.trigger == 'release' && github.repository_id == '654560183'
         run: |
           pnpm --filter=publish exec tsx src/ci/bin.ts docker-retag \
             --sha ${{ needs.context.outputs.sha }} \
