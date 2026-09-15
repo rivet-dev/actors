@@ -296,6 +296,7 @@ export async function startNativeDriverRuntime(
 			RIVETKIT_TEST_ENDPOINT: endpoint,
 			RIVETKIT_TEST_POOL_NAME: poolName,
 			RIVETKIT_TEST_SQLITE_BACKEND: sqliteBackend,
+			RIVET_RUN_SERVICES: "0",
 		},
 		stdio: ["ignore", "pipe", "pipe"],
 	});
