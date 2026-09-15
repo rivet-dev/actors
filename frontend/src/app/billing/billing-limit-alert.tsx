@@ -2,7 +2,7 @@ import { faExclamationTriangle, Icon } from "@rivet-gg/icons";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useMatch } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect } from "react";
+import { useLayoutEffect } from "react";
 import { Button, cn } from "@/components";
 import { useCloudProjectDataProvider } from "@/components/actors";
 import { PLAN_LABELS } from "@/content/billing";
@@ -44,7 +44,9 @@ function BillingLimitAlertInner() {
 	const plan = billingData?.billing.activePlan || "free";
 	const hidden = plan !== "free" || usagePercent < 80;
 
-	useEffect(() => {
+	// Layout effect so the drawer's `top` moves in the same paint the banner
+	// mounts in, instead of a frame where the drawer still sits behind it.
+	useLayoutEffect(() => {
 		if (hidden) return;
 		const root = document.documentElement;
 		root.style.setProperty("--billing-banner-height", BANNER_HEIGHT);
@@ -66,7 +68,10 @@ function BillingLimitAlertInner() {
 					exit={{ height: 0, opacity: 0 }}
 					transition={{ duration: 0.25, ease: "easeOut" }}
 					className={cn(
-						"overflow-hidden border-b",
+						// Above the settings drawer (`z-40`) so it stays visible
+						// while the drawer's `top` catches up; below `z-50`
+						// popovers, dropdowns, and dialogs.
+						"relative z-[45] overflow-hidden border-b",
 						atLimit
 							? "border-destructive/60 bg-destructive/15"
 							: "border-warning/60 bg-warning/10",

@@ -201,11 +201,15 @@ export function SettingsDrawer({
 			<DialogPrimitive.Portal>
 				<DialogPrimitive.Content
 					className={cn(
-						"fixed left-2 right-2 z-50 flex flex-col overflow-hidden",
+						// `z-40` keeps the drawer under the billing banner (`z-[45]`)
+						// and under `z-50` popovers, dropdowns, and dialogs.
+						"fixed left-2 right-2 z-40 flex flex-col overflow-hidden",
 						"bg-card border border-border rounded-lg",
 						"focus:outline-none",
 						"data-[state=open]:animate-in data-[state=closed]:animate-out",
 						"data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+						// Follow the banner's expand/collapse animation.
+						"transition-[top] duration-[250ms] ease-out",
 					)}
 					style={{
 						top: `calc(${TOP_BAR_OUTER_HEIGHT} + var(--billing-banner-height, 0px))`,

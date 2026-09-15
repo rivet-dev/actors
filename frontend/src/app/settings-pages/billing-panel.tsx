@@ -2,6 +2,7 @@ import {
 	faArrowUpRight,
 	faBarcodeRead,
 	faDatabase,
+	faExclamationTriangle,
 	faInfoCircle,
 	faPencil,
 	faRunning,
@@ -35,9 +36,9 @@ import {
 	WithTooltip,
 } from "@/components";
 import { useCloudProjectDataProvider } from "@/components/actors";
-import { features } from "@/lib/features";
 import { TwinklingSparkles } from "@/components/twinkling-sparkles";
 import { COMPUTE_MONTHLY_CAP_USD } from "@/content/billing";
+import { features } from "@/lib/features";
 import { ResourcePicker } from "./resource-picker";
 import { SettingsCard } from "./settings-card";
 
@@ -141,8 +142,29 @@ function BillingDrawerBody() {
 		? new Date(usage.currentPeriodEnd)
 		: endOfMonth(new Date());
 
+	// Same trigger as the free-plan limit banner (`highestPercent` covers the
+	// metered metrics and the compute budget). Paid plans just bill overage, so
+	// only the free plan gets the call-out. The names list which allotments ran
+	// out so the user knows what to look at in the table below.
+	const planExhausted = plan === "free" && usage.highestPercent >= 100;
+	const exhaustedNames = [
+		...USAGE_METRICS.filter(
+			(metric) => (metricsByKey.get(metric.key)?.percent ?? 0) >= 100,
+		).map((metric) => metric.title),
+		...(showCompute && usage.computeBudgetPercent >= 100
+			? ["Compute"]
+			: []),
+	];
+
 	return (
 		<div className="space-y-8">
+			{planExhausted ? (
+				<PlanExhaustedCard
+					exhaustedNames={exhaustedNames}
+					onUpgrade={() => setPlansOpen(true)}
+				/>
+			) : null}
+
 			<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 				<CurrentPlanCard
 					plan={plan}
@@ -225,6 +247,55 @@ function BillingDrawerBody() {
 			</div>
 		</div>
 	);
+}
+
+// Shown when a free-plan project has used up its included allotment for the
+// billing period. Plain-language version of the limit banner, with the upgrade
+// action inline so the user does not have to hunt for it in the plan card.
+function PlanExhaustedCard({
+	exhaustedNames,
+	onUpgrade,
+}: {
+	exhaustedNames: string[];
+	onUpgrade: () => void;
+}) {
+	const what =
+		exhaustedNames.length > 0
+			? `${formatList(exhaustedNames)} ${exhaustedNames.length === 1 ? "has" : "have"} reached the Free plan's included limit for this billing period.`
+			: "This project has reached the Free plan's included limits for this billing period.";
+	return (
+		<SettingsCard className="border-destructive/40 bg-destructive/5">
+			<div className="flex items-start gap-4">
+				<div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-destructive/30 bg-destructive/10 text-destructive">
+					<Icon icon={faExclamationTriangle} className="size-4" />
+				</div>
+				<div className="min-w-0 flex-1">
+					<h3 className="text-sm font-semibold text-foreground">
+						You've used your entire Free plan
+					</h3>
+					<p className="mt-1 text-xs text-muted-foreground leading-relaxed">
+						{what} Upgrade to raise your limits and avoid service
+						interruptions.
+					</p>
+				</div>
+				<Button
+					variant="default"
+					size="sm"
+					className="shrink-0"
+					startIcon={<TwinklingSparkles />}
+					onClick={onUpgrade}
+				>
+					Upgrade plan
+				</Button>
+			</div>
+		</SettingsCard>
+	);
+}
+
+function formatList(items: string[]): string {
+	if (items.length <= 1) return items[0] ?? "";
+	if (items.length === 2) return `${items[0]} and ${items[1]}`;
+	return `${items.slice(0, -1).join(", ")}, and ${items[items.length - 1]}`;
 }
 
 function CurrentPlanCard({
@@ -433,11 +504,17 @@ function ComputeUsageRow({
 				</div>
 			</div>
 			<div className="text-sm tabular-nums text-foreground">
-				{loading ? <Skeleton className="h-4 w-12" /> : formatCurrency(cost)}
+				{loading ? (
+					<Skeleton className="h-4 w-12" />
+				) : (
+					formatCurrency(cost)
+				)}
 			</div>
 			<div className="min-w-0">
 				<div className="text-xs text-muted-foreground">
-					{capUsd != null ? `of ${formatCurrency(capUsd)}` : "No limit"}
+					{capUsd != null
+						? `of ${formatCurrency(capUsd)}`
+						: "No limit"}
 				</div>
 				{capUsd != null ? (
 					<div className="relative h-1 rounded-full bg-foreground/10 mt-1">
