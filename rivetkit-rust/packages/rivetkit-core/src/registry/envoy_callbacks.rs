@@ -157,15 +157,36 @@ impl ServeSettings {
 				engine_port.unwrap_or(6420),
 			)
 		});
+		let parsed = extract_endpoint_auth(endpoint);
+		let env_namespace = env::var("RIVET_NAMESPACE").ok();
+		let env_token = env::var("RIVET_TOKEN").ok();
+		if parsed.namespace.is_some() && env_namespace.is_some() {
+			tracing::warn!(
+				"both RIVET_ENDPOINT URL auth and RIVET_NAMESPACE set a namespace; using the endpoint URL value"
+			);
+		}
+		if parsed.token.is_some() && env_token.is_some() {
+			tracing::warn!(
+				"both RIVET_ENDPOINT URL auth and RIVET_TOKEN set a token; using the endpoint URL value"
+			);
+		}
 
 		Self {
 			version: env::var("RIVET_ENVOY_VERSION")
 				.ok()
 				.and_then(|value| value.parse().ok())
 				.unwrap_or(1),
-			endpoint,
-			token: Some(env::var("RIVET_TOKEN").unwrap_or_else(|_| "dev".to_owned())),
-			namespace: env::var("RIVET_NAMESPACE").unwrap_or_else(|_| "default".to_owned()),
+			endpoint: parsed.endpoint,
+			token: Some(
+				parsed
+					.token
+					.or(env_token)
+					.unwrap_or_else(|| "dev".to_owned()),
+			),
+			namespace: parsed
+				.namespace
+				.or(env_namespace)
+				.unwrap_or_else(|| "default".to_owned()),
 			pool_name: env::var("RIVET_POOL_NAME").unwrap_or_else(|_| "rivetkit-rust".to_owned()),
 			engine_binary_path: env::var_os("RIVET_ENGINE_BINARY_PATH").map(PathBuf::from),
 			start_services: matches!(env::var("RIVET_RUN_SERVICES").as_deref(), Ok("1")),
@@ -187,6 +208,58 @@ impl ServeSettings {
 			serverless_max_start_payload_bytes: 1_048_576,
 		}
 	}
+}
+
+/// An endpoint with URL auth credentials split out and stripped.
+struct ParsedEndpoint {
+	endpoint: String,
+	namespace: Option<String>,
+	token: Option<String>,
+}
+
+/// Extracts `https://namespace:token@host` URL auth from an endpoint,
+/// mirroring the TypeScript `tryParseEndpoint` helper. When auth is present,
+/// the returned endpoint has the credentials stripped and any trailing slash
+/// trimmed. Endpoints that do not parse as URLs, carry no auth, or carry a
+/// token without a namespace pass through unchanged with no credentials.
+fn extract_endpoint_auth(endpoint: String) -> ParsedEndpoint {
+	let passthrough = |endpoint: String| ParsedEndpoint {
+		endpoint,
+		namespace: None,
+		token: None,
+	};
+
+	let Ok(mut url) = url::Url::parse(&endpoint) else {
+		return passthrough(endpoint);
+	};
+	if url.username().is_empty() && url.password().is_none() {
+		return passthrough(endpoint);
+	}
+
+	let namespace = decode_url_auth(url.username()).filter(|value| !value.is_empty());
+	let token = url
+		.password()
+		.and_then(decode_url_auth)
+		.filter(|value| !value.is_empty());
+	if namespace.is_none() {
+		tracing::warn!(
+			"RIVET_ENDPOINT has URL auth with a token but no namespace; ignoring the URL auth"
+		);
+		return passthrough(endpoint);
+	}
+	if url.set_username("").is_err() || url.set_password(None).is_err() {
+		return passthrough(endpoint);
+	}
+
+	ParsedEndpoint {
+		endpoint: url.to_string().trim_end_matches('/').to_owned(),
+		namespace,
+		token,
+	}
+}
+
+fn decode_url_auth(value: &str) -> Option<String> {
+	super::http::percent_decode_path_segment(value).ok()
 }
 
 fn default_engine_endpoint(host: &str, port: u16) -> String {
@@ -280,3 +353,8 @@ fn deserialize_actor_key_from_protocol(key: &str) -> ActorKey {
 
 	parts.into_iter().map(ActorKeySegment::String).collect()
 }
+
+// Test shim keeps moved tests in crate-root tests/ with private-module access.
+#[cfg(test)]
+#[path = "../../tests/envoy_callbacks.rs"]
+mod tests;
