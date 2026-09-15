@@ -31,4 +31,5 @@
 
 ## reqwest clients
 
-- Never build a new reqwest client from scratch. Use `rivet_pools::reqwest::client().await?` to access an existing reqwest client instance.
+- Engine code must use `rivet_pools::reqwest::client().await?` instead of creating a new reqwest client.
+- Standalone CLIs may create their own reqwest clients without depending on Engine pools. Preserve the workspace TLS root configuration and configure timeouts, redirects, and credential-safe errors explicitly.

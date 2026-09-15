@@ -15,14 +15,19 @@ anstyle.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 dirs.workspace = true
+flate2.workspace = true
 futures-util.workspace = true
-reqwest.workspace = true
+hex.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
 reqwest-eventsource.workspace = true
 rivetkit-engine-process.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
+tokio-util = { workspace = true, features = ["io"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true

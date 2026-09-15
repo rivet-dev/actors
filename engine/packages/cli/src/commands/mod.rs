@@ -1,3 +1,4 @@
+pub mod byoc;
 pub mod deploy;
 pub mod dev;
 pub mod engine;

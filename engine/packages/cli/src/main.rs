@@ -29,6 +29,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+	/// Upload BYOC worker builds without Cloud login or deployment.
+	Byoc(commands::byoc::Opts),
 	/// Run a local Rivet engine and the dev server for your handler.
 	Dev(commands::dev::Opts),
 	/// Run the bundled rivet-engine binary directly (proxies all arguments).
@@ -51,6 +53,7 @@ async fn main() -> Result<()> {
 
 	let cli = Cli::parse();
 	match cli.command {
+		Commands::Byoc(opts) => opts.execute().await,
 		Commands::Dev(opts) => opts.execute().await,
 		Commands::Engine(opts) => opts.execute().await,
 		Commands::Deploy(opts) => opts.execute().await,
