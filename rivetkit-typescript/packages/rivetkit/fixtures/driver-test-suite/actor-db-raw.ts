@@ -400,6 +400,7 @@ export const dbActorRaw = actor({
 			}
 			await c.vars.stateTransactionStarted.promise;
 		},
+		readAtomicStateValue: (c) => c.state.atomicStateValue,
 		mutateStateDuringTransaction: async (c, value: string) => {
 			try {
 				c.state.atomicStateValue = value;
