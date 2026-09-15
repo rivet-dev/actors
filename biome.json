@@ -103,6 +103,69 @@
 					}
 				}
 			}
+		},
+		{
+			"includes": [
+				"rivetkit-typescript/**/*.browser.ts",
+				"rivetkit-typescript/**/*.browser.tsx"
+			],
+			"linter": {
+				"rules": {
+					"style": {
+						"noRestrictedImports": {
+							"level": "error",
+							"options": {
+								"paths": {
+									"node:fs": "Cannot use Node.js built-in 'fs' in .browser files",
+									"node:fs/promises": "Cannot use Node.js built-in 'fs/promises' in .browser files",
+									"node:path": "Cannot use Node.js built-in 'path' in .browser files",
+									"node:crypto": "Cannot use Node.js built-in 'crypto' in .browser files",
+									"node:os": "Cannot use Node.js built-in 'os' in .browser files",
+									"node:child_process": "Cannot use Node.js built-in 'child_process' in .browser files",
+									"node:stream": "Cannot use Node.js built-in 'stream' in .browser files",
+									"node:net": "Cannot use Node.js built-in 'net' in .browser files",
+									"node:url": "Cannot use Node.js built-in 'url' in .browser files",
+									"node:buffer": "Cannot use Node.js built-in 'buffer' in .browser files",
+									"node:http": "Cannot use Node.js built-in 'http' in .browser files",
+									"node:https": "Cannot use Node.js built-in 'https' in .browser files",
+									"node:zlib": "Cannot use Node.js built-in 'zlib' in .browser files",
+									"node:events": "Cannot use Node.js built-in 'events' in .browser files",
+									"node:util": "Cannot use Node.js built-in 'util' in .browser files",
+									"node:assert": "Cannot use Node.js built-in 'assert' in .browser files",
+									"node:tls": "Cannot use Node.js built-in 'tls' in .browser files",
+									"node:dns": "Cannot use Node.js built-in 'dns' in .browser files",
+									"node:cluster": "Cannot use Node.js built-in 'cluster' in .browser files",
+									"node:worker_threads": "Cannot use Node.js built-in 'worker_threads' in .browser files",
+									"node:timers": "Cannot use Node.js built-in 'timers' in .browser files",
+									"node:process": "Cannot use Node.js built-in 'process' in .browser files",
+									"fs": "Cannot use Node.js built-in 'fs' in .browser files",
+									"fs/promises": "Cannot use Node.js built-in 'fs/promises' in .browser files",
+									"path": "Cannot use Node.js built-in 'path' in .browser files",
+									"crypto": "Cannot use Node.js built-in 'crypto' in .browser files",
+									"os": "Cannot use Node.js built-in 'os' in .browser files",
+									"child_process": "Cannot use Node.js built-in 'child_process' in .browser files",
+									"stream": "Cannot use Node.js built-in 'stream' in .browser files",
+									"net": "Cannot use Node.js built-in 'net' in .browser files",
+									"url": "Cannot use Node.js built-in 'url' in .browser files",
+									"buffer": "Cannot use Node.js built-in 'buffer' in .browser files",
+									"http": "Cannot use Node.js built-in 'http' in .browser files",
+									"https": "Cannot use Node.js built-in 'https' in .browser files",
+									"zlib": "Cannot use Node.js built-in 'zlib' in .browser files",
+									"events": "Cannot use Node.js built-in 'events' in .browser files",
+									"util": "Cannot use Node.js built-in 'util' in .browser files",
+									"assert": "Cannot use Node.js built-in 'assert' in .browser files",
+									"tls": "Cannot use Node.js built-in 'tls' in .browser files",
+									"dns": "Cannot use Node.js built-in 'dns' in .browser files",
+									"cluster": "Cannot use Node.js built-in 'cluster' in .browser files",
+									"worker_threads": "Cannot use Node.js built-in 'worker_threads' in .browser files",
+									"timers": "Cannot use Node.js built-in 'timers' in .browser files",
+									"process": "Cannot use Node.js built-in 'process' in .browser files"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	]
 }
