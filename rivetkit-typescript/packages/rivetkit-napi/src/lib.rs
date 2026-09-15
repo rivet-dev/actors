@@ -9,11 +9,13 @@ pub mod napi_actor_events;
 pub mod queue;
 pub mod registry;
 pub mod schedule;
+mod telemetry;
 pub mod types;
 pub mod websocket;
 
 use std::sync::Once;
 
+use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use rivet_error::RivetError as RivetTransportError;
 use rivetkit_core::error::public_error_status_code;
@@ -123,8 +125,18 @@ pub(crate) fn init_tracing(log_level: Option<&str>) {
 			Err(error) => (None, Some(error)),
 		};
 
+		let log_layer_filter = || {
+			tracing_subscriber::filter::filter_fn(|metadata| {
+				!telemetry::delivered_to_sink(metadata)
+			})
+		};
+
 		tracing_subscriber::registry()
 			.with(otel_layer)
+			.with(
+				telemetry::SdkLogLayer
+					.with_filter(tracing_subscriber::EnvFilter::new("opentelemetry_sdk=warn")),
+			)
 			.with(match log_format {
 				LogFormat::Logfmt => Some(
 					tracing_logfmt::builder()
@@ -135,7 +147,8 @@ pub(crate) fn init_tracing(log_level: Option<&str>) {
 						.with_module_path(env_flag("RUST_LOG_MODULE_PATH"))
 						.with_ansi_color(env_flag("RUST_LOG_ANSI_COLOR"))
 						.layer()
-						.with_filter(tracing_subscriber::EnvFilter::new(&log_filter)),
+						.with_filter(tracing_subscriber::EnvFilter::new(&log_filter))
+						.with_filter(log_layer_filter()),
 				),
 				LogFormat::Gcp => None,
 			})
@@ -144,7 +157,8 @@ pub(crate) fn init_tracing(log_level: Option<&str>) {
 				LogFormat::Gcp => Some(
 					tracing_stackdriver::layer()
 						.with_source_location(env_flag("RUST_LOG_LOCATION"))
-						.with_filter(tracing_subscriber::EnvFilter::new(&log_filter)),
+						.with_filter(tracing_subscriber::EnvFilter::new(&log_filter))
+						.with_filter(log_layer_filter()),
 				),
 			})
 			.init();
@@ -158,9 +172,18 @@ pub(crate) fn init_tracing(log_level: Option<&str>) {
 	});
 }
 
+/// Routes the OpenTelemetry SDK's own warnings, such as dropped spans, to the
+/// JavaScript logger. Each call replaces the previous sink. The sink is
+/// released by `shutdownTelemetry`.
+#[napi]
+pub fn set_telemetry_log_sink(env: Env, callback: JsFunction) -> napi::Result<()> {
+	telemetry::install(env, callback)
+}
+
 #[napi]
 pub async fn shutdown_telemetry() {
 	rivetkit_core::telemetry::export::shutdown_best_effort().await;
+	telemetry::uninstall();
 }
 
 fn env_flag(name: &str) -> bool {

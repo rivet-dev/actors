@@ -314,6 +314,7 @@ function fakeNapiBindings(scenario: ParityScenario) {
 		NapiActorFactory: FakeActorFactory,
 		CancellationToken: FakeCancellationToken,
 		ActorContext: class {},
+		setTelemetryLogSink: () => {},
 	};
 }
 

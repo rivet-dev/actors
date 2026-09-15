@@ -13,6 +13,7 @@ import {
 	readActiveTraceHeaders,
 	runWithActorInvocationSpan,
 } from "@/common/otel-context";
+import { logger } from "./log";
 import type {
 	ActorContextHandle,
 	ActorFactoryHandle,
@@ -297,6 +298,21 @@ export class NapiCoreRuntime implements CoreRuntime {
 	}
 
 	createRegistry(): RegistryHandle {
+		this.#bindings.setTelemetryLogSink(
+			(event: {
+				name: string;
+				message: string;
+				level: "warn" | "error";
+			}) => {
+				const fields = { otelEvent: event.name };
+				const message = event.message || event.name;
+				if (event.level === "error") {
+					logger().error(fields, message);
+				} else {
+					logger().warn(fields, message);
+				}
+			},
+		);
 		return asRegistryHandle(new this.#bindings.CoreRegistry());
 	}
 
