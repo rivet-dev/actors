@@ -142,7 +142,7 @@ function LegacyTabShell({
 			onValueChange={onTabChange}
 			className="flex-1 min-h-0 min-w-0 flex flex-col"
 		>
-			<div className="relative flex items-stretch border-b h-[45px]">
+			<div className="relative flex items-stretch border-b h-9">
 				<div className="flex flex-1 items-center h-full min-w-0">
 					<div
 						ref={tabListRef}

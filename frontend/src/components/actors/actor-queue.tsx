@@ -45,7 +45,7 @@ export function ActorQueue({ actorId }: { actorId: ActorId }) {
 
 	return (
 		<ScrollArea className="flex-1 w-full min-h-0 h-full">
-			<div className="flex justify-between items-center gap-2 border-b sticky top-0 p-2 z-[1] h-[45px]">
+			<div className="flex justify-between items-center gap-2 border-b sticky top-0 px-2 z-[1] h-9">
 				<LiveBadge />
 				<div className="text-xs text-muted-foreground">
 					Queue size {size} / {status.maxSize}

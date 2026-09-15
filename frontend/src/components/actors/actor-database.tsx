@@ -420,7 +420,7 @@ function ActorDatabaseBrowser({ actorId }: ActorDatabaseProps) {
 
 	return (
 		<>
-			<div className="flex justify-between items-center border-b gap-1 h-[45px]">
+			<div className="flex justify-between items-center border-b gap-1 h-9">
 				<div className="border-r h-full">
 					<TableSelect
 						actorId={actorId}

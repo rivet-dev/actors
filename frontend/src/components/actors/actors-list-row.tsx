@@ -54,9 +54,9 @@ export const ActorsListRow = memo(
 		return (
 			<Button
 				className={cn(
-					"relative h-9 w-full grid items-center group border-l-0 border-r-0 border-t-0 border-b hover:border-foreground/10 rounded-none px-3 text-xs gap-3",
+					"relative h-8 w-full grid items-center group border-l-0 border-r-0 border-t-0 border-b hover:border-foreground/10 rounded-none px-3 text-xs gap-3",
 					isCurrent &&
-						"bg-foreground/[0.08] bg-clip-padding hover:bg-foreground/[0.10] text-foreground before:absolute before:left-0 before:top-0 before:bottom-0 before:w-0.5 before:bg-primary",
+						"bg-foreground/[0.08] bg-clip-padding hover:bg-foreground/[0.10] text-foreground",
 					className,
 				)}
 				variant="outline"
@@ -179,9 +179,9 @@ function Timestamp({ actorId }: { actorId: ActorId }) {
 	const timestamp = ts ? new Date(ts) : null;
 
 	return (
-		<SmallText className="text-right text-muted-foreground justify-end inline-flex tabular-nums">
+		<span className="text-right text-xs font-normal text-muted-foreground justify-end inline-flex tabular-nums">
 			{isLoading ? (
-				<Skeleton className="h-5 w-10" />
+				<Skeleton className="h-4 w-10" />
 			) : timestamp ? (
 				<WithTooltip
 					trigger={<RelativeTime time={timestamp} />}
@@ -190,7 +190,7 @@ function Timestamp({ actorId }: { actorId: ActorId }) {
 			) : (
 				<span>-</span>
 			)}
-		</SmallText>
+		</span>
 	);
 }
 
@@ -199,9 +199,9 @@ export function ActorsListHeader() {
 	const template = actorsTableGridTemplate(showIds, showDatacenter);
 
 	return (
-		<div className="sticky top-[45px] z-[1] bg-card border-b border-foreground/15">
+		<div className="sticky top-9 z-[1] bg-card border-b border-foreground/15">
 			<div
-				className="bg-foreground/[0.04] grid items-center gap-3 px-3 h-8 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+				className="bg-foreground/[0.04] grid items-center gap-3 px-3 h-7 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
 				style={{ gridTemplateColumns: template }}
 			>
 				<div>Status</div>
@@ -226,17 +226,17 @@ function SkeletonContent() {
 			<div className="flex justify-center">
 				<ActorStatusIndicator status="unknown" />
 			</div>
-			{showIds ? <Skeleton className="h-5 w-16" /> : null}
-			{showDatacenter ? <Skeleton className="h-5 w-10" /> : null}
-			<Skeleton className="h-5 w-32" />
-			<Skeleton className="h-5 w-10 justify-self-end" />
+			{showIds ? <Skeleton className="h-4 w-16" /> : null}
+			{showDatacenter ? <Skeleton className="h-4 w-10" /> : null}
+			<Skeleton className="h-4 w-32" />
+			<Skeleton className="h-4 w-10 justify-self-end" />
 		</div>
 	);
 }
 
 export function ActorsListRowSkeleton() {
 	return (
-		<div className="border-b flex items-center px-3 h-9 text-xs relative">
+		<div className="border-b flex items-center px-3 h-8 text-xs relative">
 			<SkeletonContent />
 		</div>
 	);

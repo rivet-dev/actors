@@ -6,6 +6,7 @@ import {
 	faSidebarFlip,
 	Icon,
 } from "@rivet-gg/icons";
+import { useHotkey } from "@tanstack/react-hotkeys";
 import {
 	useInfiniteQuery,
 	useQuery,
@@ -27,6 +28,9 @@ import { useLocalStorage } from "usehooks-ts";
 import { RECORDS_PER_PAGE } from "@/app/data-providers/default-data-provider";
 import {
 	Button,
+	CursorTooltipGroup,
+	CursorTooltipShortcut,
+	CursorTooltipTrigger,
 	Dialog,
 	DialogContent,
 	DialogDescription,
@@ -40,7 +44,6 @@ import {
 	ScrollArea,
 	ShimmerLine,
 	SmallText,
-	WithTooltip,
 } from "@/components";
 import { CodePreview } from "../code-preview/code-preview";
 import { VisibilitySensor } from "../visibility-sensor";
@@ -121,30 +124,39 @@ function TopBar() {
 
 	return (
 		<div className="col-span-full border-b sticky top-0 bg-card z-[1]">
-			<div className="flex items-center px-3 gap-2 h-[45px]">
+			<div className="flex items-center px-3 gap-2 h-9">
 				<ActorNameLabel />
-				{showInstanceTools ? (
-					<div className="ml-auto flex items-center gap-1 shrink-0">
-						<Display />
-						<InstanceSearchTrigger />
-						<CreateActorButton iconOnly label="Create Instance" />
-					</div>
-				) : null}
-				{isDetailsColCollapsed ? (
-					<WithTooltip
-						trigger={
+				<CursorTooltipGroup className="ml-auto flex items-center gap-1 shrink-0">
+					{showInstanceTools ? (
+						<>
+							<CursorTooltipTrigger content="Display options">
+								<Display />
+							</CursorTooltipTrigger>
+							<InstanceSearchTrigger />
+							<CreateActorButton
+								iconOnly
+								label="Create Instance"
+								renderTooltip={(trigger, content) => (
+									<CursorTooltipTrigger content={content}>
+										{trigger}
+									</CursorTooltipTrigger>
+								)}
+							/>
+						</>
+					) : null}
+					{isDetailsColCollapsed ? (
+						<CursorTooltipTrigger content="Expand details column">
 							<Button
 								onClick={() => detailsRef.current?.expand()}
-								variant="outline"
+								variant="ghost"
 								size="icon-sm"
-								className={showInstanceTools ? "" : "ml-auto"}
+								aria-label="Expand details column"
 							>
 								<Icon icon={faSidebarFlip} />
 							</Button>
-						}
-						content="Expand details column"
-					/>
-				) : null}
+						</CursorTooltipTrigger>
+					) : null}
+				</CursorTooltipGroup>
 			</div>
 			<LoadingIndicator />
 		</div>
@@ -154,34 +166,27 @@ function TopBar() {
 function InstanceSearchTrigger() {
 	const [open, setOpen] = useState(false);
 
-	useEffect(() => {
-		const handler = (e: KeyboardEvent) => {
-			const isMod = e.metaKey || e.ctrlKey;
-			if (!isMod || e.key.toLowerCase() !== "k") return;
-			const target = e.target as HTMLElement | null;
-			if (target?.isContentEditable) return;
-			e.preventDefault();
-			setOpen(true);
-		};
-		window.addEventListener("keydown", handler);
-		return () => window.removeEventListener("keydown", handler);
-	}, []);
+	useHotkey("Mod+K", () => setOpen(true));
 
 	return (
 		<>
-			<WithTooltip
-				trigger={
-					<Button
-						variant="outline"
-						size="icon-sm"
-						onClick={() => setOpen(true)}
-						aria-label="Open Actor by ID"
-					>
-						<Icon icon={faMagnifyingGlass} />
-					</Button>
+			<CursorTooltipTrigger
+				content={
+					<>
+						Search
+						<CursorTooltipShortcut keys="K" />
+					</>
 				}
-				content="Open Actor by ID (⌘K)"
-			/>
+			>
+				<Button
+					variant="ghost"
+					size="icon-sm"
+					onClick={() => setOpen(true)}
+					aria-label="Search"
+				>
+					<Icon icon={faMagnifyingGlass} />
+				</Button>
+			</CursorTooltipTrigger>
 			<InstanceSearchDialog open={open} onOpenChange={setOpen} />
 		</>
 	);
@@ -360,7 +365,7 @@ function List({
 	const rowVirtualizer = useVirtualizer({
 		count: actors.length,
 		getScrollElement: () => viewportRef.current,
-		estimateSize: () => 36,
+		estimateSize: () => 32,
 		overscan: 5,
 	});
 

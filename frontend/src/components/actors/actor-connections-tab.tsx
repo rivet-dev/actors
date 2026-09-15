@@ -65,7 +65,7 @@ export function ActorConnectionsTab({ actorId }: ActorConnectionsTabProps) {
 
 	return (
 		<div className="flex h-full min-h-0 flex-1 flex-col">
-			<div className="flex justify-between items-center gap-1 border-b p-2 h-[45px]">
+			<div className="flex justify-between items-center gap-1 border-b px-2 h-9">
 				<LiveBadge />
 				<div className="text-xs text-muted-foreground">
 					{data.length}{" "}

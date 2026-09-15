@@ -1403,11 +1403,11 @@ export function FiltersDisplay({
 		<Popover>
 			<PopoverTrigger asChild>
 				<Button
-					variant="outline"
-					size="sm"
-					startIcon={<Icon icon={faSliders} />}
+					variant="ghost"
+					size="icon-sm"
+					aria-label="Display options"
 				>
-					Display
+					<Icon icon={faSliders} />
 				</Button>
 			</PopoverTrigger>
 			<PopoverContent className="w-60 p-2">

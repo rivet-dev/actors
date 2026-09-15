@@ -54,7 +54,7 @@ export function ActorEditableState({ actorId }: ActorEditableStateProps) {
 
 	return (
 		<>
-			<div className="flex justify-between items-center border-b gap-1 p-2 h-[45px]">
+			<div className="flex justify-between items-center border-b gap-1 px-2 h-9">
 				<div className="flex items-center justify-start gap-1">
 					{isEditing ? <PauseBadge /> : <LiveBadge />}
 					<ActorStateChangeIndicator state={state} />

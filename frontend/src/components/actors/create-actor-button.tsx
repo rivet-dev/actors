@@ -1,6 +1,7 @@
 import { faPlus, Icon } from "@rivet-gg/icons";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import type { ReactNode } from "react";
 import { Button, type ButtonProps, WithTooltip } from "@/components";
 import { useActorsView } from "./actors-view-context-provider";
 import { useDataProvider } from "./data-provider";
@@ -8,8 +9,15 @@ import { useDataProvider } from "./data-provider";
 export function CreateActorButton({
 	label,
 	iconOnly,
+	renderTooltip,
 	...props
-}: ButtonProps & { label?: string; iconOnly?: boolean }) {
+}: ButtonProps & {
+	label?: string;
+	iconOnly?: boolean;
+	// Lets a parent supply its own tooltip surface (e.g. a shared
+	// CursorTooltipGroup) instead of the default per-button tooltip.
+	renderTooltip?: (trigger: ReactNode, content: ReactNode) => ReactNode;
+}) {
 	const navigate = useNavigate();
 
 	const provider = useDataProvider();
@@ -62,18 +70,23 @@ export function CreateActorButton({
 		</div>
 	);
 
-	if (canCreate) {
+	// Disabled buttons explain why; icon-only buttons need their label as a
+	// tooltip since it isn't visible otherwise.
+	const tooltip = !canCreate
+		? data && data.length <= 0
+			? "Please deploy a build first."
+			: copy.createActorUsingForm
+		: iconOnly
+			? (label ?? copy.createActor)
+			: null;
+
+	if (tooltip === null) {
 		return content;
 	}
 
-	return (
-		<WithTooltip
-			trigger={content}
-			content={
-				data && data.length <= 0
-					? "Please deploy a build first."
-					: copy.createActorUsingForm
-			}
-		/>
-	);
+	if (renderTooltip) {
+		return renderTooltip(content, tooltip);
+	}
+
+	return <WithTooltip trigger={content} content={tooltip} />;
 }
