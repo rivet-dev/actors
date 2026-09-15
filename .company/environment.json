@@ -1,0 +1,21 @@
+{
+	"$schema": "https://api.thecompany.company/schemas/v1/environment.json",
+	"scripts": {
+		"install": {
+			"command": "set -euo pipefail\nexport DEBIAN_FRONTEND=noninteractive\nsudo apt-get update -y\nsudo apt-get install -y --no-install-recommends ca-certificates cmake curl g++ git gpg libclang-dev libpq-dev libssl-dev make openssl pkg-config wget xz-utils\ncurl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -\nsudo apt-get install -y --no-install-recommends nodejs\nsudo corepack enable\ncurl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.91.1 --component rustfmt,clippy\nsudo ln -sf \"$HOME\"/.cargo/bin/* /usr/local/bin/\npnpm install --frozen-lockfile\ncargo fetch --locked",
+			"timeout": 3600
+		},
+		"prepare": {
+			"command": "set -euo pipefail\npnpm install --frozen-lockfile\ncargo fetch --locked",
+			"timeout": 900
+		},
+		"start": {
+			"command": "pnpm --dir frontend dev"
+		}
+	},
+	"env": {
+		"COREPACK_ENABLE_DOWNLOAD_PROMPT": "0",
+		"CARGO_NET_GIT_FETCH_WITH_CLI": "true",
+		"RUSTFLAGS": "--cfg tokio_unstable"
+	}
+}
