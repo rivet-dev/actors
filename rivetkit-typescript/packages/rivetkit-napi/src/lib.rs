@@ -9,15 +9,19 @@ pub mod napi_actor_events;
 pub mod queue;
 pub mod registry;
 pub mod schedule;
+mod telemetry;
 pub mod types;
 pub mod websocket;
 
 use std::sync::Once;
 
+use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use rivet_error::RivetError as RivetTransportError;
 use rivetkit_core::error::public_error_status_code;
-use tracing_subscriber::{Layer as _, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{
+	Layer as _, filter::FilterExt as _, layer::SubscriberExt, util::SubscriberInitExt,
+};
 
 static INIT_TRACING: Once = Once::new();
 pub(crate) const BRIDGE_RIVET_ERROR_PREFIX: &str = "__RIVET_ERROR_JSON__:";
@@ -126,6 +130,12 @@ pub(crate) fn init_tracing(log_level: Option<&str>) {
 		// One filter per layer and no Option layers. Either of those makes
 		// tracing-subscriber create every span in the process even when no
 		// layer consumes it.
+		let log_env_filter = tracing_subscriber::EnvFilter::new(&log_filter).and(
+			tracing_subscriber::filter::filter_fn(|metadata| {
+				!telemetry::delivered_to_sink(metadata)
+			})
+			.with_max_level_hint(tracing::level_filters::LevelFilter::TRACE),
+		);
 		let log_layer = match log_format {
 			LogFormat::Logfmt => tracing_logfmt::builder()
 				.with_span_name(env_flag("RUST_LOG_SPAN_NAME"))
@@ -140,9 +150,14 @@ pub(crate) fn init_tracing(log_level: Option<&str>) {
 				.with_source_location(env_flag("RUST_LOG_LOCATION"))
 				.boxed(),
 		}
-		.with_filter(tracing_subscriber::EnvFilter::new(&log_filter));
+		.with_filter(log_env_filter);
 
-		let base = tracing_subscriber::registry().with(log_layer);
+		let base = tracing_subscriber::registry()
+			.with(
+				telemetry::SdkLogLayer
+					.with_filter(tracing_subscriber::EnvFilter::new("opentelemetry_sdk=warn")),
+			)
+			.with(log_layer);
 		match otel_layer {
 			Some(otel_layer) => base.with(otel_layer).init(),
 			None => base.init(),
@@ -157,9 +172,18 @@ pub(crate) fn init_tracing(log_level: Option<&str>) {
 	});
 }
 
+/// Routes the OpenTelemetry SDK's own warnings, such as dropped spans, to the
+/// JavaScript logger. Each call replaces the previous sink. The sink is
+/// released by `shutdownTelemetry`.
+#[napi]
+pub fn set_telemetry_log_sink(env: Env, callback: JsFunction) -> napi::Result<()> {
+	telemetry::install(env, callback)
+}
+
 #[napi]
 pub async fn shutdown_telemetry() {
 	rivetkit_core::telemetry::export::shutdown_best_effort().await;
+	telemetry::uninstall();
 }
 
 fn env_flag(name: &str) -> bool {
