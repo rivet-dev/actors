@@ -1137,6 +1137,7 @@ mod moved_tests {
 					args,
 					conn,
 					scheduled_fire,
+					invocation_telemetry: _,
 					reply,
 				} => {
 					assert_eq!(name, "tick");

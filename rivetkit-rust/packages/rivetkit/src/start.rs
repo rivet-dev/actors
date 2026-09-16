@@ -2486,6 +2486,7 @@ mod tests {
 			args: args.to_vec(),
 			conn,
 			scheduled_fire: None,
+			invocation_telemetry: None,
 			reply: reply_tx.into(),
 		})
 		.expect("send action event");

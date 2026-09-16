@@ -1,3 +1,4 @@
+import type { AsyncLocalStorage } from "node:async_hooks";
 import type {
 	ActorContext as NativeActorContext,
 	NapiActorFactory as NativeActorFactory,
@@ -254,20 +255,29 @@ export class NapiCoreRuntime implements CoreRuntime {
 	readonly kind = "napi";
 
 	#bindings: NativeBindings;
-	#sql = new WeakMap<NativeActorContext, NapiSqlDatabase>();
+	#sqlOpened = new WeakSet<NativeActorContext>();
+	#invocationContext: AsyncLocalStorage<NativeActorContext>;
 
-	constructor(bindings: NativeBindings) {
+	constructor(
+		bindings: NativeBindings,
+		invocationContext: AsyncLocalStorage<NativeActorContext>,
+	) {
 		this.#bindings = bindings;
+		this.#invocationContext = invocationContext;
+	}
+
+	#actorContextForOperation(owner: ActorContextHandle): NativeActorContext {
+		const ownerCtx = asNativeActorContext(owner);
+		const active = this.#invocationContext.getStore();
+		if (active?.sameActorInstance(ownerCtx)) {
+			return active;
+		}
+		return ownerCtx;
 	}
 
 	#actorSql(ctx: ActorContextHandle): NapiSqlDatabase {
-		const nativeCtx = asNativeActorContext(ctx);
-		let database = this.#sql.get(nativeCtx);
-		if (!database) {
-			database = nativeCtx.sql();
-			this.#sql.set(nativeCtx, database);
-		}
-		return database;
+		this.#sqlOpened.add(asNativeActorContext(ctx));
+		return this.#actorContextForOperation(ctx).sql();
 	}
 
 	createRegistry(): RegistryHandle {
@@ -556,6 +566,10 @@ export class NapiCoreRuntime implements CoreRuntime {
 		return asNativeActorContext(ctx).actorId();
 	}
 
+	runWithActorInvocationContext<T>(ctx: ActorContextHandle, run: () => T): T {
+		return this.#invocationContext.run(asNativeActorContext(ctx), run);
+	}
+
 	actorName(ctx: ActorContextHandle): string {
 		return asNativeActorContext(ctx).name();
 	}
@@ -814,7 +828,7 @@ export class NapiCoreRuntime implements CoreRuntime {
 		ctx: ActorContextHandle,
 		timeoutMs?: number,
 	): Promise<ActorStateTransactionHandle> {
-		return (await asNativeActorContext(ctx).beginStateTransaction(
+		return (await this.#actorContextForOperation(ctx).beginStateTransaction(
 			timeoutMs,
 		)) as unknown as ActorStateTransactionHandle;
 	}
@@ -875,13 +889,10 @@ export class NapiCoreRuntime implements CoreRuntime {
 
 	async actorSqlClose(ctx: ActorContextHandle): Promise<void> {
 		const nativeCtx = asNativeActorContext(ctx);
-		const database = this.#sql.get(nativeCtx);
-		if (!database) {
+		if (!this.#sqlOpened.delete(nativeCtx)) {
 			return;
 		}
-
-		this.#sql.delete(nativeCtx);
-		await database.close();
+		await nativeCtx.sql().close();
 	}
 
 	async actorRuntimeSocketProvision(ctx: ActorContextHandle) {
@@ -1177,9 +1188,12 @@ export async function loadNapiRuntime(): Promise<{
 	// would snapshot the native `.node` addon into the deploy and 413. The
 	// computed specifier keeps it opaque to static analysis so it is never
 	// bundled. Enforced by scripts/ci/check-edge-native-closure.mjs.
-	const bindings = await import(["@rivetkit", "rivetkit-napi"].join("/"));
+	const [{ AsyncLocalStorage }, bindings] = await Promise.all([
+		import("node:async_hooks"),
+		import(["@rivetkit", "rivetkit-napi"].join("/")),
+	]);
 	return {
 		bindings,
-		runtime: new NapiCoreRuntime(bindings),
+		runtime: new NapiCoreRuntime(bindings, new AsyncLocalStorage()),
 	};
 }

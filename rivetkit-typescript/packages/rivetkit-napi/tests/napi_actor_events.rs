@@ -168,6 +168,7 @@ mod moved_tests {
 				args: vec![1, 2, 3],
 				conn: None,
 				scheduled_fire: None,
+				invocation_telemetry: None,
 				reply: tx.into(),
 			},
 			&bindings,
@@ -490,6 +491,7 @@ mod moved_tests {
 				args: Vec::new(),
 				conn: None,
 				scheduled_fire: None,
+				invocation_telemetry: None,
 				reply: first_tx.into(),
 			})
 			.expect("first action event should send");
@@ -499,6 +501,7 @@ mod moved_tests {
 				args: Vec::new(),
 				conn: None,
 				scheduled_fire: None,
+				invocation_telemetry: None,
 				reply: second_tx.into(),
 			})
 			.expect("second action event should send");
