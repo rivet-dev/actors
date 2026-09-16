@@ -980,6 +980,14 @@ fn parse_bridge_rivet_error(reason: &str) -> Option<anyhow::Error> {
 	}))
 }
 
+/// Rebuilds an error raised in JavaScript from the reason string the bridge
+/// carries. A structured error arrives bridge-encoded and keeps its group and
+/// code; anything else stays an unstructured message, which is what lets Core
+/// classify and sanitize it rather than trusting the JavaScript text.
+pub(crate) fn anyhow_error_from_js_reason(reason: String) -> anyhow::Error {
+	parse_bridge_rivet_error(&reason).unwrap_or_else(|| anyhow::anyhow!(reason))
+}
+
 pub(crate) fn callback_error(callback_name: &str, error: napi::Error) -> anyhow::Error {
 	let reason = error.reason;
 	if let Some(error) = parse_bridge_rivet_error(&reason) {

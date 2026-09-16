@@ -48,24 +48,6 @@ export interface DeconstructedError {
 	actor?: errors.ActorSpecifier;
 }
 
-function isCanonicalStructuredRivetError(
-	error: unknown,
-): error is errors.RivetErrorLike {
-	return (
-		error instanceof errors.RivetError ||
-		(typeof error === "object" &&
-			error !== null &&
-			"__type" in error &&
-			error.__type === "RivetError" &&
-			"group" in error &&
-			typeof error.group === "string" &&
-			"code" in error &&
-			typeof error.code === "string" &&
-			"message" in error &&
-			typeof error.message === "string")
-	);
-}
-
 /**
  * Deconstructs errors into response fields. Bridge callback errors that cross
  * into rivetkit-core are sanitized there; this only classifies JS-local errors.
@@ -85,7 +67,7 @@ export function deconstructError(
 	let actor: errors.ActorSpecifier | undefined;
 	// Structured errors from core or from pre-built `RivetError` instances are canonical.
 	// Only unstructured errors go through the classifier below.
-	if (isCanonicalStructuredRivetError(error)) {
+	if (errors.isCanonicalStructuredRivetError(error)) {
 		statusCode = (
 			typeof error.statusCode === "number"
 				? error.statusCode

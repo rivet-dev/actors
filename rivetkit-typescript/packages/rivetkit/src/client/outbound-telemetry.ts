@@ -17,11 +17,13 @@ import {
  *
  * The ray ID is the calling invocation's when the caller is itself inside an
  * actor, else the one placed in OpenTelemetry baggage by the surrounding
- * request handler. The trace context is the application span active in this
- * JavaScript context, else the calling actor's own Core invocation span.
+ * request handler. The trace context is `callSpan` when the runtime opened a
+ * span for this call, else the application span active in this JavaScript
+ * context, else the calling actor's own Core invocation span.
  */
 export function outboundTelemetryHeaders(
 	invocation: ActorInvocationTraceContext | undefined,
+	callSpan?: ActorInvocationTraceContext["span"],
 ): Record<string, string> {
 	const headers: Record<string, string> = {};
 	const rayId = invocation?.rayId ?? readActiveRayId();
@@ -29,6 +31,7 @@ export function outboundTelemetryHeaders(
 		headers[HEADER_RIVET_RAY_ID] = rayId;
 	}
 	const traceHeaders =
+		actorInvocationTraceHeaders(callSpan) ??
 		readActiveTraceHeaders() ??
 		actorInvocationTraceHeaders(invocation?.span);
 	if (traceHeaders) {

@@ -326,6 +326,12 @@ export declare class ActorContext {
    */
   withApplicationSpan(traceparent?: string | undefined | null, tracestate?: string | undefined | null): ActorContext
   invocationTraceContext(): JsActorInvocationTraceContext | null
+  /**
+   * Opens the span covering one call out to another actor. Returns nothing
+   * when this handle serves no invocation or tracing is disabled, in which
+   * case the caller sends its own context as before.
+   */
+  beginOutboundCall(actorName: string, actionName: string): OutboundCall | null
   provisionActorRuntimeSocket(): Promise<JsActorRuntimeSocketEndpointInfo>
   schedule(): Schedule
   queue(): Queue
@@ -374,6 +380,26 @@ export declare class ActorContext {
   registerTask(promise: Promise<any>): void
   runtimeState(): object
   clearRuntimeState(): void
+}
+/**
+ * One open call out to another actor.
+ *
+ * The call spans a request made by the host runtime, so it is opened and closed
+ * by two separate calls. Letting this be collected without finishing records
+ * the call as cancelled rather than silently losing it.
+ */
+export declare class OutboundCall {
+  /**
+   * W3C context of this call's span, to send to the callee so it parents to
+   * the call rather than to the invocation that made it.
+   */
+  spanContext(): JsActorInvocationSpanContext | null
+  /**
+   * Records the call's outcome. `error` is the failure as the bridge encodes
+   * it, so a structured error keeps its group and code while anything else
+   * stays unstructured for Core to classify.
+   */
+  finish(error?: string | undefined | null): void
 }
 export declare class NapiActorFactory {
   constructor(callbacks: object, config?: JsActorConfig | undefined | null)
