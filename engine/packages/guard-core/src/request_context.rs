@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
 use hyper::{Method, header::HeaderMap};
+use rivet_api_builder::X_RIVET_RAY_ID;
 use rivet_runner_protocol as protocol;
 use rivet_util::Id;
 use std::{
+	collections::HashMap,
 	net::{IpAddr, SocketAddr},
 	sync::Arc,
 	time::{Duration, Instant},
@@ -15,6 +17,7 @@ use crate::utils::InFlightPermit;
 pub struct RequestContext {
 	pub(crate) remote_addr: SocketAddr,
 	pub(crate) ray_id: Id,
+	pub(crate) external_ray_id: String,
 	pub(crate) req_id: Id,
 	/// Entire host including port (if present)
 	pub(crate) host: String,
@@ -44,6 +47,7 @@ impl RequestContext {
 	pub(crate) fn new(
 		remote_addr: SocketAddr,
 		ray_id: Id,
+		external_ray_id: String,
 		req_id: Id,
 		host: String,
 		path: String,
@@ -60,6 +64,7 @@ impl RequestContext {
 		RequestContext {
 			remote_addr,
 			ray_id,
+			external_ray_id,
 			req_id,
 			host,
 			hostname,
@@ -88,6 +93,18 @@ impl RequestContext {
 
 	pub fn ray_id(&self) -> Id {
 		self.ray_id
+	}
+
+	pub fn external_ray_id(&self) -> &str {
+		&self.external_ray_id
+	}
+
+	/// Adds this request's validated external ray ID to actor headers.
+	pub fn forward_ray(&self, headers: &mut HashMap<String, String>) {
+		headers.insert(
+			X_RIVET_RAY_ID.as_str().to_owned(),
+			self.external_ray_id.clone(),
+		);
 	}
 
 	pub fn req_id(&self) -> Id {
