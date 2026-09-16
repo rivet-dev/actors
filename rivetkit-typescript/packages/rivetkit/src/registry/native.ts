@@ -5428,62 +5428,75 @@ export function buildNativeFactory(
 					cancelToken,
 					run !== undefined,
 				);
-				try {
-					if (
-						!schemaConfig.queues ||
-						!hasSchemaConfigKey(schemaConfig.queues, name)
-					) {
-						return { status: "completed" };
-					}
-
-					const canPublish = getQueueCanPublish(
-						schemaConfig.queues,
-						name,
-					);
-					if (canPublish && !(await canPublish(actorCtx))) {
-						throw forbiddenError();
-					}
-
-					const decodedBody = decodeValue(body);
-					if (wait) {
+				return await runtime.runWithActorInvocationContext(
+					ctx,
+					async () => {
 						try {
-							const response =
-								await actorCtx.queue.enqueueAndWait(
-									name,
-									decodedBody,
-									{
-										timeout:
-											timeoutMs === undefined ||
-											timeoutMs === null
-												? undefined
-												: Number(timeoutMs),
-									},
-								);
-							return {
-								status: "completed",
-								response:
-									response === undefined
-										? undefined
-										: encodeValue(response),
-							};
-						} catch (error) {
 							if (
-								(error as { group?: string; code?: string })
-									.group === "queue" &&
-								(error as { group?: string; code?: string })
-									.code === "timed_out"
+								!schemaConfig.queues ||
+								!hasSchemaConfigKey(schemaConfig.queues, name)
 							) {
-								return { status: "timedOut" };
+								return { status: "completed" };
 							}
-							throw error;
-						}
-					}
 
-					await actorCtx.queue.send(name, decodedBody);
-					return { status: "completed" };
-				} finally {
-					await actorCtx.dispose();
-				}
+							const canPublish = getQueueCanPublish(
+								schemaConfig.queues,
+								name,
+							);
+							if (canPublish && !(await canPublish(actorCtx))) {
+								throw forbiddenError();
+							}
+
+							const decodedBody = decodeValue(body);
+							if (wait) {
+								try {
+									const response =
+										await actorCtx.queue.enqueueAndWait(
+											name,
+											decodedBody,
+											{
+												timeout:
+													timeoutMs === undefined ||
+													timeoutMs === null
+														? undefined
+														: Number(timeoutMs),
+											},
+										);
+									return {
+										status: "completed",
+										response:
+											response === undefined
+												? undefined
+												: encodeValue(response),
+									};
+								} catch (error) {
+									if (
+										(
+											error as {
+												group?: string;
+												code?: string;
+											}
+										).group === "queue" &&
+										(
+											error as {
+												group?: string;
+												code?: string;
+											}
+										).code === "timed_out"
+									) {
+										return { status: "timedOut" };
+									}
+									throw error;
+								}
+							}
+
+							await actorCtx.queue.send(name, decodedBody);
+							return { status: "completed" };
+						} finally {
+							await actorCtx.dispose();
+						}
+					},
+				);
 			},
 		),
 		serializeState: wrapNativeCallback(

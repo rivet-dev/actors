@@ -2515,6 +2515,7 @@ mod tests {
 			request: rivetkit_core::Request::default(),
 			wait: true,
 			timeout_ms: None,
+			invocation_telemetry: None,
 			reply: reply_tx.into(),
 		})
 		.expect("send queue event");
