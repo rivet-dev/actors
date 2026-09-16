@@ -177,4 +177,5 @@ try {
 } finally {
 	process.removeListener("SIGINT", shutdown);
 	process.removeListener("SIGTERM", shutdown);
+	await nativeRuntime.shutdownTelemetry?.();
 }
