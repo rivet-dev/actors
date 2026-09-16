@@ -1,23 +1,31 @@
-use anyhow::{anyhow, Context, Result};
-use base64::{engine::general_purpose, engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use anyhow::{Context, Result, anyhow};
+use base64::{Engine as _, engine::general_purpose, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
+use opentelemetry::baggage::BaggageExt as _;
+use opentelemetry::propagation::TextMapPropagator as _;
+use opentelemetry_http::HeaderInjector;
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use reqwest::{
-	header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT},
 	Method,
+	header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT},
+};
+use rivetkit_client_protocol::telemetry_headers::{
+	HEADER_RIVET_RAY_ID, HEADER_TRACEPARENT, HEADER_TRACESTATE, RAY_BAGGAGE_KEY, bounded_ray_id,
 };
 use serde::{Deserialize, Serialize};
 use serde_cbor;
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 use tokio::sync::OnceCell;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 use crate::{
 	common::{
-		serialize_actor_key, ActorKey, EncodingKind, RawWebSocket, HEADER_RIVET_ACTOR,
-		HEADER_RIVET_NAMESPACE, HEADER_RIVET_TARGET, HEADER_RIVET_TOKEN, PATH_CONNECT_WEBSOCKET,
-		PATH_WEBSOCKET_PREFIX, USER_AGENT_VALUE, WS_PROTOCOL_ACTOR, WS_PROTOCOL_CONN_ID,
-		WS_PROTOCOL_CONN_PARAMS, WS_PROTOCOL_CONN_TOKEN, WS_PROTOCOL_ENCODING,
-		WS_PROTOCOL_STANDARD, WS_PROTOCOL_TARGET, WS_PROTOCOL_TOKEN,
+		ActorKey, EncodingKind, HEADER_RIVET_ACTOR, HEADER_RIVET_NAMESPACE, HEADER_RIVET_TARGET,
+		HEADER_RIVET_TOKEN, PATH_CONNECT_WEBSOCKET, PATH_WEBSOCKET_PREFIX, RawWebSocket,
+		USER_AGENT_VALUE, WS_PROTOCOL_ACTOR, WS_PROTOCOL_CONN_ID, WS_PROTOCOL_CONN_PARAMS,
+		WS_PROTOCOL_CONN_TOKEN, WS_PROTOCOL_ENCODING, WS_PROTOCOL_STANDARD, WS_PROTOCOL_TARGET,
+		WS_PROTOCOL_TOKEN, serialize_actor_key,
 	},
 	protocol::query::ActorQuery,
 };
@@ -214,6 +222,9 @@ impl RemoteManager {
 		req = req.header(USER_AGENT, USER_AGENT_VALUE);
 
 		for (key, value) in &self.headers {
+			if is_trace_context_header(key) {
+				continue;
+			}
 			let name = HeaderName::from_str(key)
 				.with_context(|| format!("invalid configured header name `{key}`"))?;
 			let value = HeaderValue::from_str(value)
@@ -493,6 +504,16 @@ impl RemoteManager {
 
 		let mut req = self.apply_common_headers_with(builder, &config)?;
 
+		let mut headers = headers;
+		let caller_set_trace_context =
+			headers.contains_key(HEADER_TRACEPARENT) || headers.contains_key(HEADER_TRACESTATE);
+		for (name, value) in self.telemetry_headers()? {
+			let is_trace_context = name == HEADER_TRACEPARENT || name == HEADER_TRACESTATE;
+			if is_trace_context && caller_set_trace_context {
+				continue;
+			}
+			headers.entry(name).or_insert(value);
+		}
 		req = req.headers(headers);
 
 		if let Some(body_data) = body {
@@ -501,6 +522,33 @@ impl RemoteManager {
 
 		let res = req.send().await?;
 		Ok(res)
+	}
+
+	/// Headers that carry the caller's trace context and ray ID into the actor,
+	/// read from the `tracing` span and baggage current at the call. They
+	/// override a configured `x-rivet-ray-id`, which stays the fallback.
+	fn telemetry_headers(&self) -> Result<Vec<(HeaderName, HeaderValue)>> {
+		let mut headers = HeaderMap::with_capacity(3);
+		let context = tracing::Span::current().context();
+		TraceContextPropagator::new().inject_context(&context, &mut HeaderInjector(&mut headers));
+		if let Some(ray_id) = context.baggage().get(RAY_BAGGAGE_KEY) {
+			if let Some(ray_id) = bounded_ray_id(&ray_id.as_str()) {
+				headers.insert(
+					HeaderName::from_static(HEADER_RIVET_RAY_ID),
+					HeaderValue::from_str(ray_id).context("format ray id header")?,
+				);
+			}
+		}
+		if headers
+			.get(HEADER_TRACESTATE)
+			.is_some_and(HeaderValue::is_empty)
+		{
+			headers.remove(HEADER_TRACESTATE);
+		}
+		Ok(headers
+			.into_iter()
+			.filter_map(|(name, value)| name.map(|name| (name, value)))
+			.collect())
 	}
 
 	pub fn gateway_url(&self, query: &ActorQuery) -> Result<String> {
@@ -774,6 +822,9 @@ impl RemoteManager {
 		headers: &mut tokio_tungstenite::tungstenite::http::HeaderMap,
 	) -> Result<()> {
 		for (key, value) in &self.headers {
+			if is_trace_context_header(key) {
+				continue;
+			}
 			headers.insert(
 				HeaderName::from_str(key)
 					.with_context(|| format!("invalid configured header name `{key}`"))?,
@@ -822,4 +873,12 @@ fn default_pool_name() -> String {
 
 fn default_max_input_size() -> usize {
 	4 * 1024
+}
+
+/// A configured `traceparent` or `tracestate` is never sent: it would pin
+/// every call to one span. Trace context comes from the span at the call.
+fn is_trace_context_header(name: &str) -> bool {
+	[HEADER_TRACEPARENT, HEADER_TRACESTATE]
+		.iter()
+		.any(|header| header.eq_ignore_ascii_case(name))
 }

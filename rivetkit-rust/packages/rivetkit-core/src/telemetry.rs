@@ -20,8 +20,7 @@ pub struct IncomingInvocationContext {
 	remote_parent: Option<SpanContext>,
 }
 
-/// Header carrying the caller's ray ID into an actor.
-pub(crate) const HEADER_RIVET_RAY_ID: &str = "x-rivet-ray-id";
+pub(crate) use rivetkit_client_protocol::telemetry_headers::HEADER_RIVET_RAY_ID;
 
 impl IncomingInvocationContext {
 	pub(crate) fn from_headers(
@@ -51,21 +50,12 @@ impl IncomingInvocationContext {
 	}
 }
 
-/// Reads the caller's ray ID. The header is untrusted, so it is bounded to
-/// 128 characters of `[A-Za-z0-9_-]`; anything else counts as absent.
+/// Reads the caller's ray ID. The header is untrusted, so it is bounded by
+/// the rule shared with the clients that send it; anything else counts as
+/// absent.
 fn invocation_ray_id(headers: &http::HeaderMap) -> Option<String> {
-	headers
-		.get(HEADER_RIVET_RAY_ID)?
-		.to_str()
-		.ok()
-		.filter(|value| {
-			!value.is_empty()
-				&& value.len() <= 128
-				&& value
-					.bytes()
-					.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-		})
-		.map(str::to_owned)
+	let value = headers.get(HEADER_RIVET_RAY_ID)?.to_str().ok()?;
+	rivetkit_client_protocol::telemetry_headers::bounded_ray_id(value).map(str::to_owned)
 }
 
 /// The single root span for one client action invocation.
