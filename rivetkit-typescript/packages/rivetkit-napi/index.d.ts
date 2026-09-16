@@ -311,6 +311,12 @@ export interface JsKvEntry {
   key: Buffer
   value: Buffer
 }
+/**
+ * Routes the OpenTelemetry SDK's own warnings, such as dropped spans, to the
+ * JavaScript logger. Each call replaces the previous sink. The sink is
+ * released by `shutdownTelemetry`.
+ */
+export declare function setTelemetryLogSink(callback: (...args: any[]) => any): void
 export declare function shutdownTelemetry(): Promise<void>
 /** N-API wrapper around `rivetkit-core::ActorContext`. */
 export declare class ActorContext {
