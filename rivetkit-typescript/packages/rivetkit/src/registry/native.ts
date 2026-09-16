@@ -5069,129 +5069,147 @@ export function buildNativeFactory(
 				try {
 					const { ctx, request, cancelToken, responseBodyStream } =
 						unwrapTsfnPayload(error, payload);
-					const inspectorResponse =
-						await maybeHandleNativeInspectorRequest(ctx, request);
-					if (inspectorResponse) {
-						await cancelNativeHttpRequestBody(request.bodyStream);
-						return (
-							await convertNativeHttpResponse(
-								inspectorResponse,
-								responseBodyStream,
-							)
-						).response;
-					}
-
-					if (typeof config.onRequest !== "function") {
-						await cancelNativeHttpRequestBody(request.bodyStream);
-						return (
-							await convertNativeHttpResponse(
-								new Response(null, { status: 404 }),
-								responseBodyStream,
-							)
-						).response;
-					}
-
-					const requestAbortController = new AbortController();
-					const handlerRequest = buildNativeHttpRequest({
-						...request,
-						abortController: requestAbortController,
-					});
-					const rawConnParams =
-						handlerRequest.headers.get(HEADER_CONN_PARAMS);
-					let requestCtx:
-						| ReturnType<typeof withConnContext>
-						| undefined;
-					let conn: ConnHandle | undefined;
-					let removeRequestAbortListener: (() => void) | undefined;
-					let cleanupDeferredToBody = false;
-					let cleanedUp = false;
-					const cleanupRequest = async () => {
-						if (cleanedUp) return;
-						cleanedUp = true;
-						removeRequestAbortListener?.();
-						try {
-							await requestCtx?.dispose();
-						} finally {
-							if (conn) {
-								await runtime.connDisconnect(conn);
-							}
-						}
-					};
-					try {
-						const connParams = validateConnParams(
-							schemaConfig.connParamsSchema,
-							rawConnParams
-								? JSON.parse(rawConnParams)
-								: undefined,
-						);
-						conn = await callNative(() =>
-							runtime.actorConnectConn(
-								ctx,
-								encodeValue(connParams),
-								request,
-							),
-						);
-						requestCtx = makeConnCtx(
-							ctx,
-							conn,
-							handlerRequest,
-							cancelToken,
-						);
-						const ctxAbortSignal = requestCtx.abortSignal;
-						const abortRequest = () =>
-							requestAbortController.abort(ctxAbortSignal.reason);
-						if (ctxAbortSignal.aborted) {
-							abortRequest();
-						} else {
-							ctxAbortSignal.addEventListener(
-								"abort",
-								abortRequest,
-								{ once: true },
-							);
-							removeRequestAbortListener = () =>
-								ctxAbortSignal.removeEventListener(
-									"abort",
-									abortRequest,
+					return await runtime.runWithActorInvocationContext(
+						ctx,
+						async () => {
+							const inspectorResponse =
+								await maybeHandleNativeInspectorRequest(
+									ctx,
+									request,
 								);
-						}
-						const response = await config.onRequest(
-							requestCtx,
-							handlerRequest,
-						);
-						if (!isResponseLike(response)) {
-							throw new Error(
-								"onRequest handler must return a Response",
-							);
-						}
-						const conversion = await convertNativeHttpResponse(
-							response,
-							responseBodyStream,
-						);
-						if (conversion.bodyCompletion) {
-							cleanupDeferredToBody = true;
-							void conversion.bodyCompletion
-								.then(cleanupRequest)
-								.catch((cleanupError) => {
-									logger().error({
-										msg: "failed to clean up native streaming http request",
-										error: cleanupError,
-									});
-								});
-						}
-						return conversion.response;
-					} finally {
-						try {
-							// Handler completion ends upload ownership even when
-							// the Web Request body is locked or partly consumed.
-							await cancelNativeHttpRequestBody(
-								request.bodyStream,
-							);
-						} finally {
-							if (!cleanupDeferredToBody) {
-								await cleanupRequest();
+							if (inspectorResponse) {
+								await cancelNativeHttpRequestBody(
+									request.bodyStream,
+								);
+								return (
+									await convertNativeHttpResponse(
+										inspectorResponse,
+										responseBodyStream,
+									)
+								).response;
 							}
-						}
-					}
+
+							if (typeof config.onRequest !== "function") {
+								await cancelNativeHttpRequestBody(
+									request.bodyStream,
+								);
+								return (
+									await convertNativeHttpResponse(
+										new Response(null, { status: 404 }),
+										responseBodyStream,
+									)
+								).response;
+							}
+
+							const requestAbortController =
+								new AbortController();
+							const handlerRequest = buildNativeHttpRequest({
+								...request,
+								abortController: requestAbortController,
+							});
+							const rawConnParams =
+								handlerRequest.headers.get(HEADER_CONN_PARAMS);
+							let requestCtx:
+								| ReturnType<typeof withConnContext>
+								| undefined;
+							let conn: ConnHandle | undefined;
+							let removeRequestAbortListener:
+								| (() => void)
+								| undefined;
+							let cleanupDeferredToBody = false;
+							let cleanedUp = false;
+							const cleanupRequest = async () => {
+								if (cleanedUp) return;
+								cleanedUp = true;
+								removeRequestAbortListener?.();
+								try {
+									await requestCtx?.dispose();
+								} finally {
+									if (conn) {
+										await runtime.connDisconnect(conn);
+									}
+								}
+							};
+							try {
+								const connParams = validateConnParams(
+									schemaConfig.connParamsSchema,
+									rawConnParams
+										? JSON.parse(rawConnParams)
+										: undefined,
+								);
+								conn = await callNative(() =>
+									runtime.actorConnectConn(
+										ctx,
+										encodeValue(connParams),
+										request,
+									),
+								);
+								requestCtx = makeConnCtx(
+									ctx,
+									conn,
+									handlerRequest,
+									cancelToken,
+								);
+								const ctxAbortSignal = requestCtx.abortSignal;
+								const abortRequest = () =>
+									requestAbortController.abort(
+										ctxAbortSignal.reason,
+									);
+								if (ctxAbortSignal.aborted) {
+									abortRequest();
+								} else {
+									ctxAbortSignal.addEventListener(
+										"abort",
+										abortRequest,
+										{ once: true },
+									);
+									removeRequestAbortListener = () =>
+										ctxAbortSignal.removeEventListener(
+											"abort",
+											abortRequest,
+										);
+								}
+								const response = await config.onRequest(
+									requestCtx,
+									handlerRequest,
+								);
+								if (!isResponseLike(response)) {
+									throw new Error(
+										"onRequest handler must return a Response",
+									);
+								}
+								const conversion =
+									await convertNativeHttpResponse(
+										response,
+										responseBodyStream,
+									);
+								if (conversion.bodyCompletion) {
+									cleanupDeferredToBody = true;
+									void conversion.bodyCompletion
+										.then(cleanupRequest)
+										.catch((cleanupError) => {
+											logger().error({
+												msg: "failed to clean up native streaming http request",
+												error: cleanupError,
+											});
+										});
+								}
+								return conversion.response;
+							} finally {
+								try {
+									// Handler completion ends upload ownership even when
+									// the Web Request body is locked or partly consumed.
+									await cancelNativeHttpRequestBody(
+										request.bodyStream,
+									);
+								} finally {
+									if (!cleanupDeferredToBody) {
+										await cleanupRequest();
+									}
+								}
+							}
+						},
+					);
 				} catch (error) {
 					logger().error({
 						msg: "native onRequest failed",

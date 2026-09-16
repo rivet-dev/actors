@@ -385,7 +385,11 @@ async fn handle_actor_event<A: Actor>(
 				}
 			}
 		}
-		ActorEvent::HttpRequest { request, reply } => {
+		ActorEvent::HttpRequest {
+			request,
+			invocation_telemetry: _,
+			reply,
+		} => {
 			if let Some(http_pools) = http_pools {
 				let class = A::classify_http_request(&request);
 				let Some(permit) = http_pools.try_acquire(class) else {
@@ -1224,6 +1228,7 @@ mod tests {
 		let (reply_tx, reply_rx) = oneshot::channel();
 		tx.send(ActorEvent::HttpRequest {
 			request: rivetkit_core::Request::default(),
+			invocation_telemetry: None,
 			reply: reply_tx.into(),
 		})
 		.expect("send http event");
@@ -1248,6 +1253,7 @@ mod tests {
 		let (reply_tx, reply_rx) = oneshot::channel();
 		tx.send(ActorEvent::HttpRequest {
 			request: Request::default(),
+			invocation_telemetry: None,
 			reply: reply_tx.into(),
 		})
 		.expect("send http event");
@@ -1286,6 +1292,7 @@ mod tests {
 		tx.send(ActorEvent::HttpRequest {
 			request: Request::from_parts("GET", "/standard", Default::default(), Vec::new())
 				.expect("standard request"),
+			invocation_telemetry: None,
 			reply: standard_tx.into(),
 		})
 		.expect("send standard http event");
@@ -1293,6 +1300,7 @@ mod tests {
 		tx.send(ActorEvent::HttpRequest {
 			request: Request::from_parts("GET", "/live", Default::default(), Vec::new())
 				.expect("live request"),
+			invocation_telemetry: None,
 			reply: live_tx.into(),
 		})
 		.expect("send live http event");

@@ -432,6 +432,56 @@ describeDriverMatrix(
 					{ traceId: definer?.traceId, spanId: definer?.spanId },
 				]);
 			});
+
+			test("traces a raw request under its explicit caller context", async () => {
+				const rayId = `explicit-${crypto.randomUUID()}`;
+				const traceId = randomTraceId();
+				const spanId = randomSpanId();
+				const activeSpan = trace.wrapSpanContext({
+					traceId: randomTraceId(),
+					spanId: randomSpanId(),
+					traceFlags: 1,
+				});
+				const response = await context.with(
+					trace.setSpan(context.active(), activeSpan),
+					() =>
+						handle.fetch("hello", {
+							headers: {
+								"x-rivet-ray-id": rayId,
+								traceparent: `00-${traceId}-${spanId}-01`,
+							},
+						}),
+				);
+				expect(response.status).toBe(200);
+				const isRequest = (span: ExportedSpan) =>
+					span.attributes["rivet.invocation.type"] === "request" &&
+					span.attributes["rivet.ray.id"] === rayId;
+				const spans = await waitForSpans(
+					traceExports,
+					"the onRequest invocation and its sqlite span",
+					(exported) => {
+						const request = exported.find(isRequest);
+						return (
+							request !== undefined &&
+							exported.some(
+								(span) =>
+									isSqliteSpan(span) &&
+									span.parentSpanId === request.spanId,
+							)
+						);
+					},
+				);
+				const request = spans.find(isRequest);
+				expect(request?.name).toBe("telemetryActor/onRequest");
+				expect(request?.kind).toBe(OTLP_SPAN_KIND_SERVER);
+				expect(request?.statusCode).toBe(OTLP_STATUS_OK);
+				expect(request?.attributes).toMatchObject({
+					"http.request.method": "GET",
+					"http.response.status_code": "200",
+				});
+				expect(request?.traceId).toBe(traceId);
+				expect(request?.parentSpanId).toBe(spanId);
+			});
 		});
 	},
 	{

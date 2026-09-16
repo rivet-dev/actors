@@ -314,6 +314,15 @@ pub enum ActorHttpResponse {
 	Stream(StreamingResponse),
 }
 
+impl ActorHttpResponse {
+	pub fn status(&self) -> u16 {
+		match self {
+			Self::Buffered(response) => response.status().as_u16(),
+			Self::Stream(response) => response.status,
+		}
+	}
+}
+
 impl From<Response> for ActorHttpResponse {
 	fn from(value: Response) -> Self {
 		Self::Buffered(value)
@@ -401,6 +410,8 @@ pub enum ActorEvent {
 	},
 	HttpRequest {
 		request: Request,
+		/// Telemetry of the invocation this request runs as. See `Action`.
+		invocation_telemetry: Option<crate::ActorInvocationTelemetry>,
 		reply: Reply<ActorHttpResponse>,
 	},
 	QueueSend {

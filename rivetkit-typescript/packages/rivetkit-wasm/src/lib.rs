@@ -857,7 +857,11 @@ async fn dispatch_event(callbacks: &WasmCallbacks, ctx: &WasmActorContext, event
 				},
 			);
 		}
-		ActorEvent::HttpRequest { request, reply } => {
+		ActorEvent::HttpRequest {
+			request,
+			invocation_telemetry: _,
+			reply,
+		} => {
 			let callback = callbacks.on_request.clone();
 			let ctx = ctx.clone();
 			RuntimeSpawner::spawn(async move {

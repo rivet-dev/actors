@@ -1010,11 +1010,15 @@ impl ActorTask {
 				}
 			},
 			DispatchCommand::Http { request, reply } => {
+				let incoming = IncomingInvocationContext::from_http_headers(request.headers());
+				let invocation = ActorInvocation::start_request(&self.ctx, &request, incoming);
 				match self.send_actor_event(
 					"dispatch_http",
 					ActorEvent::HttpRequest {
 						request,
-						reply: Reply::from(reply),
+						invocation_telemetry: Some(invocation.telemetry()),
+						reply: Reply::from(reply)
+							.on_reply(move |result| invocation.finish_request(result.as_ref())),
 					},
 				) {
 					Ok(()) => {
