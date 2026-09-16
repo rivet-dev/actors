@@ -320,6 +320,11 @@ export declare class ActorContext {
   kv(): Kv
   sql(): JsNativeDatabase
   sameActorInstance(other: ActorContext): boolean
+  /**
+   * Returns a handle for the same invocation whose Core spans parent to the
+   * application span active in JavaScript, given as W3C headers.
+   */
+  withApplicationSpan(traceparent?: string | undefined | null, tracestate?: string | undefined | null): ActorContext
   invocationTraceContext(): JsActorInvocationTraceContext | null
   provisionActorRuntimeSocket(): Promise<JsActorRuntimeSocketEndpointInfo>
   schedule(): Schedule

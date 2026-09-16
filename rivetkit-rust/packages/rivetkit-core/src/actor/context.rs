@@ -260,6 +260,28 @@ impl ActorContext {
 		self
 	}
 
+	/// Returns a handle for the same invocation whose spans parent to the
+	/// application span the host runtime has active, given as W3C
+	/// `traceparent` and `tracestate`. A handle that serves no invocation is
+	/// returned unchanged, because it opens no spans.
+	#[doc(hidden)]
+	pub fn with_application_span(
+		&self,
+		traceparent: Option<&str>,
+		tracestate: Option<&str>,
+	) -> Self {
+		Self(
+			self.0.clone(),
+			self.1
+				.as_ref()
+				.map(|telemetry| telemetry.with_application_span(traceparent, tracestate)),
+		)
+	}
+
+	pub(crate) fn invocation_telemetry(&self) -> Option<&ActorInvocationTelemetry> {
+		self.1.as_ref()
+	}
+
 	/// Returns the SQLite handle bound to this handle's invocation.
 	pub fn invocation_sql(&self) -> SqliteDb {
 		self.0.sql.clone().with_invocation_telemetry(self.1.clone())
@@ -1813,8 +1835,14 @@ impl ActorContext {
 		self.track_shutdown_task(async move {
 			let _internal_keep_awake_region = internal_keep_awake_region;
 			ctx.record_user_task_started(UserTaskKind::ScheduledAction);
-			let started_at = Instant::now();
+			let user_task_started_at = Instant::now();
 			let action_name = action.clone();
+			let invocation = crate::telemetry::ActorInvocation::start_scheduled(
+				&ctx,
+				&action_name,
+				dispatch.origin,
+			);
+			let invocation_telemetry = invocation.telemetry();
 			let (reply_tx, reply_rx) = oneshot::channel();
 
 			let mut dispatch_error = None;
@@ -1824,7 +1852,7 @@ impl ActorContext {
 					args,
 					conn: None,
 					scheduled_fire: Some(scheduled_fire),
-					invocation_telemetry: None,
+					invocation_telemetry: Some(invocation_telemetry),
 					reply: Reply::from(reply_tx),
 				},
 				"scheduled_action",
@@ -1840,8 +1868,8 @@ impl ActorContext {
 							"scheduled event execution failed"
 						);
 					}
-					Err(error) => {
-						dispatch_error = Some(error.into());
+					Err(_) => {
+						dispatch_error = Some(ActorLifecycleError::DroppedReply.build());
 						tracing::error!(
 							error = ?dispatch_error.as_ref().expect("just assigned"),
 							event_id,
@@ -1860,6 +1888,8 @@ impl ActorContext {
 					);
 				}
 			}
+			invocation.finish(dispatch_error.as_ref());
+
 			ctx.finish_schedule_dispatch(&event_id, history_id, dispatch_error.as_ref())
 				.await;
 			if let (Some(name), Some(error)) = (recurring_name, dispatch_error.as_ref()) {
@@ -1876,7 +1906,10 @@ impl ActorContext {
 				}
 			}
 
-			ctx.record_user_task_finished(UserTaskKind::ScheduledAction, started_at.elapsed());
+			ctx.record_user_task_finished(
+				UserTaskKind::ScheduledAction,
+				user_task_started_at.elapsed(),
+			);
 		});
 	}
 

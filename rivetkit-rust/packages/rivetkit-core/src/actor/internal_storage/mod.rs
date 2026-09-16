@@ -16,6 +16,7 @@ use crate::actor::queue::{PersistedQueueMessage, QueueMetadata};
 use crate::actor::state::PersistedActor;
 use crate::error::KvRuntimeError;
 use crate::sqlite::{BindParam, ColumnValue, SqliteBatchStatement, SqliteDb};
+use crate::telemetry::TraceOrigin;
 use crate::types::ListOpts;
 
 pub(crate) mod queries;
@@ -155,20 +156,22 @@ pub(crate) async fn import_legacy_actor_snapshot(
 		},
 	];
 	for event in &actor.scheduled_events {
+		let mut params = vec![
+			BindParam::Text(event.event_id.clone()),
+			BindParam::Integer(event.timestamp),
+			BindParam::Text(event.action.clone()),
+			optional_blob_param(event.args.clone()),
+			BindParam::Integer(0),
+			BindParam::Null,
+			BindParam::Null,
+			BindParam::Null,
+			BindParam::Null,
+			BindParam::Integer(0),
+		];
+		params.extend(trace_origin_params(TraceOrigin::default()));
 		statements.push(SqliteBatchStatement {
 			sql: INSERT_SCHEDULE_EVENT_SQL.to_owned(),
-			params: Some(vec![
-				BindParam::Text(event.event_id.clone()),
-				BindParam::Integer(event.timestamp),
-				BindParam::Text(event.action.clone()),
-				optional_blob_param(event.args.clone()),
-				BindParam::Integer(0),
-				BindParam::Null,
-				BindParam::Null,
-				BindParam::Null,
-				BindParam::Null,
-				BindParam::Integer(0),
-			]),
+			params: Some(params),
 		});
 	}
 	db.execute_batch(statements)
@@ -1246,6 +1249,33 @@ async fn clear_table_bounded(
 			);
 		}
 	}
+}
+
+/// Bind parameters for the three `origin_*` columns a schedule or queue row
+/// stores beside its payload.
+pub(crate) fn trace_origin_params(origin: TraceOrigin) -> [BindParam; 3] {
+	[
+		optional_owned_text_param(origin.ray_id),
+		optional_owned_text_param(origin.traceparent),
+		optional_owned_text_param(origin.tracestate),
+	]
+}
+
+/// Reads the three `origin_*` columns starting at `index`.
+pub(crate) fn read_trace_origin(
+	row: &[ColumnValue],
+	index: usize,
+	label: &str,
+) -> Result<TraceOrigin> {
+	Ok(TraceOrigin {
+		ray_id: read_optional_text(row, index, label)?,
+		traceparent: read_optional_text(row, index + 1, label)?,
+		tracestate: read_optional_text(row, index + 2, label)?,
+	})
+}
+
+pub(crate) fn optional_owned_text_param(value: Option<String>) -> BindParam {
+	value.map_or(BindParam::Null, BindParam::Text)
 }
 
 fn optional_blob_param(value: Option<Vec<u8>>) -> BindParam {

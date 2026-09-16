@@ -158,6 +158,14 @@ class FakeActorContext {
 		return this.runtimeBag;
 	}
 
+	invocationTraceContext(): undefined {
+		return undefined;
+	}
+
+	sameActorInstance(other: FakeActorContext): boolean {
+		return this === other;
+	}
+
 	actorId(): string {
 		return "parity-actor";
 	}
