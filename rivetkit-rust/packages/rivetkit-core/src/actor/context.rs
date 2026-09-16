@@ -52,7 +52,9 @@ use crate::actor::work_registry::{ActorWorkKind, CountGuard, RegionGuard};
 use crate::error::{ActorLifecycle as ActorLifecycleError, ActorRuntime};
 use crate::inspector::{Inspector, InspectorSnapshot};
 use crate::sqlite::SqliteDb;
-use crate::telemetry::{ActorInvocationTelemetry, ActorTelemetryIdentity};
+use crate::telemetry::{
+	ActorInvocationTelemetry, ActorInvocationTraceContext, ActorTelemetryIdentity,
+};
 use crate::types::{ActorKey, ConnId, ListOpts, format_actor_key};
 
 /// Shared actor runtime context.
@@ -261,6 +263,12 @@ impl ActorContext {
 	/// Returns the SQLite handle bound to this handle's invocation.
 	pub fn invocation_sql(&self) -> SqliteDb {
 		self.0.sql.clone().with_invocation_telemetry(self.1.clone())
+	}
+
+	/// Returns correlation for the invocation this handle serves, absent when
+	/// the handle is not bound to one or tracing is disabled.
+	pub fn invocation_trace_context(&self) -> Option<ActorInvocationTraceContext> {
+		self.1.as_ref()?.trace_context()
 	}
 
 	/// Returns whether two handles belong to the same running actor generation.
@@ -747,9 +755,20 @@ impl ActorContext {
 		false
 	}
 
+	/// Runs `future` to completion after the current reply, without blocking
+	/// it. Work started from an invocation keeps that invocation's span open
+	/// until it settles, so its SQLite operations and logs stay attributed to
+	/// the request that started them.
 	#[cfg(not(feature = "wasm-runtime"))]
 	pub fn wait_until(&self, future: impl Future<Output = ()> + Send + 'static) {
-		self.spawn_work(ActorWorkKind::WaitUntil, future);
+		let invocation = self
+			.1
+			.as_ref()
+			.and_then(crate::ActorInvocationTelemetry::hold_open);
+		self.spawn_work(ActorWorkKind::WaitUntil, async move {
+			future.await;
+			drop(invocation);
+		});
 	}
 
 	#[cfg(not(feature = "wasm-runtime"))]
@@ -759,7 +778,14 @@ impl ActorContext {
 
 	#[cfg(feature = "wasm-runtime")]
 	pub fn wait_until(&self, future: impl Future<Output = ()> + 'static) {
-		self.spawn_work(ActorWorkKind::WaitUntil, future);
+		let invocation = self
+			.1
+			.as_ref()
+			.and_then(crate::ActorInvocationTelemetry::hold_open);
+		self.spawn_work(ActorWorkKind::WaitUntil, async move {
+			future.await;
+			drop(invocation);
+		});
 	}
 
 	#[cfg(feature = "wasm-runtime")]
@@ -1834,7 +1860,6 @@ impl ActorContext {
 					);
 				}
 			}
-
 			ctx.finish_schedule_dispatch(&event_id, history_id, dispatch_error.as_ref())
 				.await;
 			if let (Some(name), Some(error)) = (recurring_name, dispatch_error.as_ref()) {
