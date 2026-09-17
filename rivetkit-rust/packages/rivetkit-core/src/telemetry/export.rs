@@ -14,10 +14,12 @@ use opentelemetry::KeyValue;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig as _};
 use opentelemetry_sdk::Resource;
-use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider};
+use opentelemetry_sdk::trace::{Config, SdkTracer, SdkTracerProvider};
 use parking_lot::Mutex;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Layer};
+
+use super::sampler::ActorSampler;
 
 enum ProviderState {
 	Uninitialized,
@@ -77,7 +79,10 @@ fn initialize_if_configured() -> Result<Option<SdkTracer>> {
 	let resource = Resource::builder()
 		.with_attribute(KeyValue::new("rivetkit.version", env!("CARGO_PKG_VERSION")))
 		.build();
+	// The builder only reads `OTEL_TRACES_SAMPLER` when no sampler is given, so
+	// the process sampler is read here and wrapped.
 	let provider = SdkTracerProvider::builder()
+		.with_sampler(ActorSampler::new(Config::default().sampler))
 		.with_resource(resource)
 		.with_batch_exporter(exporter)
 		.build();

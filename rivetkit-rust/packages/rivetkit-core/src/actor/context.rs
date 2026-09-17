@@ -27,7 +27,6 @@ type LocalAlarmTask = JoinHandle<()>;
 #[cfg(feature = "wasm-runtime")]
 type LocalAlarmTask = futures::future::AbortHandle;
 
-use crate::ActorConfig;
 #[cfg(feature = "sqlite-local")]
 use crate::actor::actor_runtime_socket::{
 	ActorRuntimeSocketEndpoint, ActorRuntimeSocketEndpointInfo,
@@ -57,6 +56,7 @@ use crate::telemetry::{
 	OutboundCallInvocation,
 };
 use crate::types::{ActorKey, ConnId, ListOpts, format_actor_key};
+use crate::{ActorConfig, ActorTracingConfig};
 
 /// Shared actor runtime context.
 ///
@@ -181,6 +181,7 @@ pub(crate) struct ActorContextInner {
 	pub(super) metrics: ActorMetrics,
 	diagnostics: ActorDiagnostics,
 	telemetry_identity: Arc<ActorTelemetryIdentity>,
+	tracing_config: ActorTracingConfig,
 	actor_id: String,
 	name: String,
 	key: ActorKey,
@@ -370,6 +371,7 @@ impl ActorContext {
 		let actor_runtime_socket =
 			ActorRuntimeSocketEndpoint::new(config.enable_actor_runtime_socket, sql.clone());
 		let state_save_interval = config.state_save_interval;
+		let tracing_config = config.tracing.clone();
 		let max_schedules = config.max_schedules;
 		let abort_signal = CancellationToken::new();
 		let shutdown_deadline = CancellationToken::new();
@@ -462,6 +464,7 @@ impl ActorContext {
 			hibernated_connection_liveness_override: RwLock::new(None),
 			metrics,
 			diagnostics,
+			tracing_config,
 			telemetry_identity: Arc::new(ActorTelemetryIdentity {
 				actor_id: actor_id.clone(),
 				actor_name: name.clone(),
@@ -1014,6 +1017,10 @@ impl ActorContext {
 	/// span does not re-allocate them per action.
 	pub(crate) fn telemetry_identity(&self) -> Arc<ActorTelemetryIdentity> {
 		self.0.telemetry_identity.clone()
+	}
+
+	pub(crate) fn tracing_config(&self) -> &ActorTracingConfig {
+		&self.0.tracing_config
 	}
 
 	pub(crate) fn record_user_task_started(&self, kind: UserTaskKind) {

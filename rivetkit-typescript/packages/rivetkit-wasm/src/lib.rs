@@ -239,6 +239,7 @@ impl From<WasmActorConfig> for ActorConfigInput {
 			has_database: config.has_database,
 			remote_sqlite: config.remote_sqlite,
 			sqlite_profiling: config.sqlite_profiling.map(Into::into),
+			tracing: None,
 			enable_actor_runtime_socket: config.enable_actor_runtime_socket,
 			has_state: config.has_state,
 			can_hibernate_websocket: config.can_hibernate_websocket,

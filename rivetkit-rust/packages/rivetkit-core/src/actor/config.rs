@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -143,6 +144,55 @@ impl SqliteProfilingConfig {
 	}
 }
 
+/// Share of the traces an actor starts that get recorded, as ratios from 0.0 to
+/// 1.0.
+///
+/// A ratio only decides traces that begin at this actor. Work that joins a
+/// caller's trace follows the caller's decision, so a trace is never recorded in
+/// part.
+#[derive(Clone, Debug, Default)]
+pub struct ActorTracingConfig {
+	/// Ratio for every invocation without an action ratio. `None` leaves the
+	/// decision to the process sampler from `OTEL_TRACES_SAMPLER`.
+	pub sample_ratio: Option<f64>,
+	/// Ratios keyed by flattened action name, which also cover scheduled fires
+	/// of that action.
+	pub action_sample_ratios: HashMap<String, f64>,
+}
+
+impl ActorTracingConfig {
+	pub(crate) fn sample_ratio_for_action(&self, action_name: &str) -> Option<f64> {
+		self.action_sample_ratios
+			.get(action_name)
+			.copied()
+			.or(self.sample_ratio)
+	}
+
+	fn validate(&self, actions: &[ActionDefinition]) -> anyhow::Result<()> {
+		let ratios = self
+			.sample_ratio
+			.iter()
+			.chain(self.action_sample_ratios.values());
+		for ratio in ratios {
+			anyhow::ensure!(
+				ratio.is_finite() && (0.0..=1.0).contains(ratio),
+				"tracing sample ratio must be between 0 and 1, got {ratio}"
+			);
+		}
+		// Runtimes that do not declare their actions cannot be checked here.
+		if actions.is_empty() {
+			return Ok(());
+		}
+		for action_name in self.action_sample_ratios.keys() {
+			anyhow::ensure!(
+				actions.iter().any(|action| &action.name == action_name),
+				"tracing sample ratio names unknown action `{action_name}`"
+			);
+		}
+		Ok(())
+	}
+}
+
 #[derive(Clone, Debug)]
 pub struct ActorConfig {
 	pub name: Option<String>,
@@ -152,6 +202,7 @@ pub struct ActorConfig {
 	pub has_database: bool,
 	pub remote_sqlite: bool,
 	pub sqlite_profiling: SqliteProfilingConfig,
+	pub tracing: ActorTracingConfig,
 	/// Enables the experimental Actor Runtime Socket.
 	pub enable_actor_runtime_socket: bool,
 	/// Whether the user declared actor state (`state: ...` or `createState`).
@@ -191,6 +242,7 @@ pub struct ActorConfigInput {
 	pub has_database: Option<bool>,
 	pub remote_sqlite: Option<bool>,
 	pub sqlite_profiling: Option<SqliteProfilingConfigInput>,
+	pub tracing: Option<ActorTracingConfig>,
 	pub enable_actor_runtime_socket: Option<bool>,
 	pub has_state: Option<bool>,
 	pub can_hibernate_websocket: Option<bool>,
@@ -226,6 +278,7 @@ impl ActorConfig {
 				.sqlite_profiling
 				.map(SqliteProfilingConfig::from_input)
 				.unwrap_or_default(),
+			tracing: config.tracing.unwrap_or_default(),
 			enable_actor_runtime_socket: config.enable_actor_runtime_socket.unwrap_or(false),
 			has_state: config.has_state.unwrap_or(false),
 			..Self::default()
@@ -311,6 +364,7 @@ impl ActorConfig {
 	/// config so the actor never starts with garbage state.
 	pub fn validate(&self) -> anyhow::Result<()> {
 		crate::inspector::validate_inspector_tabs(&self.inspector_tabs)?;
+		self.tracing.validate(&self.actions)?;
 		anyhow::ensure!(
 			self.sqlite_profiling.baseline_sample_rate.is_finite()
 				&& (0.0..=1.0).contains(&self.sqlite_profiling.baseline_sample_rate),
@@ -341,6 +395,7 @@ impl Default for ActorConfig {
 			has_database: false,
 			remote_sqlite: false,
 			sqlite_profiling: SqliteProfilingConfig::default(),
+			tracing: ActorTracingConfig::default(),
 			enable_actor_runtime_socket: false,
 			has_state: false,
 			can_hibernate_websocket: CanHibernateWebSocket::default(),

@@ -16,6 +16,7 @@ import type {
 	PrimitiveSchema,
 	QueueSchemaConfig,
 } from "./schema";
+import type { ActorTracingOptions } from "./tracing";
 
 export const DEFAULT_SLEEP_GRACE_PERIOD = 15_000;
 
@@ -1321,6 +1322,13 @@ export const ActorConfigSchema = z
 		onWebSocket: zFunction().optional(),
 		actions: zActionTree.default(() => ({})),
 		actionInputSchemas: z.record(z.string(), z.any()).optional(),
+		tracing: z
+			.object({
+				sampler: z.number().min(0).max(1).optional(),
+				actions: z.any().optional(),
+			})
+			.strict()
+			.optional(),
 		connParamsSchema: z.any().optional(),
 		events: z.record(z.string(), z.any()).optional(),
 		queues: z.record(z.string(), z.any()).optional(),
@@ -1867,6 +1875,12 @@ interface BaseActorConfig<
 	actionInputSchemas?: ActionInputSchemas;
 
 	/**
+	 * Which of the traces this actor starts are recorded. Defaults to the
+	 * process sampler from `OTEL_TRACES_SAMPLER`.
+	 */
+	tracing?: ActorTracingOptions<NoInfer<TActions>>;
+
+	/**
 	 * Optional schema for validating connection params in native runtimes.
 	 */
 	connParamsSchema?: PrimitiveSchema;
@@ -2023,6 +2037,7 @@ export type ActorConfigInput<
 } & Omit<
 	z.input<typeof ActorConfigSchema>,
 	| "actions"
+	| "tracing"
 	| "events"
 	| "queues"
 	| "onCreate"
@@ -2398,6 +2413,12 @@ export const DocActorConfigSchema = z
 			.optional()
 			.describe(
 				"Optional schemas for validating action argument tuples in native runtimes. May mirror nested action groups or use dot-separated low-level action names.",
+			),
+		tracing: z
+			.unknown()
+			.optional()
+			.describe(
+				"Trace sampling for this actor: `sampler` is the share of traces the actor starts that are recorded, from 0 to 1, with optional per-action rates under `actions`. Defaults to the process sampler from OTEL_TRACES_SAMPLER.",
 			),
 		connParamsSchema: z
 			.unknown()

@@ -2,6 +2,7 @@ import { VirtualWebSocket } from "@rivetkit/virtual-websocket";
 import {
 	flattenActionHandlers,
 	flattenActionInputSchemas,
+	flattenActionTraceSamplers,
 } from "@/actor/actions";
 import {
 	ACTOR_CONTEXT_INTERNAL_SYMBOL,
@@ -111,6 +112,7 @@ import type {
 	CoreRuntime,
 	RegistryHandle,
 	RuntimeActorConfig,
+	RuntimeActorTracingConfig,
 	RuntimeBytes,
 	RuntimeCronFire,
 	RuntimeCronJobInfo,
@@ -3839,6 +3841,26 @@ function withConnContext(
 	});
 }
 
+/** Flatten an actor's sample rates into the shape core takes. */
+function buildActorTracingConfig(
+	config: Record<string, unknown>,
+): RuntimeActorTracingConfig | undefined {
+	const tracing = config.tracing as
+		| { sampler?: number; actions?: unknown }
+		| undefined;
+	if (tracing === undefined) return undefined;
+	const actionRates = flattenActionTraceSamplers(
+		config.actions,
+		tracing.actions,
+	);
+	return {
+		sampleRatio: tracing.sampler,
+		actionSampleRatios: Object.entries(actionRates).map(
+			([action, sampleRatio]) => ({ action, sampleRatio }),
+		),
+	};
+}
+
 function buildActorConfig(
 	definition: AnyActorDefinition,
 	registryConfig: RegistryConfig,
@@ -3859,6 +3881,7 @@ function buildActorConfig(
 		hasDatabase: true,
 		remoteSqlite: usesRemoteSqlite,
 		sqliteProfiling,
+		tracing: buildActorTracingConfig(config),
 		enableActorRuntimeSocket: options.enableActorRuntimeSocket === true,
 		hasState:
 			config.state !== undefined ||

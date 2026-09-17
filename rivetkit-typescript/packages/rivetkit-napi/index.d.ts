@@ -100,12 +100,23 @@ export interface JsSqliteProfilingConfig {
   maxDiagnosticEventsPerMinute?: number
   diagnosticEventQueueCapacity?: number
 }
+/** One action's share of recorded traces, keyed by flattened action name. */
+export interface JsActionSampleRatio {
+  action: string
+  sampleRatio: number
+}
+/** Share of the traces an actor starts that get recorded, from 0 to 1. */
+export interface JsActorTracingConfig {
+  sampleRatio?: number
+  actionSampleRatios?: Array<JsActionSampleRatio>
+}
 export interface JsActorConfig {
   name?: string
   icon?: string
   hasDatabase?: boolean
   remoteSqlite?: boolean
   sqliteProfiling?: JsSqliteProfilingConfig
+  tracing?: JsActorTracingConfig
   enableActorRuntimeSocket?: boolean
   hasState?: boolean
   canHibernateWebsocket?: boolean

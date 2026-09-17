@@ -2,6 +2,8 @@
 
 #[cfg(feature = "native-runtime")]
 pub mod export;
+#[cfg(feature = "native-runtime")]
+mod sampler;
 
 use std::sync::Arc;
 
@@ -12,8 +14,8 @@ use opentelemetry_sdk::propagation::TraceContextPropagator;
 use parking_lot::Mutex;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-use crate::ActorContext;
 use crate::actor::queue::QueueMessage;
+use crate::{ActorContext, ActorTracingConfig};
 
 /// Correlation fields accepted at an invocation boundary.
 #[derive(Debug, Default)]
@@ -60,6 +62,11 @@ fn invocation_ray_id(headers: &http::HeaderMap) -> Option<String> {
 	rivetkit_client_protocol::telemetry_headers::bounded_ray_id(value).map(str::to_owned)
 }
 
+/// Span attribute carrying the ratio an actor configured for the trace this
+/// invocation starts. The export sampler reads it, so it has to be recorded
+/// before anything reads the span's context.
+pub(crate) const SAMPLE_RATIO_ATTRIBUTE: &str = "rivet.sampling.ratio";
+
 /// Name a request invocation is reported under, in place of a caller-supplied path.
 const REQUEST_INVOCATION_NAME: &str = "onRequest";
 
@@ -81,6 +88,14 @@ impl<'a> InvocationSubject<'a> {
 			Self::Action(name) => name,
 			Self::Request { .. } => REQUEST_INVOCATION_NAME,
 			Self::QueueSend { .. } => QUEUE_SEND_INVOCATION_NAME,
+		}
+	}
+
+	/// Ratio the actor configured for traces this invocation starts, if any.
+	fn sample_ratio(self, config: &ActorTracingConfig) -> Option<f64> {
+		match self {
+			Self::Action(name) => config.sample_ratio_for_action(name),
+			Self::Request { .. } | Self::QueueSend { .. } => config.sample_ratio,
 		}
 	}
 
@@ -347,6 +362,7 @@ impl ActorInvocation {
 				http.request.method = tracing::field::Empty,
 				http.response.status_code = tracing::field::Empty,
 				rivet.queue.name = tracing::field::Empty,
+				rivet.sampling.ratio = tracing::field::Empty,
 				otel.status_code = tracing::field::Empty,
 				error.type = tracing::field::Empty,
 			);
@@ -354,6 +370,9 @@ impl ActorInvocation {
 				span.record("rivet.ray.id", ray_id);
 			}
 			subject.record_attributes(&span);
+			if let Some(sample_ratio) = subject.sample_ratio(ctx.tracing_config()) {
+				span.record(SAMPLE_RATIO_ATTRIBUTE, sample_ratio);
+			}
 			if let Some(parent) = parent {
 				span.set_parent(Context::new().with_remote_span_context(parent));
 			}

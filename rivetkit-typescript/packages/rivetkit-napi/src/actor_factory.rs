@@ -11,7 +11,7 @@ use rivet_error::{ActorSpecifier, RivetError, RivetErrorKind};
 use rivetkit_core::inspector::InspectorTabEntry;
 use rivetkit_core::{
 	ActionDefinition, ActorConfig, ActorConfigInput, ActorContext as CoreActorContext,
-	ActorFactory as CoreActorFactory, ConnHandle as CoreConnHandle, Request,
+	ActorFactory as CoreActorFactory, ActorTracingConfig, ConnHandle as CoreConnHandle, Request,
 	SqliteProfilingConfigInput, WebSocket as CoreWebSocket,
 };
 
@@ -90,6 +90,22 @@ pub struct JsSqliteProfilingConfig {
 	pub diagnostic_event_queue_capacity: Option<u32>,
 }
 
+/// One action's share of recorded traces, keyed by flattened action name.
+#[napi(object)]
+#[derive(Clone)]
+pub struct JsActionSampleRatio {
+	pub action: String,
+	pub sample_ratio: f64,
+}
+
+/// Share of the traces an actor starts that get recorded, from 0 to 1.
+#[napi(object)]
+#[derive(Clone, Default)]
+pub struct JsActorTracingConfig {
+	pub sample_ratio: Option<f64>,
+	pub action_sample_ratios: Option<Vec<JsActionSampleRatio>>,
+}
+
 #[napi(object)]
 #[derive(Clone, Default)]
 pub struct JsActorConfig {
@@ -98,6 +114,7 @@ pub struct JsActorConfig {
 	pub has_database: Option<bool>,
 	pub remote_sqlite: Option<bool>,
 	pub sqlite_profiling: Option<JsSqliteProfilingConfig>,
+	pub tracing: Option<JsActorTracingConfig>,
 	pub enable_actor_runtime_socket: Option<bool>,
 	pub has_state: Option<bool>,
 	pub can_hibernate_websocket: Option<bool>,
@@ -1012,6 +1029,7 @@ impl From<JsActorConfig> for ActorConfigInput {
 			has_database: value.has_database,
 			remote_sqlite: value.remote_sqlite,
 			sqlite_profiling: value.sqlite_profiling.map(Into::into),
+			tracing: value.tracing.map(Into::into),
 			enable_actor_runtime_socket: value.enable_actor_runtime_socket,
 			has_state: value.has_state,
 			can_hibernate_websocket: value.can_hibernate_websocket,
@@ -1072,6 +1090,20 @@ impl From<JsActorConfig> for ActorConfigInput {
 					})
 					.collect()
 			}),
+		}
+	}
+}
+
+impl From<JsActorTracingConfig> for ActorTracingConfig {
+	fn from(value: JsActorTracingConfig) -> Self {
+		Self {
+			sample_ratio: value.sample_ratio,
+			action_sample_ratios: value
+				.action_sample_ratios
+				.unwrap_or_default()
+				.into_iter()
+				.map(|entry| (entry.action, entry.sample_ratio))
+				.collect(),
 		}
 	}
 }
