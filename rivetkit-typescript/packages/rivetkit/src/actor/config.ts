@@ -447,6 +447,38 @@ export interface ActorContext<
 	[key: string]: any;
 }
 
+/** @experimental How one workflow pass ended. */
+export type ActorRunWorkflowPassOutcome =
+	| "completed"
+	| "sleeping"
+	| "evicted"
+	| "failed"
+	| "cancelled";
+
+/**
+ * @experimental How one workflow step attempt ended. `retry` is a failure that
+ * will be tried again, and `failed` is one that will not.
+ */
+export type ActorRunWorkflowStepOutcome = "ok" | "retry" | "failed";
+
+/**
+ * @experimental One open workflow pass, which is one execution of the workflow
+ * function from the top. RivetKit traces it as an invocation of its own.
+ */
+export interface ActorRunWorkflowPass {
+	/** Runs the pass so that everything it does is attributed to it. */
+	run<T>(body: () => Promise<T>): Promise<T>;
+	finish(outcome: ActorRunWorkflowPassOutcome): Promise<void>;
+}
+
+/** @experimental One open attempt at one workflow step. */
+export interface ActorRunWorkflowStep {
+	/** Runs the step's callback so that the work it does is attributed to it. */
+	run<T>(body: () => Promise<T>): Promise<T>;
+	/** `error` is what the callback threw. */
+	finish(outcome: ActorRunWorkflowStepOutcome, error?: unknown): void;
+}
+
 /** @experimental */
 export interface ActorRun {
 	/**
@@ -454,6 +486,26 @@ export interface ActorRun {
 	 * ensures this actor's run handler is active, starting it if inactive.
 	 */
 	setWakeAt(timestamp: number | null): Promise<void>;
+	/**
+	 * @experimental Opens one workflow pass. A workflow engine calls this each
+	 * time it executes the workflow function, and RivetKit owns the span.
+	 */
+	beginWorkflowPass(): Promise<ActorRunWorkflowPass>;
+	/**
+	 * @experimental Opens one attempt at one workflow step inside the current
+	 * pass. A completed step replayed from history is not an attempt. Returns
+	 * nothing outside a pass or when tracing is off.
+	 */
+	beginWorkflowStep(
+		name: string,
+		attempt: number,
+	): ActorRunWorkflowStep | undefined;
+	/**
+	 * @experimental Runs `body` outside the current workflow pass. A workflow
+	 * engine saves its own history this way, so a pass's trace shows the work
+	 * its steps did and not the engine's bookkeeping.
+	 */
+	withoutWorkflowPass<T>(body: () => T): T;
 }
 
 export type ActionContext<

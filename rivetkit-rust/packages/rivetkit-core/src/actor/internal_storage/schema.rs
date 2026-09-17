@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail};
 use super::queries::{LOAD_META_TEXT_SQL, UPSERT_META_TEXT_SQL};
 use crate::sqlite::{BindParam, ColumnValue, SqliteBatchStatement, SqliteDb};
 
-pub(crate) const INTERNAL_SCHEMA_VERSION: i64 = 2;
+pub(crate) const INTERNAL_SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS _rivet_meta (
 // across runtime releases. Rewriting these entries in place is safe only while
 // no internal schema version has shipped; after release, all changes must be
 // appended as new migrations and INTERNAL_SCHEMA_VERSION must advance.
-pub(crate) const MIGRATIONS: &[&[&str]] = &[MIGRATION_V1, MIGRATION_V2];
+pub(crate) const MIGRATIONS: &[&[&str]] = &[MIGRATION_V1, MIGRATION_V2, MIGRATION_V3];
 
 const MIGRATION_V1: &[&str] = &[
 	// W[queue_next_id per enqueue; alarm per head-change; token once | point UPDATE of one column | <100 B | single-row: all runtime singletons on one leaf]
@@ -164,6 +164,18 @@ const MIGRATION_V2: &[&str] = &[
 	"ALTER TABLE _rivet_queue ADD COLUMN ray_id TEXT",
 	"ALTER TABLE _rivet_queue ADD COLUMN traceparent TEXT",
 	"ALTER TABLE _rivet_queue ADD COLUMN tracestate TEXT",
+];
+
+const MIGRATION_V3: &[&str] = &[
+	// W[once per traced workflow pass | point upsert | <200 B | single-row: the span the next pass links to]
+	r#"
+CREATE TABLE _rivet_workflow_trace (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    ray_id      TEXT,
+    traceparent TEXT,
+    tracestate  TEXT
+) STRICT
+"#,
 ];
 
 pub(crate) async fn ensure_internal_schema(db: &SqliteDb) -> Result<()> {

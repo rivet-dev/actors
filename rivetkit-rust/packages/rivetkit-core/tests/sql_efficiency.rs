@@ -465,6 +465,12 @@ fn query_catalog() -> Vec<QueryCase> {
 			expectation: indexed(None, &["_rivet_runtime"]),
 		},
 		QueryCase {
+			id: "runtime.workflow_trace",
+			sql: internal_storage::LOAD_WORKFLOW_TRACE_SQL.into(),
+			params: vec![],
+			expectation: indexed(None, &["_rivet_workflow_trace"]),
+		},
+		QueryCase {
 			id: "runtime.run_wake",
 			sql: internal_storage::LOAD_RUN_WAKE_AT_SQL.into(),
 			params: vec![text(internal_storage::RUN_WAKE_AT_META_KEY)],

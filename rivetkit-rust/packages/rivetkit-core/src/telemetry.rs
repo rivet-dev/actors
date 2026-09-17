@@ -66,6 +66,9 @@ const REQUEST_INVOCATION_NAME: &str = "onRequest";
 /// Name a queue send invocation is reported under. The queue itself is an attribute.
 const QUEUE_SEND_INVOCATION_NAME: &str = "queue.send";
 
+/// Name a workflow pass invocation is reported under.
+const WORKFLOW_PASS_INVOCATION_NAME: &str = "workflow";
+
 /// What an invocation ran, which decides its name and the attributes that
 /// identify it on the span.
 #[derive(Clone, Copy, Debug)]
@@ -73,6 +76,7 @@ enum InvocationSubject<'a> {
 	Action(&'a str),
 	Request { method: &'a str },
 	QueueSend { queue: &'a str },
+	WorkflowPass,
 }
 
 impl<'a> InvocationSubject<'a> {
@@ -81,6 +85,7 @@ impl<'a> InvocationSubject<'a> {
 			Self::Action(name) => name,
 			Self::Request { .. } => REQUEST_INVOCATION_NAME,
 			Self::QueueSend { .. } => QUEUE_SEND_INVOCATION_NAME,
+			Self::WorkflowPass => WORKFLOW_PASS_INVOCATION_NAME,
 		}
 	}
 
@@ -89,6 +94,7 @@ impl<'a> InvocationSubject<'a> {
 			Self::Action(name) => span.record("rivet.action.name", name),
 			Self::Request { method } => span.record("http.request.method", method),
 			Self::QueueSend { queue } => span.record("rivet.queue.name", queue),
+			Self::WorkflowPass => span,
 		};
 	}
 }
@@ -105,6 +111,7 @@ enum InvocationType {
 	Scheduled,
 	Request,
 	QueueSend,
+	Workflow,
 }
 
 impl InvocationType {
@@ -114,6 +121,17 @@ impl InvocationType {
 			Self::Scheduled => "scheduled",
 			Self::Request => "request",
 			Self::QueueSend => "queue_send",
+			Self::Workflow => "workflow",
+		}
+	}
+
+	/// Whether the invocation takes the ray of a queue message it receives. A
+	/// workflow pass does, because the message that woke it is what caused it.
+	/// Every other invocation was called with its ray and keeps it.
+	fn takes_message_ray(self) -> bool {
+		match self {
+			Self::Action | Self::Scheduled | Self::Request | Self::QueueSend => false,
+			Self::Workflow => true,
 		}
 	}
 }
@@ -143,7 +161,7 @@ pub(crate) struct ActorTelemetryIdentity {
 
 #[derive(Debug)]
 struct InvocationInner {
-	ray_id: Option<String>,
+	invocation_type: InvocationType,
 	// This lock is used from Drop paths, and its guard never crosses an await.
 	state: Mutex<InvocationState>,
 	identity: Arc<ActorTelemetryIdentity>,
@@ -151,6 +169,9 @@ struct InvocationInner {
 
 #[derive(Debug)]
 struct InvocationState {
+	/// Fixed for every invocation except a workflow pass, which takes the ray
+	/// of a queue message it receives.
+	ray_id: Option<String>,
 	span: Option<tracing::Span>,
 	finished: bool,
 	pending_work: usize,
@@ -248,6 +269,98 @@ pub struct OutboundCallInvocation {
 	context: Option<ActorInvocationSpanContext>,
 }
 
+/// How one workflow pass ended. A pass is one execution of the workflow
+/// function from the top, and `Sleeping` covers every way it can park itself:
+/// a timed sleep, a wait for a message, and a retry backoff.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkflowPassOutcome {
+	Completed,
+	Sleeping,
+	Evicted,
+	Failed,
+	Cancelled,
+}
+
+impl WorkflowPassOutcome {
+	pub fn parse(value: &str) -> anyhow::Result<Self> {
+		match value {
+			"completed" => Ok(Self::Completed),
+			"sleeping" => Ok(Self::Sleeping),
+			"evicted" => Ok(Self::Evicted),
+			"failed" => Ok(Self::Failed),
+			"cancelled" => Ok(Self::Cancelled),
+			other => anyhow::bail!("unknown workflow pass outcome `{other}`"),
+		}
+	}
+
+	fn as_label(self) -> &'static str {
+		match self {
+			Self::Completed => "completed",
+			Self::Sleeping => "sleeping",
+			Self::Evicted => "evicted",
+			Self::Failed => "failed",
+			Self::Cancelled => "cancelled",
+		}
+	}
+
+	fn is_error(self) -> bool {
+		match self {
+			Self::Completed | Self::Sleeping | Self::Evicted => false,
+			Self::Failed | Self::Cancelled => true,
+		}
+	}
+}
+
+/// How one step attempt ended. `Retry` is a failure the engine will try again,
+/// and `Failed` is one it will not. The span's `error.type` says why.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkflowStepOutcome {
+	Ok,
+	Retry,
+	Failed,
+}
+
+impl WorkflowStepOutcome {
+	pub fn parse(value: &str) -> anyhow::Result<Self> {
+		match value {
+			"ok" => Ok(Self::Ok),
+			"retry" => Ok(Self::Retry),
+			"failed" => Ok(Self::Failed),
+			other => anyhow::bail!("unknown workflow step outcome `{other}`"),
+		}
+	}
+
+	fn as_label(self) -> &'static str {
+		match self {
+			Self::Ok => "ok",
+			Self::Retry => "retry",
+			Self::Failed => "failed",
+		}
+	}
+}
+
+/// One workflow pass, held open across a foreign-runtime boundary.
+///
+/// The workflow engine runs in the host runtime, so the pass is opened and
+/// closed by two separate calls. Dropping this without finishing records the
+/// pass as abandoned.
+#[doc(hidden)]
+pub struct WorkflowPassInvocation {
+	ctx: ActorContext,
+	invocation: ActorInvocation,
+}
+
+/// One attempt at one workflow step, held open across a foreign-runtime
+/// boundary the same way a pass is. Dropping this without finishing records
+/// the attempt as abandoned.
+#[doc(hidden)]
+pub struct WorkflowStepSpan {
+	ctx: ActorContext,
+	span: Option<tracing::Span>,
+}
+
 impl ActorInvocation {
 	pub(crate) fn start_action(
 		ctx: &ActorContext,
@@ -280,6 +393,24 @@ impl ActorInvocation {
 			trace_context.ray_id,
 			None,
 			remote_parent,
+		)
+	}
+
+	/// Starts the invocation for one workflow pass. A pass is caused by the
+	/// actor itself, so it starts a new trace. `previous` is the pass before
+	/// it, which this one links to and whose ray ID it continues.
+	fn start_workflow_pass(ctx: &ActorContext, previous: IncomingTraceContext) -> Self {
+		let previous_pass = parse_remote_parent(
+			previous.traceparent.as_deref(),
+			previous.tracestate.as_deref(),
+		);
+		Self::start(
+			ctx,
+			InvocationSubject::WorkflowPass,
+			InvocationType::Workflow,
+			previous.ray_id,
+			None,
+			previous_pass,
 		)
 	}
 
@@ -347,10 +478,12 @@ impl ActorInvocation {
 				http.request.method = tracing::field::Empty,
 				http.response.status_code = tracing::field::Empty,
 				rivet.queue.name = tracing::field::Empty,
+				rivet.workflow.pass.outcome = tracing::field::Empty,
 				otel.status_code = tracing::field::Empty,
 				error.type = tracing::field::Empty,
 			);
-			if let Some(ray_id) = ray_id.as_deref() {
+			if let (false, Some(ray_id)) = (invocation_type.takes_message_ray(), ray_id.as_deref())
+			{
 				span.record("rivet.ray.id", ray_id);
 			}
 			subject.record_attributes(&span);
@@ -366,7 +499,7 @@ impl ActorInvocation {
 		};
 
 		Self {
-			telemetry: ActorInvocationTelemetry::new(ray_id, span, identity),
+			telemetry: ActorInvocationTelemetry::new(invocation_type, ray_id, span, identity),
 		}
 	}
 
@@ -400,6 +533,65 @@ impl ActorInvocation {
 	}
 }
 
+impl WorkflowPassInvocation {
+	pub(crate) fn start(ctx: &ActorContext, previous: IncomingTraceContext) -> Self {
+		let invocation = ActorInvocation::start_workflow_pass(ctx, previous);
+		Self {
+			ctx: ctx
+				.clone()
+				.with_invocation_telemetry(Some(invocation.telemetry())),
+			invocation,
+		}
+	}
+
+	/// The handle workflow code runs under, so everything it does is
+	/// attributed to this pass.
+	pub fn ctx(&self) -> ActorContext {
+		self.ctx.clone()
+	}
+
+	/// Records how the pass ended. Returns what the next pass links to and
+	/// continues, which is the pass span itself and the ray the pass ended
+	/// with, or nothing when the pass had no span.
+	pub(crate) fn finish(self, outcome: WorkflowPassOutcome) -> Option<IncomingTraceContext> {
+		let telemetry = &self.invocation.telemetry;
+		let ray_id = telemetry.ray_id();
+		let mut trace_context = None;
+		telemetry.finish_with(|span| {
+			if let Some(ray_id) = ray_id.as_deref() {
+				span.record("rivet.ray.id", ray_id);
+			}
+			span.record("rivet.workflow.pass.outcome", outcome.as_label());
+			span.record(
+				"otel.status_code",
+				if outcome.is_error() { "ERROR" } else { "OK" },
+			);
+			let headers = otel_span_context_of(span)
+				.map(|span_context| w3c_trace_headers(&span_context))
+				.unwrap_or_default();
+			trace_context = Some(IncomingTraceContext {
+				ray_id,
+				traceparent: headers.traceparent,
+				tracestate: headers.tracestate,
+			});
+		});
+		trace_context
+	}
+}
+
+impl Drop for WorkflowPassInvocation {
+	fn drop(&mut self) {
+		let ray_id = self.invocation.telemetry.ray_id();
+		self.invocation.telemetry.finish_with(|span| {
+			if let Some(ray_id) = ray_id.as_deref() {
+				span.record("rivet.ray.id", ray_id);
+			}
+			span.record("otel.status_code", "ERROR");
+			span.record("error.type", OPERATION_ABANDONED_ERROR_TYPE);
+		});
+	}
+}
+
 impl Drop for ActorInvocation {
 	fn drop(&mut self) {
 		self.telemetry.finish_dropped();
@@ -408,14 +600,16 @@ impl Drop for ActorInvocation {
 
 impl ActorInvocationTelemetry {
 	fn new(
+		invocation_type: InvocationType,
 		ray_id: Option<String>,
 		span: Option<tracing::Span>,
 		identity: Arc<ActorTelemetryIdentity>,
 	) -> Self {
 		Self {
 			inner: Arc::new(InvocationInner {
-				ray_id,
+				invocation_type,
 				state: Mutex::new(InvocationState {
+					ray_id,
 					span,
 					finished: false,
 					pending_work: 0,
@@ -423,6 +617,35 @@ impl ActorInvocationTelemetry {
 				identity,
 			}),
 			application_span: None,
+		}
+	}
+
+	fn ray_id(&self) -> Option<String> {
+		self.inner.state.lock().ray_id.clone()
+	}
+
+	/// Records the invocation's ray on a span opened inside it. The ray is
+	/// borrowed under the lock, so this allocates nothing.
+	fn record_ray(&self, span: &tracing::Span) {
+		if let Some(ray_id) = self.inner.state.lock().ray_id.as_deref() {
+			span.record("rivet.ray.id", ray_id);
+		}
+	}
+
+	/// Records the ray a received queue message is reported under. An
+	/// invocation that takes the message's ray keeps it from here on. Any other
+	/// invocation reports its own ray, and the message's ray only fills in when
+	/// it has none.
+	fn record_received_message_ray(&self, span: &tracing::Span, message_ray_id: Option<&str>) {
+		let mut state = self.inner.state.lock();
+		if let (true, Some(message_ray_id)) = (
+			self.inner.invocation_type.takes_message_ray(),
+			message_ray_id,
+		) {
+			state.ray_id = Some(message_ray_id.to_owned());
+		}
+		if let Some(ray_id) = state.ray_id.as_deref().or(message_ray_id) {
+			span.record("rivet.ray.id", ray_id);
 		}
 	}
 
@@ -480,19 +703,16 @@ impl ActorInvocationTelemetry {
 	/// Returns correlation fields only while this actor invocation is active.
 	#[doc(hidden)]
 	pub fn trace_context(&self) -> Option<ActorInvocationTraceContext> {
-		let span = {
+		let (ray_id, span) = {
 			let state = self.inner.state.lock();
 			if state.finished && state.pending_work == 0 {
 				return None;
 			}
-			state.span.clone()
+			(state.ray_id.clone(), state.span.clone())
 		};
 		let span = span.and_then(|span| span_context_of(&span));
 
-		Some(ActorInvocationTraceContext {
-			ray_id: self.inner.ray_id.clone(),
-			span,
-		})
+		Some(ActorInvocationTraceContext { ray_id, span })
 	}
 
 	/// Trace context that work caused by this invocation records: the invocation's
@@ -507,7 +727,7 @@ impl ActorInvocationTelemetry {
 		let parent_span = parent.span();
 		let headers = w3c_trace_headers(parent_span.span_context());
 		IncomingTraceContext {
-			ray_id: self.inner.ray_id.clone(),
+			ray_id: self.ray_id(),
 			traceparent: headers.traceparent,
 			tracestate: headers.tracestate,
 		}
@@ -537,16 +757,51 @@ impl ActorInvocationTelemetry {
 			otel.kind = "client",
 			rivet.actor.name = %actor_name,
 			rivet.action.name = %action_name,
-			rivet.ray.id = self.inner.ray_id.as_deref(),
+			rivet.ray.id = tracing::field::Empty,
 			otel.status_code = tracing::field::Empty,
 			error.type = tracing::field::Empty,
 		);
+		self.record_ray(&span);
 		span.set_parent(parent);
 		let context = span_context_of(&span);
 		Some(OutboundCallInvocation {
 			span: Some(span),
 			context,
 		})
+	}
+
+	/// Opens the span covering one attempt at one workflow step. The returned
+	/// handle serves the same invocation with the step span as its parent, so
+	/// work done inside the step sits under the step.
+	pub(crate) fn start_workflow_step(
+		&self,
+		step_name: &str,
+		attempt: u32,
+	) -> Option<(tracing::Span, Self)> {
+		let parent = self.parent_context()?;
+		let span = tracing::info_span!(
+			target: "rivetkit::telemetry",
+			parent: None,
+			"rivet.workflow.step",
+			otel.name = %format!("{}/{}", self.inner.identity.actor_name, step_name),
+			otel.kind = "internal",
+			rivet.workflow.step.name = %step_name,
+			rivet.workflow.step.attempt = attempt,
+			rivet.workflow.step.outcome = tracing::field::Empty,
+			rivet.ray.id = tracing::field::Empty,
+			rivet.actor.id = %self.inner.identity.actor_id,
+			rivet.actor.name = %self.inner.identity.actor_name,
+			rivet.actor.key = %self.inner.identity.actor_key,
+			otel.status_code = tracing::field::Empty,
+			error.type = tracing::field::Empty,
+		);
+		self.record_ray(&span);
+		span.set_parent(parent);
+		let step_telemetry = Self {
+			inner: self.inner.clone(),
+			application_span: otel_span_context_of(&span),
+		};
+		Some((span, step_telemetry))
 	}
 
 	pub(crate) fn start_sqlite(&self, operation: SqliteOperation) -> Option<SqliteOperationSpan> {
@@ -560,13 +815,14 @@ impl ActorInvocationTelemetry {
 			otel.kind = "internal",
 			rivet.operation.system = "sqlite",
 			rivet.operation.name = operation_name,
-			rivet.ray.id = self.inner.ray_id.as_deref(),
+			rivet.ray.id = tracing::field::Empty,
 			rivet.actor.id = %self.inner.identity.actor_id,
 			rivet.actor.name = %self.inner.identity.actor_name,
 			rivet.actor.key = %self.inner.identity.actor_key,
 			otel.status_code = tracing::field::Empty,
 			error.type = tracing::field::Empty,
 		);
+		self.record_ray(&span);
 		span.set_parent(parent);
 		Some(SqliteOperationSpan { span: Some(span) })
 	}
@@ -628,6 +884,50 @@ impl OutboundCallInvocation {
 }
 
 impl Drop for OutboundCallInvocation {
+	fn drop(&mut self) {
+		let Some(span) = self.span.take() else {
+			return;
+		};
+		span.record("otel.status_code", "ERROR");
+		span.record("error.type", OPERATION_ABANDONED_ERROR_TYPE);
+	}
+}
+
+impl WorkflowStepSpan {
+	pub(crate) fn start(ctx: &ActorContext, step_name: &str, attempt: u32) -> Option<Self> {
+		let (span, step_telemetry) = ctx
+			.invocation_telemetry()?
+			.start_workflow_step(step_name, attempt)?;
+		Some(Self {
+			ctx: ctx.clone().with_invocation_telemetry(Some(step_telemetry)),
+			span: Some(span),
+		})
+	}
+
+	/// The handle the step's callback runs under, so SQLite work and calls to
+	/// other actors made inside the step sit under the step span.
+	pub fn ctx(&self) -> ActorContext {
+		self.ctx.clone()
+	}
+
+	/// W3C context of the step span, for the host runtime to make active while
+	/// the step's callback runs.
+	pub fn span_context(&self) -> Option<ActorInvocationSpanContext> {
+		self.span.as_ref().and_then(span_context_of)
+	}
+
+	/// Records how the attempt ended. `error` is the failure the step threw,
+	/// and its group and code become the span's `error.type`.
+	pub fn finish(mut self, outcome: WorkflowStepOutcome, error: Option<&anyhow::Error>) {
+		let Some(span) = self.span.take() else {
+			return;
+		};
+		span.record("rivet.workflow.step.outcome", outcome.as_label());
+		record_outcome(&span, error);
+	}
+}
+
+impl Drop for WorkflowStepSpan {
 	fn drop(&mut self) {
 		let Some(span) = self.span.take() else {
 			return;
@@ -701,12 +1001,12 @@ fn w3c_trace_headers(span_context: &SpanContext) -> OwnedTraceHeaders {
 }
 
 /// An action or a raw HTTP request is entered from outside the actor, a
-/// scheduled fire originates inside it, and a queue send produces a message
-/// the actor consumes later.
+/// scheduled fire and a workflow pass originate inside it, and a queue send
+/// produces a message the actor consumes later.
 fn otel_kind(invocation_type: InvocationType) -> &'static str {
 	match invocation_type {
 		InvocationType::Action | InvocationType::Request => "server",
-		InvocationType::Scheduled => "internal",
+		InvocationType::Scheduled | InvocationType::Workflow => "internal",
 		InvocationType::QueueSend => "producer",
 	}
 }
@@ -747,9 +1047,7 @@ pub(crate) fn start_queue_receive(ctx: &ActorContext, message: &QueueMessage) ->
 		.invocation_telemetry()
 		.and_then(|telemetry| telemetry.parent_context().map(|parent| (telemetry, parent)));
 	if let Some((telemetry, parent)) = invocation_parent {
-		if let Some(ray_id) = telemetry.inner.ray_id.as_deref() {
-			span.record("rivet.ray.id", ray_id);
-		}
+		telemetry.record_received_message_ray(&span, message.trace_context.ray_id.as_deref());
 		span.set_parent(parent);
 	} else if let Some(ray_id) = &message.trace_context.ray_id {
 		span.record("rivet.ray.id", ray_id);

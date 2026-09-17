@@ -869,6 +869,173 @@ describeDriverMatrix(
 					}
 				}
 			}, 60_000);
+			/**
+			 * One workflow run. It waits for a message sent under a ray, runs a
+			 * step, waits for a second message that is sent only after the actor
+			 * has gone to sleep, runs a step that fails twice before it succeeds,
+			 * and sends a queue message to another actor.
+			 */
+			describe("workflow", () => {
+				const actorName = "workflowTracedActor";
+				let actorKey: string;
+				let approveRayId: string;
+				let resumeRayId: string;
+				let spans: ExportedSpan[];
+				let passes: ExportedSpan[];
+
+				const named = (name: string) =>
+					spans
+						.filter(
+							(span) =>
+								span.name === name &&
+								span.attributes["rivet.actor.key"] === actorKey,
+						)
+						.sort((a, b) =>
+							Number(a.endTimeUnixNano - b.endTimeUnixNano),
+						);
+				const attribute = (found: ExportedSpan[], key: string) =>
+					found.map((span) => span.attributes[key]);
+
+				beforeAll(async () => {
+					actorKey = `workflow-traced-${crypto.randomUUID()}`;
+					approveRayId = `approve-${crypto.randomUUID().slice(0, 8)}`;
+					resumeRayId = `resume-${crypto.randomUUID().slice(0, 8)}`;
+					const workflowActor =
+						traced.client.workflowTracedActor.getOrCreate([
+							actorKey,
+						]);
+					await withRayBaggage(approveRayId, () =>
+						workflowActor.send("approve", { id: "approve" }),
+					);
+					// The actor process logs from its sleep hook, and calling an action
+					// to ask would count as activity and keep the actor awake.
+					await vi.waitFor(
+						() => {
+							expect(
+								traced.runtime.getRuntimeOutput?.(),
+							).toContain(`slept_actor_key=${actorKey}`);
+						},
+						{ timeout: 30_000, interval: 100 },
+					);
+					await withRayBaggage(resumeRayId, () =>
+						workflowActor.send("resume", { id: "resume" }),
+					);
+					spans = await waitForSpans(
+						traceExports,
+						"the completed workflow pass and the queue send it caused",
+						(exported) => {
+							spans = exported;
+							return (
+								attribute(
+									named(`${actorName}/workflow`),
+									"rivet.workflow.pass.outcome",
+								).includes("completed") &&
+								named("telemetryRunConsumerActor/queue.send")
+									.length > 0
+							);
+						},
+						30_000,
+					);
+					passes = named(`${actorName}/workflow`);
+				}, 90_000);
+
+				test("chains every pass to the one before it across the actor sleeping", () => {
+					expect(passes.length).toBeGreaterThanOrEqual(4);
+					expect(passes[0].links).toEqual([]);
+					for (const [index, pass] of passes.entries()) {
+						expect(pass.parentSpanId).toBeUndefined();
+						expect(pass.attributes["rivet.invocation.type"]).toBe(
+							"workflow",
+						);
+						if (index === 0) continue;
+						const previous = passes[index - 1];
+						expect(pass.traceId).not.toBe(previous.traceId);
+						expect(pass.links).toEqual([
+							{
+								traceId: previous.traceId,
+								spanId: previous.spanId,
+							},
+						]);
+					}
+					const outcomes = attribute(
+						passes,
+						"rivet.workflow.pass.outcome",
+					);
+					const completedAt = outcomes.indexOf("completed");
+					expect(new Set(outcomes.slice(0, completedAt))).toEqual(
+						new Set(["sleeping"]),
+					);
+					expect(passes[completedAt].statusCode).toBe(OTLP_STATUS_OK);
+				});
+
+				test("reports a completed step once, with only its own work under it", () => {
+					const reserve = named(`${actorName}/reserve-stock`);
+					expect(reserve).toHaveLength(1);
+					expect(reserve[0].attributes).toMatchObject({
+						"rivet.workflow.step.name": "reserve-stock",
+						"rivet.workflow.step.attempt": "1",
+						"rivet.workflow.step.outcome": "ok",
+					});
+					const sqliteParents = spans
+						.filter((span) => span.name.startsWith("rivet.sqlite."))
+						.map((span) => span.parentSpanId);
+					expect(
+						sqliteParents.filter((id) => id === reserve[0].spanId),
+					).toHaveLength(1);
+					for (const pass of passes) {
+						expect(sqliteParents).not.toContain(pass.spanId);
+					}
+				});
+
+				test("reports each attempt of a retried step under its own pass", () => {
+					const attempts = named(`${actorName}/charge-card`);
+					expect(
+						attempts.map((attempt) => [
+							attempt.attributes["rivet.workflow.step.attempt"],
+							attempt.attributes["rivet.workflow.step.outcome"],
+							attempt.attributes["error.type"],
+							attempt.statusCode,
+						]),
+					).toEqual([
+						["1", "retry", "user.card_declined", OTLP_STATUS_ERROR],
+						["2", "retry", "user.card_declined", OTLP_STATUS_ERROR],
+						["3", "ok", undefined, OTLP_STATUS_OK],
+					]);
+					const passIds = passes.map((pass) => pass.spanId);
+					const parents = attempts.map(
+						(attempt) => attempt.parentSpanId,
+					);
+					expect(new Set(parents).size).toBe(3);
+					for (const parent of parents) {
+						expect(passIds).toContain(parent);
+					}
+				});
+
+				test("gives a pass the ray of the message that woke it and continues it through later passes", () => {
+					const ray = (name: string) =>
+						attribute(named(name), "rivet.ray.id");
+					expect(ray(`${actorName}/queue.receive`).sort()).toEqual(
+						[approveRayId, resumeRayId].sort(),
+					);
+					expect(ray(`${actorName}/reserve-stock`)).toEqual([
+						approveRayId,
+					]);
+					expect(ray(`${actorName}/charge-card`)).toEqual([
+						resumeRayId,
+						resumeRayId,
+						resumeRayId,
+					]);
+				});
+
+				test("puts a queue send made inside a step in that step's trace", () => {
+					const [notify] = named(`${actorName}/notify`);
+					const [send] = named(
+						"telemetryRunConsumerActor/queue.send",
+					);
+					expect(send.traceId).toBe(notify.traceId);
+					expect(send.parentSpanId).toBe(notify.spanId);
+				});
+			});
 		});
 	},
 	{

@@ -29,6 +29,47 @@ export interface KVWrite {
  * (via WorkflowHandle.message()).
  * See architecture.md "Isolation Model" for details.
  */
+/** How one workflow pass ended. */
+export type WorkflowPassOutcome =
+	| "completed"
+	| "sleeping"
+	| "evicted"
+	| "failed"
+	| "cancelled";
+
+/**
+ * How one step attempt ended. `retry` is a failure that will be tried again,
+ * and `failed` is one that will not.
+ */
+export type WorkflowStepOutcome = "ok" | "retry" | "failed";
+
+/** One open workflow pass, which is one execution of the workflow function. */
+export interface WorkflowPassScope {
+	/** Runs the pass so that everything it does is attributed to it. */
+	run<T>(body: () => Promise<T>): Promise<T>;
+	/** Records how the pass ended. */
+	finish(outcome: WorkflowPassOutcome): Promise<void>;
+}
+
+/** One open attempt at one step. */
+export interface WorkflowStepScope {
+	/** Runs the step's callback so that the work it does is attributed to it. */
+	run<T>(body: () => Promise<T>): Promise<T>;
+	/** Records how the attempt ended. `error` is what the callback threw. */
+	finish(outcome: WorkflowStepOutcome, error?: unknown): void;
+}
+
+/**
+ * Reports pass and step boundaries to whatever traces the workflow. The engine
+ * only says where work starts and ends. A completed step replayed from history
+ * is not an attempt, so it is never reported.
+ */
+export interface WorkflowTelemetryDriver {
+	beginPass(): Promise<WorkflowPassScope>;
+	/** Returns nothing when the attempt is not being traced. */
+	beginStep(name: string, attempt: number): WorkflowStepScope | undefined;
+}
+
 export interface EngineDriver {
 	/**
 	 * Requires each logical storage flush to reach `batch` as one indivisible
@@ -117,4 +158,7 @@ export interface EngineDriver {
 		messageNames: string[],
 		abortSignal: AbortSignal,
 	): Promise<void>;
+
+	/** Present when the host traces workflows. */
+	readonly telemetry?: WorkflowTelemetryDriver;
 }

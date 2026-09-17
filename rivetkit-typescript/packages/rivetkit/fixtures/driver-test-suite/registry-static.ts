@@ -152,7 +152,11 @@ import {
 import { lifecycleObserver, startStopRaceActor } from "./start-stop-race";
 import { stateZodCoercionActor } from "./state-zod-coercion";
 import { statelessActor } from "./stateless";
-import { telemetryActor, telemetryRunConsumerActor } from "./telemetry";
+import {
+	telemetryActor,
+	telemetryRunConsumerActor,
+	workflowTracedActor,
+} from "./telemetry";
 import {
 	driverCtxActor,
 	dynamicVarActor,
@@ -201,6 +205,7 @@ export const registry = setup({
 	use: {
 		telemetryActor,
 		telemetryRunConsumerActor,
+		workflowTracedActor,
 		// From counter.ts
 		counter,
 		// From counter-conn.ts

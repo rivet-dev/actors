@@ -338,6 +338,16 @@ export declare class ActorContext {
    * case the caller sends its own context as before.
    */
   beginOutboundCall(actorName: string, actionName: string): OutboundCall | null
+  /**
+   * Opens one workflow pass as an invocation of its own. The workflow engine
+   * runs the pass under the returned handle's context.
+   */
+  beginWorkflowPass(): Promise<WorkflowPass>
+  /**
+   * Opens the span covering one attempt at one workflow step. Returns
+   * nothing when this handle serves no workflow pass or tracing is disabled.
+   */
+  beginWorkflowStep(stepName: string, attempt: number): WorkflowStep | null
   provisionActorRuntimeSocket(): Promise<JsActorRuntimeSocketEndpointInfo>
   schedule(): Schedule
   queue(): Queue
@@ -406,6 +416,40 @@ export declare class OutboundCall {
    * stays unstructured for Core to classify.
    */
   finish(error?: string | undefined | null): void
+}
+/**
+ * One open workflow pass.
+ *
+ * The workflow engine runs in JavaScript, so the pass is opened and closed by
+ * two separate calls. Letting this be collected without finishing records the
+ * pass as abandoned rather than silently losing it.
+ */
+export declare class WorkflowPass {
+  /**
+   * The context the pass runs under, so everything workflow code does is
+   * attributed to the pass.
+   */
+  ctx(): ActorContext
+  /** Records how the pass ended. */
+  finish(outcome: string): Promise<void>
+}
+/** One open attempt at one workflow step, closed the same way a pass is. */
+export declare class WorkflowStep {
+  /**
+   * The context the step's callback runs under, so work done inside the
+   * step sits under the step span.
+   */
+  ctx(): ActorContext
+  /**
+   * W3C context of the step span, to make active in JavaScript while the
+   * step's callback runs.
+   */
+  spanContext(): JsActorInvocationSpanContext | null
+  /**
+   * Records how the attempt ended. `error` is the failure the step threw, as
+   * the bridge encodes it.
+   */
+  finish(outcome: string, error?: string | undefined | null): void
 }
 export declare class NapiActorFactory {
   constructor(callbacks: object, config?: JsActorConfig | undefined | null)

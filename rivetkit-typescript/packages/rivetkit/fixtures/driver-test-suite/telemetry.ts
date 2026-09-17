@@ -2,6 +2,7 @@ import { trace } from "@opentelemetry/api";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { actor, queue, UserError } from "rivetkit";
 import { db } from "@/common/database/mod";
+import { workflow } from "@/workflow/mod";
 
 // Only a traced runtime gets a JavaScript tracer, so the other driver
 // fixtures keep running without an OpenTelemetry context manager.
@@ -120,4 +121,56 @@ export const telemetryRunConsumerActor = actor({
 		}
 	},
 	actions: {},
+});
+
+/**
+ * Runs one workflow that waits for two messages. The actor goes to sleep while
+ * it waits for the second one, so the workflow function is executed again from
+ * the top after the wake. It logs when it sleeps so a test can send the second
+ * message only after that.
+ */
+export const workflowTracedActor = actor({
+	state: { chargeAttempts: 0 },
+	db: db(),
+	queues: {
+		approve: jobSchema,
+		resume: jobSchema,
+	},
+	onSleep: (c) => {
+		c.log.warn(
+			{ slept_actor_key: c.key[0] },
+			"workflow traced actor slept",
+		);
+	},
+	run: workflow(async (ctx) => {
+		await ctx.queue.next("wait-approve", { names: ["approve"] });
+		await ctx.step("reserve-stock", async (c) => {
+			await c.db.execute("SELECT 'reserve-stock' AS step");
+		});
+		await ctx.queue.next("wait-resume", { names: ["resume"] });
+		await ctx.step({
+			name: "charge-card",
+			maxRetries: 3,
+			retryBackoffBase: 10,
+			retryBackoffMax: 10,
+			run: async (c) => {
+				c.state.chargeAttempts += 1;
+				if (c.state.chargeAttempts <= 2) {
+					throw new UserError("card declined", {
+						code: "card_declined",
+					});
+				}
+			},
+		});
+		await ctx.step("notify", async (c) => {
+			const client = c.client<any>();
+			await client.telemetryRunConsumerActor
+				.getOrCreate(c.key)
+				.send("runJobs", { id: "workflow-notify" });
+		});
+	}),
+	actions: {},
+	options: {
+		sleepTimeout: 50,
+	},
 });
