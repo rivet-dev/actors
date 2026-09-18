@@ -8,16 +8,20 @@ skill: true
 
 <Tabs>
 <Tab title="Rivet Cloud">
+
 	Actors are private by default on Rivet Cloud. Only requests with the publishable token can interact with actors.
 
 	- **Backend-only actors**: If your publishable token is only included in your backend, then authentication is not necessary.
 	- **Frontend-accessible actors**: If your publishable token is included in your frontend, then implementing authentication is recommended.
+
 </Tab>
 <Tab title="Self-Hosted">
+
 	Actors are public by default on self-hosted Rivet. Anyone can access them without a token.
 
 	- **Only accessible within private network**: If Rivet is only accessible within your private network, then authentication is not necessary.
 	- **Rivet exposed to the public internet**: If Rivet is configured to accept traffic from the public internet, then implementing authentication is recommended.
+
 </Tab>
 </Tabs>
 
