@@ -21,6 +21,8 @@ import {
 	Pinger,
 	PingerLive,
 	ScaledOverflowError,
+	ScheduledNoPayload,
+	ScheduledNoPayloadLive,
 	Strict,
 	StrictLive,
 	TransformedStateActor,
@@ -81,6 +83,7 @@ const TestLayer = ReadyForEnvoy.pipe(
 					WakeDecodeFailLive,
 					BuildSetRejectedLive,
 					TransformedStateActorLive,
+					ScheduledNoPayloadLive,
 				),
 			),
 			Layer.provideMerge(Flags.layer),
@@ -133,6 +136,49 @@ layer(TestLayer)("end-to-end", (it) => {
 					0,
 				);
 			}),
+	);
+
+	it.effect("runs scheduled actions without payloads", () =>
+		Effect.gen(function* () {
+			const key = "t-scheduled-no-payload";
+			const actor = (yield* ScheduledNoPayload.client).getOrCreate(key);
+			const flags = yield* Flags;
+			const firedFlag = `scheduled-no-payload:${key}`;
+
+			yield* actor.ScheduleExpiration({ delay: 25 });
+
+			const fired = yield* Effect.sync(() => flags.get(firedFlag)).pipe(
+				Effect.repeat({
+					until: (value) => value === true,
+					schedule: Schedule.spaced("100 millis"),
+				}),
+				Effect.timeout("5 seconds"),
+				TestClock.withLive,
+			);
+			assert.strictEqual(fired, true);
+			assert.strictEqual(yield* actor.GetExpirationCount(), 1);
+
+			const client = yield* Effect.acquireRelease(
+				Effect.sync(() => createClient({ endpoint, token, namespace })),
+				(client) => Effect.promise(() => client.dispose()),
+			);
+			const rawActor = client.ScheduledNoPayload.getOrCreate(
+				"t-invalid-no-payload",
+			);
+			const error = yield* Effect.promise(async () => {
+				try {
+					await Reflect.apply(rawActor.Expire, rawActor, [
+						{ unexpected: true },
+					]);
+					throw new Error("expected arbitrary payload to fail");
+				} catch (error) {
+					return RawRivetErrors.toRivetError(error);
+				}
+			});
+
+			assert.strictEqual(error.group, "request");
+			assert.strictEqual(error.code, "invalid");
+		}),
 	);
 
 	it.effect("rejects malformed raw action payloads as request.invalid", () =>
