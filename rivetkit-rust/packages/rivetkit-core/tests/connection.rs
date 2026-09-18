@@ -4,6 +4,7 @@ mod moved_tests {
 	use std::collections::BTreeSet;
 	use std::sync::Arc;
 	use std::sync::atomic::{AtomicUsize, Ordering};
+	use std::sync::mpsc as std_mpsc;
 	use std::time::Duration;
 
 	use parking_lot::Mutex;
@@ -29,6 +30,47 @@ mod moved_tests {
 	#[test]
 	fn make_connection_key_matches_typescript_layout() {
 		assert_eq!(make_connection_key("conn-1"), b"\x02conn-1".to_vec());
+	}
+
+	#[test]
+	fn retained_connection_snapshot_does_not_block_disconnect_writer() {
+		let ctx = ActorContext::new_with_kv(
+			"actor-connection-snapshot",
+			"actor",
+			Vec::new(),
+			"local",
+			Kv::new_in_memory(),
+		);
+		ctx.insert_existing(super::ConnHandle::new(
+			"conn-snapshot",
+			Vec::new(),
+			Vec::new(),
+			false,
+		));
+		let snapshot = ctx.conns();
+		let (started_tx, started_rx) = std_mpsc::channel();
+		let (removed_tx, removed_rx) = std_mpsc::channel();
+		let writer = std::thread::spawn({
+			let ctx = ctx.clone();
+			move || {
+				started_tx.send(()).expect("test receiver should stay open");
+				let removed = ctx.remove_existing("conn-snapshot").is_some();
+				removed_tx
+					.send(removed)
+					.expect("test receiver should stay open");
+			}
+		});
+
+		started_rx.recv().expect("disconnect writer should start");
+		let removed = removed_rx.recv_timeout(Duration::from_secs(2));
+		let snapshot_ids = snapshot
+			.map(|conn| conn.id().to_owned())
+			.collect::<Vec<_>>();
+		writer.join().expect("disconnect writer should join");
+
+		assert!(removed.expect("retained snapshot must not block connection writer"));
+		assert_eq!(snapshot_ids, vec!["conn-snapshot".to_owned()]);
+		assert!(ctx.conns().is_empty());
 	}
 
 	#[tokio::test]
