@@ -178,7 +178,7 @@ const makeProto = <
  * import { Schema } from "effect"
  * import { Action } from "@rivetkit/effect"
  *
- * class CounterOverflow extends Schema.TaggedErrorClass<CounterOverflow>()(
+ * class CounterOverflow extends Schema.TaggedError<CounterOverflow>()(
  *   "CounterOverflow",
  *   { limit: Schema.Number },
  * ) {}
