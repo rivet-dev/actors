@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Actor, State } from "@rivetkit/effect";
-import { Context, Effect, Layer } from "effect";
+import { Action, Actor, Registry, State } from "@rivetkit/effect";
+import { Context, Effect, Layer, Schema } from "effect";
 import type * as Rivetkit from "rivetkit";
 
 class Prefix extends Context.Service<Prefix, { readonly value: string }>()(
@@ -205,5 +205,87 @@ describe("Actor.toWakeHandler", () => {
 				assert.strictEqual(calls, 2);
 				assert.strictEqual(yield* second.Count(), 2);
 			}),
+	);
+});
+
+describe("Actor.toLayer options", () => {
+	const Optioned = Actor.make("Optioned", {
+		actions: [Action.make("Noop")],
+	});
+	const noop = { Noop: () => Effect.void };
+
+	/**
+	 * Builds an actor layer against a throwaway registry and hands back
+	 * the options the underlying RivetKit actor was actually created
+	 * with, after RivetKit has parsed them and filled in its defaults.
+	 */
+	const builtOptions = (
+		actorsLayer: Layer.Layer<never, never, Registry.Registry>,
+	) =>
+		Effect.gen(function* () {
+			const registry = yield* Registry.Registry;
+			const built = registry.rivetkitActors.get("Optioned");
+
+			assert.ok(built, "expected Optioned to be registered");
+
+			return built.config.options;
+		}).pipe(
+			Effect.provide(
+				actorsLayer.pipe(
+					Layer.provideMerge(Registry.layer({ noWelcome: true })),
+				),
+			),
+		);
+
+	it.effect("forwards instance options to the RivetKit actor", () =>
+		Effect.gen(function* () {
+			const options = yield* builtOptions(
+				Optioned.toLayer(noop, {
+					actionTimeout: 1_234,
+					sleepTimeout: 5_678,
+					maxQueueMessageSize: 128 * 1024,
+				}),
+			);
+
+			assert.strictEqual(options.actionTimeout, 1_234);
+			assert.strictEqual(options.sleepTimeout, 5_678);
+			assert.strictEqual(options.maxQueueMessageSize, 128 * 1024);
+		}),
+	);
+
+	it.effect("keeps forwarding the Inspector display options", () =>
+		Effect.gen(function* () {
+			const options = yield* builtOptions(
+				Optioned.toLayer(noop, { name: "Display", icon: "rocket" }),
+			);
+
+			assert.strictEqual(options.name, "Display");
+			assert.strictEqual(options.icon, "rocket");
+		}),
+	);
+
+	it.effect("leaves RivetKit's own defaults in place when unset", () =>
+		Effect.gen(function* () {
+			const options = yield* builtOptions(Optioned.toLayer(noop, {}));
+
+			assert.isNumber(options.actionTimeout);
+			assert.isNumber(options.sleepTimeout);
+		}),
+	);
+
+	it.effect("does not forward the SDK-only options", () =>
+		Effect.gen(function* () {
+			const options = yield* builtOptions(
+				Optioned.toLayer(noop, {
+					state: {
+						schema: Schema.Number,
+						initialValue: () => 0,
+					},
+				}),
+			);
+
+			assert.isFalse("state" in options);
+			assert.isFalse("db" in options);
+		}),
 	);
 });

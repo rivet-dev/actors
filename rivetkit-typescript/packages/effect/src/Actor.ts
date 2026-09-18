@@ -27,17 +27,15 @@ const TypeId = "~@rivetkit/effect/Actor";
 export const isActor = (u: unknown): u is Actor<any, any> =>
 	Predicate.hasProperty(u, TypeId);
 
-const rivetkitActorOptionsKeys = [
-	"name",
-	"icon",
-] as const satisfies ReadonlyArray<
-	keyof NonNullable<Rivetkit.ActorOptionsInput>
->;
+/**
+ * The option keys this SDK consumes itself instead of handing to
+ * RivetKit. Everything else in {@link Options} is forwarded verbatim,
+ * so a new RivetKit actor option is usable here as soon as it lands
+ * upstream, with no change to this file.
+ */
+const effectActorOptionsKeys = ["state", "db"] as const;
 
-export type RivetkitActorOptions = Pick<
-	NonNullable<Rivetkit.ActorOptionsInput>,
-	(typeof rivetkitActorOptionsKeys)[number]
->;
+export type RivetkitActorOptions = NonNullable<Rivetkit.ActorOptionsInput>;
 
 /**
  * Per-actor instance options. Combines the public
@@ -73,8 +71,8 @@ const splitOptions = <
 >(
 	options: Options<State, Database>,
 ) => ({
-	rivetkitOptions: Struct.pick(options, rivetkitActorOptionsKeys),
-	effectOptions: Struct.omit(options, rivetkitActorOptionsKeys),
+	rivetkitOptions: Struct.omit(options, effectActorOptionsKeys),
+	effectOptions: Struct.pick(options, effectActorOptionsKeys),
 });
 
 /**
