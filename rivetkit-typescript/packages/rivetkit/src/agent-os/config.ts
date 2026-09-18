@@ -4,7 +4,11 @@ import type {
 	PermissionRequest,
 } from "@rivet-dev/agent-os-core";
 import { z } from "zod/v4";
-import type { ActorContext, BeforeConnectContext } from "@/actor/config";
+import type {
+	ActorContext,
+	ActorOptionsInput,
+	BeforeConnectContext,
+} from "@/actor/config";
 import type { AgentOsActorState, AgentOsActorVars } from "./types";
 
 const zFunction = <
@@ -18,6 +22,9 @@ const AgentOsOptionsSchema = z.custom<AgentOsOptions>(
 export const agentOsActorConfigSchema = z
 	.object({
 		options: AgentOsOptionsSchema.optional(),
+		actorOptions: z
+			.record(z.string(), z.unknown())
+			.optional(),
 		preview: z
 			.object({
 				defaultExpiresInSeconds: z.number().positive().default(3600),
@@ -67,13 +74,15 @@ interface AgentOsActorConfigCallbacks<TConnParams> {
 // Parsed config (after Zod defaults/transforms applied).
 export type AgentOsActorConfig<TConnParams = undefined> = Omit<
 	z.infer<typeof agentOsActorConfigSchema>,
-	"onBeforeConnect" | "onSessionEvent" | "onPermissionRequest"
-> &
-	AgentOsActorConfigCallbacks<TConnParams>;
+	"onBeforeConnect" | "onSessionEvent" | "onPermissionRequest" | "actorOptions"
+> & {
+	actorOptions?: ActorOptionsInput;
+} & AgentOsActorConfigCallbacks<TConnParams>;
 
 // Input config (what users pass in before Zod transforms).
 export type AgentOsActorConfigInput<TConnParams = undefined> = Omit<
 	z.input<typeof agentOsActorConfigSchema>,
-	"onBeforeConnect" | "onSessionEvent" | "onPermissionRequest"
-> &
-	AgentOsActorConfigCallbacks<TConnParams>;
+	"onBeforeConnect" | "onSessionEvent" | "onPermissionRequest" | "actorOptions"
+> & {
+	actorOptions?: ActorOptionsInput;
+} & AgentOsActorConfigCallbacks<TConnParams>;
