@@ -39,7 +39,11 @@ export interface SqliteTransactionOptions {
 		 * Atomically includes actor and hibernatable connection state.
 		 * Only single-statement `execute` calls are supported in the transaction.
 		 * Concurrent actions that try to mutate state while the transaction is
-		 * active fail with `actor.state_transaction_conflict`.
+		 * active fail with `actor.state_transaction_conflict`. Concurrent reads
+		 * of actor or connection state observe the committed values (a snapshot
+		 * taken when the transaction opened), and background saves persist that
+		 * snapshot, so the transaction's uncommitted writes are never observed
+		 * or durably flushed until it commits.
 		 */
 		includeState?: boolean;
 	};

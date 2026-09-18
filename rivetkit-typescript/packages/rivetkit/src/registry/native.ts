@@ -333,6 +333,17 @@ type NativePersistActorState = {
 	pendingStateTransactionOwners?: Set<symbol>;
 	stateTransactionTail?: Promise<void>;
 	stateTransactionSaveDeferred?: boolean;
+	// Present only while an includeState transaction is active and state is
+	// enabled. Holds a structured clone of the state as of transaction start.
+	// The owner keeps mutating the live `state`; every other context reads this
+	// snapshot so it observes only committed values until the owner commits.
+	committedStateSnapshot?: { value: unknown };
+	// Committed hibernatable connection state (connId -> encoded bytes) captured
+	// when an includeState transaction opens. Non-owner contexts read and
+	// serialize these bytes instead of the connection's live state, so a
+	// concurrent read or a background save never sees or durably persists the
+	// transaction's uncommitted connection writes.
+	committedConnStateSnapshot?: Map<string, Uint8Array>;
 };
 type NativeDestroyGate = {
 	destroyCompletion?: Promise<void>;
@@ -1309,6 +1320,7 @@ class NativeConnAdapter {
 	#ctx?: ActorContextHandle;
 	#queueHibernationRemoval?: (connId: string) => void;
 	#assertCanMutateState?: () => void;
+	#isStateTransactionOwner?: () => boolean;
 	#stateProxy?: unknown;
 	#stateProxyTarget?: unknown;
 
@@ -1319,6 +1331,7 @@ class NativeConnAdapter {
 		ctx?: ActorContextHandle,
 		queueHibernationRemoval?: (connId: string) => void,
 		assertCanMutateState?: () => void,
+		isStateTransactionOwner?: () => boolean,
 	) {
 		this.#runtime = runtime;
 		this.#conn = conn;
@@ -1326,6 +1339,7 @@ class NativeConnAdapter {
 		this.#ctx = ctx;
 		this.#queueHibernationRemoval = queueHibernationRemoval;
 		this.#assertCanMutateState = assertCanMutateState;
+		this.#isStateTransactionOwner = isStateTransactionOwner;
 		(
 			this as NativeConnAdapter & {
 				[CONN_STATE_MANAGER_SYMBOL]?: unknown;
@@ -1441,6 +1455,25 @@ class NativeConnAdapter {
 	#readState(): unknown {
 		if (!this.#ctx) {
 			return decodeValue(this.#runtime.connState(this.#conn));
+		}
+
+		// While another context's includeState transaction is mutating this
+		// connection's state, non-owner readers observe the committed snapshot
+		// rather than the owner's uncommitted writes. The owner keeps reading
+		// its live state.
+		const snapshot = getNativePersistState(
+			this.#runtime,
+			this.#ctx,
+		).committedConnStateSnapshot;
+		if (
+			snapshot !== undefined &&
+			this.#isStateTransactionOwner !== undefined &&
+			!this.#isStateTransactionOwner()
+		) {
+			const committedBytes = snapshot.get(this.id);
+			if (committedBytes !== undefined) {
+				return decodeValue(committedBytes);
+			}
 		}
 
 		const connState = getNativeConnPersistState(
@@ -2609,17 +2642,20 @@ class NativeConnectionMap implements ReadonlyMap<string, NativeConnAdapter> {
 	#ctx: ActorContextHandle;
 	#schemas: NativeValidationConfig;
 	#assertCanMutateState: () => void;
+	#isStateTransactionOwner?: () => boolean;
 
 	constructor(
 		runtime: CoreRuntime,
 		ctx: ActorContextHandle,
 		schemas: NativeValidationConfig,
 		assertCanMutateState: () => void,
+		isStateTransactionOwner?: () => boolean,
 	) {
 		this.#runtime = runtime;
 		this.#ctx = ctx;
 		this.#schemas = schemas;
 		this.#assertCanMutateState = assertCanMutateState;
+		this.#isStateTransactionOwner = isStateTransactionOwner;
 	}
 
 	#connToAdapter(conn: ConnHandle): NativeConnAdapter {
@@ -2636,6 +2672,7 @@ class NativeConnectionMap implements ReadonlyMap<string, NativeConnAdapter> {
 					),
 				),
 			this.#assertCanMutateState,
+			this.#isStateTransactionOwner,
 		);
 	}
 
@@ -2951,6 +2988,7 @@ export class ActorContextHandleAdapter {
 				this.#ctx,
 				this.#schemas,
 				() => this.#assertCanMutateState(),
+				() => this.ownsActiveStateTransaction(),
 			);
 		}
 		return this.#connMap;
@@ -3120,21 +3158,36 @@ export class ActorContextHandleAdapter {
 			pendingOwners.delete(this.#stateTransactionOwner);
 			actorState.activeStateTransactionOwner =
 				this.#stateTransactionOwner;
-			return {
-				actorContext: this,
-				actorStateBaseline: this.#stateEnabled
-					? structuredClone(this.#readState())
-					: undefined,
-				connectionStateBaselines: new Map(
-					callNativeSync(() =>
-						this.#runtime.actorConns(this.#ctx),
-					).map((conn) => [
+			// Snapshot the committed state up front. The owner mutates the live
+			// `state` in place; every non-owner context reads this snapshot
+			// instead, so actions observe only committed values while the
+			// transaction is open. Doubles as the rollback baseline.
+			const actorStateBaseline = this.#stateEnabled
+				? structuredClone(this.#readState())
+				: undefined;
+			if (this.#stateEnabled) {
+				actorState.committedStateSnapshot = {
+					value: actorStateBaseline,
+				};
+			}
+			// Snapshot committed connection state too. Non-owner reads and
+			// background saves use these bytes instead of the connection's live
+			// (possibly uncommitted) state; also the rollback baseline.
+			const connectionStateBaselines = new Map<string, Uint8Array>(
+				callNativeSync(() => this.#runtime.actorConns(this.#ctx)).map(
+					(conn) => [
 						callNativeSync(() => this.#runtime.connId(conn)),
 						new Uint8Array(
 							callNativeSync(() => this.#runtime.connState(conn)),
 						),
-					]),
+					],
 				),
+			);
+			actorState.committedConnStateSnapshot = connectionStateBaselines;
+			return {
+				actorContext: this,
+				actorStateBaseline,
+				connectionStateBaselines,
 				committed: false,
 				release,
 			};
@@ -3158,6 +3211,10 @@ export class ActorContextHandleAdapter {
 				this.#restoreStateTransactionBaseline(scope);
 			}
 		} finally {
+			// Tear down the read snapshots so non-owner contexts see the
+			// committed (or restored) live state again.
+			actorState.committedStateSnapshot = undefined;
+			actorState.committedConnStateSnapshot = undefined;
 			if (
 				actorState.activeStateTransactionOwner ===
 				this.#stateTransactionOwner
@@ -3299,13 +3356,27 @@ export class ActorContextHandleAdapter {
 			this.#stateEnabled && this.#readState() !== undefined
 				? encodeValue(this.#readState())
 				: undefined;
+		// When another context's includeState transaction is mutating connection
+		// state, serialize the committed snapshot rather than the live bytes, so
+		// a background save can't durably persist connection state the
+		// transaction may still roll back. The owner (e.g. the commit path) is
+		// exempt so it flushes the values it is committing.
+		const isStateTransactionOwner =
+			actorState.activeStateTransactionOwner ===
+			this.#stateTransactionOwner;
+		const connSnapshot = isStateTransactionOwner
+			? undefined
+			: actorState.committedConnStateSnapshot;
 		const connHibernation = callNativeSync(() =>
 			this.#runtime.actorDirtyHibernatableConns(this.#ctx),
 		).map((conn) => {
 			const connId = callNativeSync(() => this.#runtime.connId(conn));
+			const committedBytes = connSnapshot?.get(connId);
 			return {
 				connId,
-				bytes: callNativeSync(() => this.#runtime.connState(conn)),
+				bytes:
+					committedBytes ??
+					callNativeSync(() => this.#runtime.connState(conn)),
 			};
 		});
 
@@ -3473,6 +3544,17 @@ export class ActorContextHandleAdapter {
 				callNativeSync(() => this.#runtime.actorState(this.#ctx)),
 			);
 		}
+		// While a transaction owner is mutating the live state, every other
+		// context reads the committed snapshot so it never observes the owner's
+		// uncommitted writes. The owner itself keeps reading the live state.
+		const snapshot = actorState.committedStateSnapshot;
+		if (
+			snapshot !== undefined &&
+			actorState.activeStateTransactionOwner !==
+				this.#stateTransactionOwner
+		) {
+			return snapshot.value;
+		}
 		return actorState.state;
 	}
 
@@ -3508,6 +3590,20 @@ export class ActorContextHandleAdapter {
 	/** @internal */
 	assertCanMutateState(): void {
 		this.#assertCanMutateState();
+	}
+
+	/**
+	 * @internal
+	 * True when this context owns the active includeState transaction. Used by
+	 * paired connection adapters to decide whether they read live connection
+	 * state (owner) or the committed snapshot (non-owner).
+	 */
+	ownsActiveStateTransaction(): boolean {
+		const actorState = getNativePersistState(this.#runtime, this.#ctx);
+		return (
+			actorState.activeStateTransactionOwner ===
+			this.#stateTransactionOwner
+		);
 	}
 
 	// Coalesce the request-save and onStateChange work to once per event loop
@@ -3813,6 +3909,7 @@ function withConnContext(
 					runtime.actorQueueHibernationRemoval(ctx, connId),
 				),
 			() => actorContext.assertCanMutateState(),
+			() => actorContext.ownsActiveStateTransaction(),
 		),
 	});
 }
@@ -4837,6 +4934,7 @@ export function buildNativeFactory(
 										),
 									),
 								() => actorCtx.assertCanMutateState(),
+								() => actorCtx.ownsActiveStateTransaction(),
 							);
 							try {
 								const nextConnState = hasStaticConnState
@@ -4895,6 +4993,7 @@ export function buildNativeFactory(
 										),
 									),
 								() => actorCtx.assertCanMutateState(),
+								() => actorCtx.ownsActiveStateTransaction(),
 							);
 							try {
 								await config.onConnect(
@@ -4939,6 +5038,8 @@ export function buildNativeFactory(
 												),
 											),
 										() => actorCtx.assertCanMutateState(),
+										() =>
+											actorCtx.ownsActiveStateTransaction(),
 									),
 								);
 							}
