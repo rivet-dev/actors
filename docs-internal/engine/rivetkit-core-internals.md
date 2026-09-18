@@ -117,9 +117,9 @@ Persistence order:
 
 1. Immediate state save.
 2. Pending state write wait.
-3. Alarm write wait.
-4. SQLite cleanup.
-5. Driver alarm cancellation.
+3. Sync the driver alarm for sleep, or cancel it without querying SQLite for destroy.
+4. Alarm write wait.
+5. SQLite cleanup.
 
 ## ActorConfig
 
