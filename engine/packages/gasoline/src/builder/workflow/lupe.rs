@@ -1,8 +1,10 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use opentelemetry::trace::TraceContextExt;
 use serde::{Serialize, de::DeserializeOwned};
 use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::{
 	ctx::WorkflowCtx,
@@ -139,6 +141,16 @@ impl<'a, S: Serialize + DeserializeOwned> LoopBuilder<'a, S> {
 				iteration_branch.set_loop_location(loop_location.clone());
 
 				let previous_iteration = iteration;
+
+				let parent_span_ctx = tracing::Span::current()
+					.context()
+					.span()
+					.span_context()
+					.clone();
+
+				let iteration_span =
+					tracing::info_span!(parent: None, "iteration", iteration=%previous_iteration);
+				iteration_span.add_link(parent_span_ctx);
 
 				// Async block for instrumentation purposes
 				let res = async {
@@ -281,7 +293,7 @@ impl<'a, S: Serialize + DeserializeOwned> LoopBuilder<'a, S> {
 						}
 					}
 				}
-				.instrument(tracing::info_span!("iteration", iteration=%previous_iteration))
+				.instrument(iteration_span)
 				.await?;
 
 				// Validate no leftover events
