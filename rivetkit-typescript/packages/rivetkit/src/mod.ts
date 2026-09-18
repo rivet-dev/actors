@@ -1,4 +1,5 @@
 export * from "@/actor/mod";
+export * from "@/auth/mod";
 export {
 	type AnyClient,
 	type Client,
