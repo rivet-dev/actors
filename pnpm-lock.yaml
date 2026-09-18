@@ -851,6 +851,9 @@ importers:
       '@hono/node-server':
         specifier: ^1.14.1
         version: 1.19.13(hono@4.11.9)
+      '@rivet-dev/workflows':
+        specifier: 1.0.0
+        version: 1.0.0(rivetkit@rivetkit-typescript+packages+rivetkit)
       '@rivetkit/cloudflare-workers':
         specifier: workspace:*
         version: link:../../rivetkit-typescript/packages/cloudflare-workers
@@ -8581,6 +8584,12 @@ packages:
     resolution: {integrity: sha512-mu8TPRTrpiDFgteHmkMNKBOkzywiTOnQHkdnNblh3wfSsJeEZp8qEUgu8ELp1y1MnFqC4OuLAlN0ii+tWRieWg==}
     engines: {node: '>=20'}
     hasBin: true
+
+  '@rivet-dev/workflows@1.0.0':
+    resolution: {integrity: sha512-FKuG0l716jImDlR3NaobFx0pifd0zDf/oeNXi25yHGiFWWwxQMePmS7OT04Onn2JmJw1+dqnTALot/UfXn10oA==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      rivetkit: workspace:*
 
   '@rivet-gg/cloud@https://pkg.pr.new/rivet-dev/engine-ee/@rivet-gg/cloud@979':
     resolution: {tarball: https://pkg.pr.new/rivet-dev/engine-ee/@rivet-gg/cloud@979}
@@ -24931,6 +24940,15 @@ snapshots:
       '@rivet-dev/services-linux-arm64-musl': 0.1.6
       '@rivet-dev/services-linux-x64-musl': 0.1.6
       '@rivet-dev/services-win32-x64': 0.1.6
+
+  '@rivet-dev/workflows@1.0.0(rivetkit@rivetkit-typescript+packages+rivetkit)':
+    dependencies:
+      '@rivetkit/bare-ts': 0.6.2
+      cbor-x: 1.6.4
+      fdb-tuple: 1.0.0
+      pino: 9.9.5
+      rivetkit: link:rivetkit-typescript/packages/rivetkit
+      vbare: 0.0.4
 
   '@rivet-gg/cloud@https://pkg.pr.new/rivet-dev/engine-ee/@rivet-gg/cloud@979':
     dependencies:

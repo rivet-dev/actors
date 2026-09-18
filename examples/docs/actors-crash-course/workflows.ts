@@ -1,12 +1,11 @@
-import { actor, queue } from "rivetkit";
-import { workflow } from "rivetkit/workflow";
+import { queue, workflow } from "@rivet-dev/workflows";
 
-const worker = actor({
+const worker = workflow({
 	state: { processed: 0 },
 	queues: {
 		tasks: queue<{ url: string }>(),
 	},
-	run: workflow(async (ctx) => {
+	run: async (ctx) => {
 		await ctx.loop("task-loop", async (loopCtx) => {
 			const message = await loopCtx.queue.next("wait-task");
 
@@ -15,7 +14,7 @@ const worker = actor({
 				loopCtx.state.processed += 1;
 			});
 		});
-	}),
+	},
 });
 
 async function processTask(url: string): Promise<void> {

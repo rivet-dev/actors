@@ -38,11 +38,13 @@ Each lifecycle hook and handler has a corresponding `*ContextOf` type, exported 
 | `onBeforeActionResponse` | `BeforeActionResponseContextOf` |
 | `actions.*` | `ActionContextOf` |
 | `run` | `RunContextOf` |
-| `workflow` orchestration helpers (root, `loop`, `try`, `race`, `join` branches) | `WorkflowContextOf` |
+| `workflow` root context | `WorkflowContextOf` |
+| `workflow` `loop` iterations | `WorkflowLoopContextOf` |
+| `workflow` `try`, `race`, and `join` branches | `WorkflowBranchContextOf` |
 | `workflow` `step` / `tryStep` run + rollback helpers | `WorkflowStepContextOf` |
 | `onRequest` | `RequestContextOf` |
 | `onWebSocket` | `WebSocketContextOf` |
 
 `ActorContextOf`, `ConnContextOf`, and `ConnInitContextOf` are general-purpose base context types useful for helper functions that don't correspond to a specific hook.
 
-Workflow context extractors are exported from both `"rivetkit"` and `"rivetkit/workflow"`.
+Workflow context extractors are exported from [`@rivet-dev/workflows`](/workflows/docs).

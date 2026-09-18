@@ -1,10 +1,9 @@
-import { actor, queue, setup } from "rivetkit";
-import { Loop, workflow } from "rivetkit/workflow";
+import { Loop, queue, setup, workflow } from "@rivet-dev/workflows";
 
 type WorkMessage = { amount: number };
 type ControlMessage = { type: "stop"; reason: string };
 
-const worker = actor({
+const worker = workflow({
 	state: {
 		phase: "idle" as "idle" | "running" | "stopped",
 		processed: 0,
@@ -15,7 +14,7 @@ const worker = actor({
 		work: queue<WorkMessage>(),
 		control: queue<ControlMessage>(),
 	},
-	run: workflow(async (ctx) => {
+	run: async (ctx) => {
 		await ctx.step("setup", async (ctx) => {
 			await fetch("https://api.example.com/workers/init", {
 				method: "POST",
@@ -51,7 +50,7 @@ const worker = actor({
 			ctx.state.phase = "stopped";
 			ctx.state.stopReason = stopReason;
 		});
-	}),
+	},
 });
 
 const registry = setup({ use: { worker } });

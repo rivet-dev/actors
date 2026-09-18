@@ -61,7 +61,7 @@ Calling `cron.set` or `cron.every` again with the same name replaces its configu
 
 ## Failure and idempotency
 
-Keep scheduled actions idempotent when duplicate work would be harmful. See [Execution behavior](/actors/docs/schedule#execution-behavior) for retry behavior and workflow guidance.
+Keep scheduled actions idempotent when duplicate work would be harmful. See [Execution behavior](/actors/docs/schedule#execution-behavior) for retry behavior and workflow guidance. For durable multi-step jobs, use [workflows](/workflows/docs).
 
 ## Topology
 

@@ -3,11 +3,15 @@
 	"version": "2.0.21",
 	"private": true,
 	"type": "module",
+	"engines": {
+		"node": ">=22"
+	},
 	"scripts": {
 		"check-types": "tsc --noEmit"
 	},
 	"dependencies": {
 		"@durable-streams/client": "^0.2.6",
+		"@rivet-dev/workflows": "1.0.0",
 		"rivetkit": "workspace:*",
 		"@rivetkit/react": "workspace:*",
 		"@rivetkit/engine-api-full": "workspace:*",

@@ -1,6 +1,6 @@
 ---
 title: "Queues & Run Loops"
-description: "Process durable messages in order with Rivet Actor queues and run loops, including typed payloads, replies, and workflow integration."
+description: "Process durable messages in order with Rivet Actor queues and run loops, including typed payloads, replies, and completable messages."
 skill: true
 ---
 
@@ -127,7 +127,7 @@ This means you can run normal code in `run` without worrying about sleep interru
 - Actions are for getting data, queue entries are for mutating data.
 - Implement connection auth in `onBeforeConnect`. See [Authentication](/actors/docs/authentication).
 - Route most state changes through one queue loop so ordering stays predictable.
-- If you need more complex multi-step run loops, consider using workflows.
+- For durable multi-step processing, use [workflows](/workflows/docs).
 - Use `c.aborted` and `c.abortSignal` for actor shutdown. Use your own `AbortController` for earlier loop cancellation.
 - Add `timeout` when callers need bounded wait behavior.
 - Use `wait: true` only when the caller actually needs a response.
