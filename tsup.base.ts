@@ -1,8 +1,10 @@
 import type { Options } from "tsup";
+import { createBoundaryEnforcementPlugin } from "./tsup.plugin.boundaries.ts";
 
 const FAST_BUILD = process.env.FAST_BUILD === "1";
 
 export default {
+	esbuildPlugins: [createBoundaryEnforcementPlugin()],
 	target: "node16",
 	platform: "node",
 	format: ["cjs", "esm"],
