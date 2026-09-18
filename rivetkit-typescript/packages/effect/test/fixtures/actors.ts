@@ -733,3 +733,29 @@ export const BuildSetRejectedLive = BuildSetRejected.toLayer(
 		},
 	},
 );
+
+export const ScheduleReproAction = Action.make("ScheduleReproAction");
+export const ScheduleReproSchedule = Action.make("ScheduleReproSchedule");
+export const ScheduleReproActor = Actor.make("ScheduleReproActor", {
+	actions: [ScheduleReproAction, ScheduleReproSchedule],
+});
+export const ScheduleReproActorLive = ScheduleReproActor.toLayer(
+	({ rawRivetkitContext }) =>
+		Effect.gen(function* () {
+			const flags = yield* Flags;
+			return ScheduleReproActor.of({
+				ScheduleReproAction: () =>
+					Effect.sync(() => {
+						flags.set("schedule_repro_fired", true);
+						return null;
+					}),
+				ScheduleReproSchedule: () =>
+					Effect.gen(function* () {
+						yield* Effect.promise(() =>
+							rawRivetkitContext.schedule.after(100, "ScheduleReproAction"),
+						);
+						return null;
+					}),
+			});
+		}),
+);

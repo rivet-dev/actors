@@ -85,8 +85,22 @@ export const make = <
 					// Raw RivetKit clients call no-argument actions with an
 					// absent first argument. The Effect JSON Void codec expects
 					// null, so adapt only actions that declared no payload.
+					// Additionally, scheduled no-payload actions receive ScheduledFireInfo
+					// in the payload position, which must also decode as null.
+					const isScheduledFireInfo = (val: unknown): boolean =>
+						typeof val === "object" &&
+						val !== null &&
+						"kind" in val &&
+						"scheduledAt" in val &&
+						"firedAt" in val;
+
+					const isMisalignedSchedulePayload =
+						!action.hasPayload &&
+						meta === undefined &&
+						isScheduledFireInfo(payload);
+
 					const payloadForDecode =
-						!action.hasPayload && payload === undefined
+						!action.hasPayload && (payload === undefined || isMisalignedSchedulePayload)
 							? null
 							: payload;
 					const decodedPayload = yield* decodePayload(

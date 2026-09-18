@@ -28,6 +28,8 @@ import {
 	Unregistered,
 	WakeDecodeFail,
 	WakeDecodeFailLive,
+	ScheduleReproActor,
+	ScheduleReproActorLive,
 } from "./fixtures/actors";
 import { TestTracer } from "./fixtures/tracer";
 import { prepareNamespace, waitForEnvoy } from "./shared-engine";
@@ -81,6 +83,7 @@ const TestLayer = ReadyForEnvoy.pipe(
 					WakeDecodeFailLive,
 					BuildSetRejectedLive,
 					TransformedStateActorLive,
+					ScheduleReproActorLive,
 				),
 			),
 			Layer.provideMerge(Flags.layer),
@@ -100,6 +103,25 @@ const TestLayer = ReadyForEnvoy.pipe(
 );
 
 layer(TestLayer)("end-to-end", (it) => {
+	it.effect("scheduled no-payload actions execute successfully", () =>
+		Effect.gen(function* () {
+			const flags = yield* Flags;
+			const client = yield* ScheduleReproActor.client;
+			const actor = client.getOrCreate("t-schedule");
+
+			yield* actor.ScheduleReproSchedule();
+
+			const fired = yield* Effect.sync(() => flags.get("schedule_repro_fired")).pipe(
+				Effect.repeat({
+					until: (v) => v === true,
+					schedule: Schedule.spaced("100 millis"),
+				}),
+				TestClock.withLive,
+			);
+			assert.strictEqual(fired, true);
+		}),
+	);
+
 	it.effect("round-trips an action with payload and success", () =>
 		Effect.gen(function* () {
 			const counter = (yield* Counter.client).getOrCreate("t-roundtrip");
