@@ -23,8 +23,7 @@ npm run dev
 
 This example demonstrates the core RivetKit concepts with a simple counter:
 
-- **Actor Definition** ([`src/actors.ts`](https://github.com/rivet-dev/rivet/tree/main/examples/hello-world/src/actors.ts)): Counter actor with persistent state and broadcast events
-- **Server Setup** ([`src/server.ts`](https://github.com/rivet-dev/rivet/tree/main/examples/hello-world/src/server.ts)): Minimal Hono server with RivetKit handler
+- **Actor and Server** ([`src/index.ts`](https://github.com/rivet-dev/rivet/tree/main/examples/hello-world/src/index.ts)): Counter actor with persistent state and broadcast events, plus actor registration and RivetKit server startup
 - **React Frontend** ([`frontend/App.tsx`](https://github.com/rivet-dev/rivet/tree/main/examples/hello-world/frontend/App.tsx)): Counter component using `useActor` hook and event subscriptions
 
 ## Resources
