@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gas::prelude::*;
 use rivet_types::actor::RunnerPoolError;
@@ -69,6 +69,25 @@ async fn runner_config_get_error_inner(
 	ctx: &OperationCtx,
 	runners: Vec<(Id, String)>,
 ) -> Result<Vec<RunnerPoolErrorCacheEntry>> {
+	let runner_configs = ctx
+		.op(crate::ops::runner_config::get::Input {
+			runners: runners.clone(),
+			bypass_cache: false,
+		})
+		.await?;
+	let envoy_runners = runner_configs
+		.into_iter()
+		.filter(|runner_config| runner_config.protocol_version.is_some())
+		.map(|runner_config| (runner_config.namespace_id, runner_config.name))
+		.collect::<HashSet<_>>();
+	let runners = runners
+		.into_iter()
+		.filter(|runner| !envoy_runners.contains(runner))
+		.collect::<Vec<_>>();
+	if runners.is_empty() {
+		return Ok(Vec::new());
+	}
+
 	// TODO: Query runner pool workflows as well to check if the workflow is dead
 	let queries: Vec<(&str, serde_json::Value)> = runners
 		.iter()

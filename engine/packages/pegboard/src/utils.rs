@@ -56,6 +56,11 @@ pub async fn purge_runner_config_caches(
 	cache
 		.clone()
 		.request()
+		.purge("pegboard.runner_config.get_error", vec![key.clone()])
+		.await?;
+	cache
+		.clone()
+		.request()
 		.purge("runner.list_runner_config_enabled_dcs", vec![key])
 		.await?;
 
