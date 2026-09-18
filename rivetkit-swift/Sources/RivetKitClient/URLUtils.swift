@@ -36,7 +36,9 @@ enum URLUtils {
         }
 
         var components = URLComponents(url: baseUrl, resolvingAgainstBaseURL: false)
-        components?.path = fullPath
+        // fullPath is already percent-encoded (see buildActorGatewayUrl); .path would
+        // re-encode `%` and break actor IDs containing `:` (e.g. Cloudflare Workers).
+        components?.percentEncodedPath = fullPath
         components?.percentEncodedQuery = queryParts.isEmpty ? nil : queryParts.joined(separator: "&")
         components?.fragment = nil
 
