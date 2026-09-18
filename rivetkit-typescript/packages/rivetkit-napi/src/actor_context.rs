@@ -36,6 +36,10 @@ use crate::{NapiInvalidArgument, NapiInvalidState, napi_anyhow_error};
 type AbortSignalTsfn = ThreadsafeFunction<(), ErrorStrategy::CalleeHandled>;
 type DisconnectPredicateTsfn =
 	ThreadsafeFunction<DisconnectPredicatePayload, ErrorStrategy::CalleeHandled>;
+/// Hops onto the JS thread to `unref` a stale `runtime_state` reference. Lazily installed the
+/// first time an `Env` is available, so `reset_runtime_state` can release the reference from a
+/// Tokio worker thread instead of leaking it. See `ActorContextShared::ensure_ref_dropper`.
+type RefDropperTsfn = ThreadsafeFunction<Ref<()>, ErrorStrategy::Fatal>;
 type RunRestartHook = Arc<dyn Fn(Option<(i64, u64)>) -> anyhow::Result<()> + Send + Sync + 'static>;
 pub(crate) type RegisteredTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
@@ -58,6 +62,7 @@ struct ActorContextShared {
 	run_restart: Mutex<Option<RunRestartHook>>,
 	task_sender: Mutex<Option<UnboundedSender<RegisteredTask>>>,
 	runtime_state: Mutex<Option<Ref<()>>>,
+	ref_dropper: Mutex<Option<RefDropperTsfn>>,
 	end_reason: Mutex<Option<EndReason>>,
 	keep_awake_regions: Mutex<BTreeMap<u32, KeepAwakeRegion>>,
 	websocket_callback_regions: Mutex<BTreeMap<u32, WebSocketCallbackRegion>>,
@@ -780,6 +785,10 @@ impl ActorContextShared {
 	}
 
 	fn runtime_state(&self, env: Env) -> napi::Result<JsObject> {
+		// Install the ref dropper before the first reference exists so `reset_runtime_state`
+		// can always release it later, even from a Tokio worker with no `Env`.
+		self.ensure_ref_dropper(env)?;
+
 		let mut runtime_state = self.runtime_state.lock();
 		if let Some(reference) = runtime_state.as_ref() {
 			return env.get_reference_value(reference);
@@ -789,6 +798,64 @@ impl ActorContextShared {
 		let state = env.get_reference_value(&reference)?;
 		*runtime_state = Some(reference);
 		Ok(state)
+	}
+
+	/// Lazily installs a threadsafe function that can `unref` a `runtime_state` napi
+	/// reference from any thread by hopping onto the JS thread to run the actual N-API call.
+	/// This is the only safe way to release the reference from `reset_runtime_state` and
+	/// `Drop`, which run on Tokio worker threads where no `Env` is available.
+	fn ensure_ref_dropper(&self, env: Env) -> napi::Result<()> {
+		let mut slot = self.ref_dropper.lock();
+		if slot.is_some() {
+			return Ok(());
+		}
+
+		let noop = env.create_function_from_closure("rivetkitRefDropper", |_ctx| Ok(()))?;
+		let mut tsfn: RefDropperTsfn =
+			noop.create_threadsafe_function(0, |ctx: ThreadSafeCallContext<Ref<()>>| {
+				let mut reference = ctx.value;
+				if let Err(err) = reference.unref(ctx.env) {
+					// `unref` did not decrement the reference's internal count, so letting
+					// it drop normally would trip the debug-mode zero-count assertion in
+					// napi-rs. This only leaks on this rare failure path (for example the
+					// JS environment tearing down), not on every actor wake cycle.
+					tracing::warn!(?err, "failed to unref stale runtime_state reference");
+					std::mem::forget(reference);
+				}
+				Ok(Vec::<napi::JsUnknown>::new())
+			})?;
+		// Do not keep the Node process alive solely to flush queued ref drops.
+		tsfn.unref(&env)?;
+
+		*slot = Some(tsfn);
+		Ok(())
+	}
+
+	/// Releases a stale `runtime_state` napi reference, hopping onto the JS thread via the
+	/// ref dropper installed by `ensure_ref_dropper` when no `Env` is available on the current
+	/// thread. Falls back to `mem::forget` only if the dropper was never installed, which
+	/// means `runtime_state()` was never called with a real `Env` (test contexts without a JS
+	/// runtime).
+	fn drop_stale_runtime_state(&self) {
+		let Some(old) = self.runtime_state.lock().take() else {
+			return;
+		};
+
+		let dropper = self.ref_dropper.lock().clone();
+		match dropper {
+			Some(dropper) => {
+				let status = dropper.call(old, ThreadsafeFunctionCallMode::NonBlocking);
+				if status != napi::Status::Ok {
+					tracing::warn!(?status, "failed to queue runtime_state reference drop");
+				}
+			}
+			None => {
+				tracing::warn!(
+					"ref dropper not installed, leaking napi runtime_state reference (expected only in contexts without a JS runtime)"
+				);
+				std::mem::forget(old);
+			}
+		}
 	}
 
 	fn clear_runtime_state(&self, env: Env) -> napi::Result<()> {
@@ -864,14 +931,7 @@ impl ActorContextShared {
 		*self.abort_token.lock() = None;
 		*self.run_restart.lock() = None;
 		*self.task_sender.lock() = None;
-		// napi Ref::unref requires an Env; this function runs on tokio workers
-		// with no Env available. Dropping without unref panics a debug_assert in
-		// napi-rs and silently leaks the napi reference slot in release. Forget
-		// instead so debug matches release behavior. Leak is bounded to one
-		// JsObject per actor wake cycle until the process exits.
-		if let Some(old) = self.runtime_state.lock().take() {
-			std::mem::forget(old);
-		}
+		self.drop_stale_runtime_state();
 		*self.end_reason.lock() = None;
 		*self.keep_awake_regions.lock() = BTreeMap::new();
 		*self.websocket_callback_regions.lock() = BTreeMap::new();
@@ -883,10 +943,7 @@ impl ActorContextShared {
 
 impl Drop for ActorContextShared {
 	fn drop(&mut self) {
-		// Same Env-less drop problem as reset_runtime_state. See comment there.
-		if let Some(old) = self.runtime_state.lock().take() {
-			std::mem::forget(old);
-		}
+		self.drop_stale_runtime_state();
 	}
 }
 
