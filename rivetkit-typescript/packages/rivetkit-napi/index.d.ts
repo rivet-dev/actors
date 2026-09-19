@@ -379,19 +379,27 @@ export declare class JsNativeDatabase {
   run(sql: string, params?: Array<JsBindParam> | undefined | null): Promise<ExecuteResult>
   query(sql: string, params?: Array<JsBindParam> | undefined | null): Promise<QueryResult>
   execute(sql: string, params?: Array<JsBindParam> | undefined | null): Promise<NativeExecuteResult>
+  executeSync(sql: string, params?: Array<JsBindParam> | undefined | null): NativeExecuteResult
   executeBatch(statements: Array<JsSqliteBatchStatement>): Promise<Array<NativeExecuteResult>>
   exec(sql: string): Promise<QueryResult>
+  execSync(sql: string): QueryResult
   close(): Promise<void>
   beginTransaction(timeoutMs?: number | undefined | null, name?: string | undefined | null): Promise<JsSqliteTransaction>
+  beginTransactionSync(timeoutMs?: number | undefined | null, name?: string | undefined | null): JsSqliteTransaction
 }
 export declare class JsSqliteTransaction {
   execute(sql: string, params?: Array<JsBindParam> | undefined | null): Promise<NativeExecuteResult>
+  executeSync(sql: string, params?: Array<JsBindParam> | undefined | null): NativeExecuteResult
   exec(sql: string): Promise<QueryResult>
+  execSync(sql: string): QueryResult
   commit(): Promise<void>
+  commitSync(): void
   rollback(): Promise<void>
+  rollbackSync(): void
 }
 export declare class JsActorStateTransaction {
   execute(sql: string, params?: Array<JsBindParam> | undefined | null): Promise<NativeExecuteResult>
+  executeSync(sql: string, params?: Array<JsBindParam> | undefined | null): NativeExecuteResult
   commit(payload: StateDeltaPayload): Promise<void>
   rollback(): Promise<void>
 }

@@ -20,26 +20,64 @@ function deferred<T>() {
 
 class FakeNativeDatabase implements JsNativeDatabaseLike {
 	async beginTransaction() {
+		this.transactionEvents.push("BEGIN");
+		return this.#transaction();
+	}
+
+	beginTransactionSync() {
+		this.transactionEvents.push("BEGIN_SYNC");
+		return this.#transaction();
+	}
+
+	#transaction() {
 		return {
 			exec: async (_sql: string) => this.exec(),
+			execSync: (_sql: string) => this.execSync(),
 			execute: async (sql: string, params?: NativeParams) =>
 				this.execute(sql, params),
-			commit: async () => {},
-			rollback: async () => {},
+			executeSync: (sql: string, params?: NativeParams) =>
+				this.executeSync(sql, params),
+			commit: async () => {
+				this.transactionEvents.push("COMMIT");
+			},
+			commitSync: () => {
+				this.transactionEvents.push("COMMIT_SYNC");
+			},
+			rollback: async () => {
+				this.transactionEvents.push("ROLLBACK");
+			},
+			rollbackSync: () => {
+				this.transactionEvents.push("ROLLBACK_SYNC");
+			},
 		};
 	}
 	active = 0;
 	maxActive = 0;
 	closed = false;
 	executeCalls: { sql: string; params?: NativeParams; write: boolean }[] = [];
+	transactionEvents: string[] = [];
 	#pending: ReturnType<typeof deferred<NativeExecuteResult>>[] = [];
 
 	async exec() {
 		return { columns: [], rows: [] };
 	}
 
+	execSync() {
+		return { columns: ["value"], rows: [[1], [2]] };
+	}
+
 	async execute(sql: string, params?: NativeParams) {
 		return await this.#startExecute(sql, params, false);
+	}
+
+	executeSync(sql: string, params?: NativeParams): NativeExecuteResult {
+		this.executeCalls.push({ sql, params, write: false });
+		return {
+			columns: ["value"],
+			rows: [[1]],
+			changes: 0,
+			lastInsertRowId: null,
+		};
 	}
 
 	async query(sql: string, params?: NativeParams) {
@@ -101,6 +139,109 @@ class FakeNativeDatabase implements JsNativeDatabaseLike {
 }
 
 describe("wrapJsNativeDatabase", () => {
+	test("rejects integer bindings that the native number bridge cannot preserve", async () => {
+		const native = new FakeNativeDatabase();
+		const wrapped = wrapJsNativeDatabase(native);
+		for (const value of [
+			9007199254740993n,
+			-9007199254740993n,
+			10n ** 400n,
+			1e20,
+		]) {
+			expect(() => wrapped.executeSync!("SELECT ?", [value])).toThrow(
+				"safe integer range",
+			);
+			await expect(wrapped.execute!("SELECT ?", [value])).rejects.toThrow(
+				"safe integer range",
+			);
+		}
+		expect(native.executeCalls).toEqual([]);
+		wrapped.executeSync!("SELECT ?, ?", [
+			BigInt(Number.MAX_SAFE_INTEGER),
+			Number.MIN_SAFE_INTEGER,
+		]);
+		expect(native.executeCalls[0]?.params).toEqual([
+			{ kind: "int", intValue: Number.MAX_SAFE_INTEGER },
+			{ kind: "int", intValue: Number.MIN_SAFE_INTEGER },
+		]);
+	});
+
+	test("closing a borrowed client preserves the core-owned database", async () => {
+		const native = new FakeNativeDatabase();
+		const wrapped = wrapJsNativeDatabase(native, { ownsDatabase: false });
+		await wrapped.close();
+		expect(native.closed).toBe(false);
+		expect(() => wrapped.executeSync!("SELECT 1")).toThrow(
+			"Database is closed",
+		);
+		const nextClient = wrapJsNativeDatabase(native, {
+			ownsDatabase: false,
+		});
+		expect(nextClient.executeSync!("SELECT 1").rows).toEqual([[1]]);
+		await nextClient.close();
+		await native.close();
+		expect(native.closed).toBe(true);
+	});
+
+	test("distinguishes unquoted identifiers from Unicode named parameters", () => {
+		const native = new FakeNativeDatabase();
+		const wrapped = wrapJsNativeDatabase(native);
+		wrapped.executeSync!("SELECT column$name, :café́, :🌍 FROM items", {
+			café́: 42,
+			"🌍": "world",
+		});
+		expect(native.executeCalls[0]?.params).toEqual([
+			{ kind: "int", intValue: 42 },
+			{ kind: "text", textValue: "world" },
+		]);
+	});
+
+	test("preserves the cached rowid across reads while still checking sync support", () => {
+		const native = new FakeNativeDatabase();
+		native.executeSync = (sql) => ({
+			columns: [],
+			rows: [],
+			changes: 0,
+			lastInsertRowId: sql === "INSERT" ? 42 : null,
+		});
+		const wrapped = wrapJsNativeDatabase(native);
+		wrapped.executeSync!("INSERT");
+		wrapped.executeSync!("SELECT 1");
+		expect(
+			wrapped.executeSync!("SELECT last_insert_rowid() AS id").rows,
+		).toEqual([[42]]);
+		native.executeSync = () => {
+			throw new Error("sync unavailable");
+		};
+		expect(() =>
+			wrapped.executeSync!("SELECT last_insert_rowid()"),
+		).toThrow("sync unavailable");
+	});
+
+	test("rejects cached rowid queries after close", async () => {
+		const wrapped = wrapJsNativeDatabase(new FakeNativeDatabase());
+		await wrapped.close();
+		expect(() =>
+			wrapped.executeSync!("SELECT last_insert_rowid()"),
+		).toThrow("Database is closed");
+		await expect(
+			wrapped.execute("SELECT last_insert_rowid()"),
+		).rejects.toThrow("Database is closed");
+	});
+
+	test("ignores named parameters in SQL strings, identifiers, and comments", () => {
+		const native = new FakeNativeDatabase();
+		const wrapped = wrapJsNativeDatabase(native);
+		wrapped.executeSync!(
+			`SELECT ':literal', :value AS "@column", ':it''s' /* $comment */ -- :line\r :stillComment
+		`,
+			{ value: 42 },
+		);
+		expect(native.executeCalls[0]?.params).toEqual([
+			{ kind: "int", intValue: 42 },
+		]);
+	});
+
 	test("admits Promise.all read queries concurrently", async () => {
 		const native = new FakeNativeDatabase();
 		const db = wrapJsNativeDatabase(native);
@@ -153,6 +294,47 @@ describe("wrapJsNativeDatabase", () => {
 			columns: ["value"],
 			rows: [[1]],
 		});
+	});
+
+	test("executes synchronously with normalized bindings", () => {
+		const native = new FakeNativeDatabase();
+		const db = wrapJsNativeDatabase(native);
+
+		const result = db.executeSync?.("SELECT ?, ?", [true, "text"]);
+		const execRows: unknown[][] = [];
+		db.execSync?.("SELECT 1; SELECT 2", (row) => execRows.push(row));
+
+		expect(native.executeCalls[0]?.params).toEqual([
+			{ kind: "int", intValue: 1 },
+			{ kind: "text", textValue: "text" },
+		]);
+		expect(result).toMatchObject({
+			columns: ["value"],
+			rows: [[1]],
+		});
+		expect(execRows).toEqual([[1], [2]]);
+	});
+
+	test("wraps synchronous transaction lifecycle methods", () => {
+		const native = new FakeNativeDatabase();
+		const db = wrapJsNativeDatabase(native);
+
+		const committed = db.beginTransactionSync?.(1_000, "commit");
+		if (!committed)
+			throw new Error("missing synchronous transaction support");
+		committed.executeSync("SELECT 1");
+		committed.commitSync();
+		const rolledBack = db.beginTransactionSync?.(1_000, "rollback");
+		if (!rolledBack)
+			throw new Error("missing synchronous transaction support");
+		rolledBack.rollbackSync();
+
+		expect(native.transactionEvents).toEqual([
+			"BEGIN_SYNC",
+			"COMMIT_SYNC",
+			"BEGIN_SYNC",
+			"ROLLBACK_SYNC",
+		]);
 	});
 
 	test("returns native execute metadata", async () => {

@@ -243,6 +243,59 @@ describe("WasmCoreRuntime", () => {
 		acceptRuntime(new NapiCoreRuntime({} as never));
 	});
 
+	test("routes synchronous SQLite lifecycle through NAPI and rejects it in wasm", () => {
+		const executeSync = vi.fn(() => ({
+			columns: ["value"],
+			rows: [[42]],
+			changes: 0,
+			lastInsertRowId: null,
+		}));
+		const transaction = {
+			commitSync: vi.fn(),
+			rollbackSync: vi.fn(),
+		};
+		const beginTransactionSync = vi.fn(() => transaction);
+		const context = {
+			sql: () => ({ executeSync, beginTransactionSync }),
+		} as unknown as ActorContextHandle;
+		const params = [{ kind: "int" as const, intValue: 42 }];
+		const napiRuntime = new NapiCoreRuntime({} as never);
+
+		expect(
+			napiRuntime.actorSqlExecuteSync(context, "SELECT ?", params),
+		).toEqual({
+			columns: ["value"],
+			rows: [[42]],
+			changes: 0,
+			lastInsertRowId: null,
+		});
+		expect(executeSync).toHaveBeenCalledWith("SELECT ?", params);
+		const transactionHandle = napiRuntime.actorSqlBeginTransactionSync(
+			context,
+			1_000,
+			"sync-test",
+		);
+		napiRuntime.actorSqlTransactionCommitSync(transactionHandle);
+		napiRuntime.actorSqlTransactionRollbackSync(transactionHandle);
+		expect(beginTransactionSync).toHaveBeenCalledWith(1_000, "sync-test");
+		expect(transaction.commitSync).toHaveBeenCalledOnce();
+		expect(transaction.rollbackSync).toHaveBeenCalledOnce();
+
+		const wasmRuntime = new WasmCoreRuntime(fakeWasmBindings());
+		expect(() =>
+			wasmRuntime.actorSqlExecuteSync(context, "SELECT ?", params),
+		).toThrow("only available in the Node.js native runtime");
+		expect(() => wasmRuntime.actorSqlBeginTransactionSync(context)).toThrow(
+			"only available in the Node.js native runtime",
+		);
+		expect(() =>
+			wasmRuntime.actorSqlTransactionCommitSync(transactionHandle),
+		).toThrow("only available in the Node.js native runtime");
+		expect(() =>
+			wasmRuntime.actorSqlTransactionRollbackSync(transactionHandle),
+		).toThrow("only available in the Node.js native runtime");
+	});
+
 	test("maps raw wasm registry, factory, and cancellation handles", () => {
 		const runtime = new WasmCoreRuntime(fakeWasmBindings());
 		const registry = runtime.createRegistry();

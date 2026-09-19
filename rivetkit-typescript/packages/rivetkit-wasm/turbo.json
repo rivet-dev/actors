@@ -1,4 +1,11 @@
 {
 	"$schema": "https://turbo.build/schema.json",
-	"extends": ["//"]
+	"extends": ["//"],
+	"tasks": {
+		"build": {
+			// Cargo tracks shared Rust inputs outside this package; Turbo's default
+			// task neither tracks those inputs nor restores the generated pkg.
+			"cache": false
+		}
+	}
 }

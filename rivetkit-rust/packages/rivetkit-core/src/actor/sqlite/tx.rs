@@ -189,9 +189,15 @@ impl SqliteDb {
 		let epoch = self.transaction_coordinator.epoch.load(Ordering::Acquire);
 		let permit = self.try_transaction_admission()?;
 		let wait = CoordinatorWaitGuard::new(self);
-		let gate = Arc::clone(&self.transaction_coordinator.gate)
-			.read_owned()
-			.await;
+		let gate = if self.fail_on_transaction_contention {
+			Arc::clone(&self.transaction_coordinator.gate)
+				.try_read_owned()
+				.map_err(|_| synchronous_transaction_contention_error())?
+		} else {
+			Arc::clone(&self.transaction_coordinator.gate)
+				.read_owned()
+				.await
+		};
 		drop(wait);
 		let state = self.transaction_coordinator.state.lock().await;
 		if state.closed {
@@ -322,9 +328,15 @@ impl SqliteDb {
 		let epoch = self.transaction_coordinator.epoch.load(Ordering::Acquire);
 		let permit = self.try_transaction_admission()?;
 		let wait = CoordinatorWaitGuard::new(self);
-		let gate_guard = Arc::clone(&self.transaction_coordinator.gate)
-			.write_owned()
-			.await;
+		let gate_guard = if self.fail_on_transaction_contention {
+			Arc::clone(&self.transaction_coordinator.gate)
+				.try_write_owned()
+				.map_err(|_| synchronous_transaction_contention_error())?
+		} else {
+			Arc::clone(&self.transaction_coordinator.gate)
+				.write_owned()
+				.await
+		};
 		drop(wait);
 		#[cfg(feature = "sqlite-local")]
 		let transaction_wait = transaction_wait_started_at.map(|started| started.elapsed());
@@ -503,6 +515,7 @@ impl SqliteDb {
 	}
 
 	async fn transaction_exec_inner(&self, key: &str, sql: String) -> Result<QueryResult> {
+		validate_managed_transaction_sql(&sql)?;
 		#[cfg(feature = "sqlite-local")]
 		let started_at = (self.profiling.config.enabled
 			&& self.backend() == super::SqliteBackend::LocalNative)
@@ -560,6 +573,7 @@ impl SqliteDb {
 		sql: String,
 		params: Option<Vec<BindParam>>,
 	) -> Result<ExecuteResult> {
+		validate_managed_transaction_sql(&sql)?;
 		#[cfg(feature = "sqlite-local")]
 		let started_at = (self.profiling.config.enabled
 			&& self.backend() == super::SqliteBackend::LocalNative)
@@ -848,6 +862,48 @@ impl SqliteDb {
 		if is_remote_connection_error(&error) {
 			self.release_transaction(key, TransactionTerminalState::ConnectionLost, false)
 				.await;
+		} else if let Ok((_, remote_session)) = self.transaction_operation(key).await {
+			// SQLite can roll back implicitly (e.g. INSERT OR ROLLBACK). Neither
+			// backend exposes autocommit state through the shared SQL interface.
+			// BEGIN fails without changing a live transaction or its savepoints;
+			// success means the original transaction has already ended. Probe only
+			// after errors, while holding the transaction's operation lock and gate.
+			let probe = self
+				.execute_backend_in_session("BEGIN".to_owned(), None, remote_session)
+				.await;
+			let still_active = probe.as_ref().is_err_and(|error| {
+				error.chain().any(|cause| {
+					cause
+						.to_string()
+						.to_ascii_lowercase()
+						.contains("cannot start a transaction within a transaction")
+				})
+			});
+			if !still_active {
+				let disconnected = probe.as_ref().is_err_and(is_remote_connection_error);
+				let close = if disconnected {
+					false
+				} else {
+					// Undo a successful probe, or clean up an uncertain failed probe.
+					self.execute_backend_in_session("ROLLBACK".to_owned(), None, remote_session)
+						.await
+						.as_ref()
+						.is_err_and(|error| {
+							!is_no_active_transaction_error(error)
+								&& !is_remote_connection_error(error)
+						})
+				};
+				self.release_transaction(
+					key,
+					if disconnected {
+						TransactionTerminalState::ConnectionLost
+					} else {
+						TransactionTerminalState::RolledBack
+					},
+					close,
+				)
+				.await;
+			}
 		}
 		self.attach_actor(map_transaction_connection_error(error))
 	}
@@ -1399,4 +1455,107 @@ fn transaction_terminal_state_error(key: &str, state: &'static str) -> anyhow::E
 		key: key.to_owned(),
 		state,
 	})
+}
+
+fn synchronous_transaction_contention_error() -> anyhow::Error {
+	transaction_invalid_argument_error(
+		"Synchronous SQLite cannot wait for an active or pending transaction. Use the transaction callback's tx value or await the asynchronous SQLite API.",
+	)
+}
+
+/// Reject transaction boundaries before executing any statement in a managed callback.
+/// Savepoints and trigger bodies remain valid within the outer transaction.
+pub(super) fn validate_managed_transaction_sql(sql: &str) -> Result<()> {
+	let bytes = sql.as_bytes();
+	let mut index = 0;
+	let mut leading = Vec::new();
+	let mut trigger = false;
+	let mut trigger_end = false;
+	let mut trigger_statement_start = false;
+	while index < bytes.len() {
+		let byte = bytes[index];
+		if byte.is_ascii_whitespace() {
+			index += 1;
+			continue;
+		}
+		if bytes[index..].starts_with(b"--") {
+			while index < bytes.len() && bytes[index] != b'\n' {
+				index += 1;
+			}
+			continue;
+		}
+		if bytes[index..].starts_with(b"/*") {
+			index += 2;
+			while index < bytes.len() && !bytes[index..].starts_with(b"*/") {
+				index += 1;
+			}
+			index = (index + 2).min(bytes.len());
+			continue;
+		}
+		if matches!(byte, b'\'' | b'"' | b'`' | b'[') {
+			let quote = if byte == b'[' { b']' } else { byte };
+			index += 1;
+			while index < bytes.len() {
+				if bytes[index] == quote {
+					index += 1;
+					if byte != b'[' && bytes.get(index) == Some(&quote) {
+						index += 1;
+					} else {
+						break;
+					}
+				} else {
+					index += 1;
+				}
+			}
+			continue;
+		}
+		if byte == b';' {
+			trigger_statement_start = true;
+			if !trigger || trigger_end {
+				validate_transaction_leading_words(&leading)?;
+				leading.clear();
+				trigger = false;
+				trigger_end = false;
+			}
+			index += 1;
+			continue;
+		}
+		if byte.is_ascii_alphabetic() || byte == b'_' {
+			let start = index;
+			while index < bytes.len()
+				&& (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_')
+			{
+				index += 1;
+			}
+			let word = sql[start..index].to_ascii_uppercase();
+			if leading.len() < 3 {
+				leading.push(word.clone());
+			}
+			trigger |= leading == ["CREATE", "TRIGGER"]
+				|| leading == ["CREATE", "TEMP", "TRIGGER"]
+				|| leading == ["CREATE", "TEMPORARY", "TRIGGER"];
+			if trigger && trigger_statement_start && word == "END" {
+				trigger_end = true;
+			}
+			trigger_statement_start = false;
+		} else {
+			index += 1;
+		}
+	}
+	validate_transaction_leading_words(&leading)
+}
+
+fn validate_transaction_leading_words(words: &[String]) -> Result<()> {
+	let first = words.first().map(String::as_str);
+	let rollback_to = words.get(1).map(String::as_str) == Some("TO")
+		|| (words.get(1).map(String::as_str) == Some("TRANSACTION")
+			&& words.get(2).map(String::as_str) == Some("TO"));
+	if matches!(first, Some("BEGIN" | "COMMIT" | "END"))
+		|| (first == Some("ROLLBACK") && !rollback_to)
+	{
+		return Err(transaction_invalid_argument_error(
+			"Managed SQLite transactions cannot execute BEGIN, COMMIT, END, or ROLLBACK. Return from the callback to commit, throw to roll back, or use a savepoint.",
+		));
+	}
+	Ok(())
 }

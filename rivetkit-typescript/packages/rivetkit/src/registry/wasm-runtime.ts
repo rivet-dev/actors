@@ -145,6 +145,12 @@ function wasmNumber(value: number | bigint): number {
 	return typeof value === "bigint" ? Number(value) : value;
 }
 
+function synchronousSqliteUnavailable(): never {
+	throw new Error(
+		"Synchronous SQLite operations are only available in the Node.js native runtime.",
+	);
+}
+
 function normalizeKvEntry(entry: RuntimeKvEntry): RuntimeKvEntry {
 	return {
 		key: toBytes(entry.key),
@@ -757,6 +763,13 @@ export class WasmCoreRuntime implements CoreRuntime {
 		return await callWasm(() => this.#actorSql(ctx).exec(sql));
 	}
 
+	actorSqlExecSync(
+		_ctx: ActorContextHandle,
+		_sql: string,
+	): RuntimeSqlExecResult {
+		return synchronousSqliteUnavailable();
+	}
+
 	async actorSqlExecute(
 		ctx: ActorContextHandle,
 		sql: string,
@@ -766,6 +779,14 @@ export class WasmCoreRuntime implements CoreRuntime {
 			this.#actorSql(ctx).execute(sql, params),
 		);
 		return normalizeRuntimeSqlExecuteResult(result);
+	}
+
+	actorSqlExecuteSync(
+		_ctx: ActorContextHandle,
+		_sql: string,
+		_params?: RuntimeSqlBindParams,
+	): RuntimeSqlExecuteResult {
+		return synchronousSqliteUnavailable();
 	}
 
 	async actorSqlExecuteBatch(
@@ -788,6 +809,14 @@ export class WasmCoreRuntime implements CoreRuntime {
 		)) as unknown as SqliteTransactionHandle;
 	}
 
+	actorSqlBeginTransactionSync(
+		_ctx: ActorContextHandle,
+		_timeoutMs?: number,
+		_name?: string,
+	): SqliteTransactionHandle {
+		return synchronousSqliteUnavailable();
+	}
+
 	async actorSqlTransactionExec(
 		transaction: SqliteTransactionHandle,
 		sql: string,
@@ -799,6 +828,13 @@ export class WasmCoreRuntime implements CoreRuntime {
 				}
 			).exec(sql),
 		);
+	}
+
+	actorSqlTransactionExecSync(
+		_transaction: SqliteTransactionHandle,
+		_sql: string,
+	): RuntimeSqlExecResult {
+		return synchronousSqliteUnavailable();
 	}
 
 	async actorSqlTransactionExecute(
@@ -819,12 +855,24 @@ export class WasmCoreRuntime implements CoreRuntime {
 		return normalizeRuntimeSqlExecuteResult(result);
 	}
 
+	actorSqlTransactionExecuteSync(
+		_transaction: SqliteTransactionHandle,
+		_sql: string,
+		_params?: RuntimeSqlBindParams,
+	): RuntimeSqlExecuteResult {
+		return synchronousSqliteUnavailable();
+	}
+
 	async actorSqlTransactionCommit(
 		transaction: SqliteTransactionHandle,
 	): Promise<void> {
 		await callWasm(() =>
 			(transaction as unknown as { commit(): Promise<void> }).commit(),
 		);
+	}
+
+	actorSqlTransactionCommitSync(_transaction: SqliteTransactionHandle): void {
+		synchronousSqliteUnavailable();
 	}
 
 	async actorSqlTransactionRollback(
@@ -836,6 +884,13 @@ export class WasmCoreRuntime implements CoreRuntime {
 			).rollback(),
 		);
 	}
+
+	actorSqlTransactionRollbackSync(
+		_transaction: SqliteTransactionHandle,
+	): void {
+		synchronousSqliteUnavailable();
+	}
+
 	async actorBeginStateTransaction(
 		ctx: ActorContextHandle,
 		timeoutMs?: number,
@@ -867,6 +922,14 @@ export class WasmCoreRuntime implements CoreRuntime {
 			).execute(sql, params),
 		);
 		return normalizeRuntimeSqlExecuteResult(result);
+	}
+
+	actorStateTransactionExecuteSync(
+		_transaction: ActorStateTransactionHandle,
+		_sql: string,
+		_params?: RuntimeSqlBindParams,
+	): RuntimeSqlExecuteResult {
+		return synchronousSqliteUnavailable();
 	}
 
 	async actorStateTransactionCommit(

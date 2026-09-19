@@ -175,9 +175,7 @@ impl ServeSettings {
 			);
 		}
 		if parsed.token.is_some() && env_token.is_some() {
-			anyhow::bail!(
-				"cannot specify token both in the RIVET_ENDPOINT URL and as RIVET_TOKEN"
-			);
+			anyhow::bail!("cannot specify token both in the RIVET_ENDPOINT URL and as RIVET_TOKEN");
 		}
 
 		Ok(Self {
@@ -232,8 +230,7 @@ struct ParsedEndpoint {
 /// is the URL-normalized string with any credentials stripped. Errors on
 /// invalid URLs, query strings, fragments, and a token without a namespace.
 fn extract_endpoint_auth(endpoint: String) -> anyhow::Result<ParsedEndpoint> {
-	let mut url = url::Url::parse(&endpoint)
-		.with_context(|| format!("invalid URL: {endpoint}"))?;
+	let mut url = url::Url::parse(&endpoint).with_context(|| format!("invalid URL: {endpoint}"))?;
 	if url.query().is_some() {
 		anyhow::bail!("endpoint cannot contain a query string");
 	}

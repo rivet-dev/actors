@@ -20,6 +20,7 @@ import { join, resolve as resolvePath } from "node:path";
 import { $ } from "execa";
 import { glob } from "glob";
 import * as semver from "semver";
+import { parse } from "yaml";
 import { scoped } from "./logger.js";
 import {
 	buildMetaPlatformMap,
@@ -55,50 +56,78 @@ const DEP_FIELDS = [
 	"optionalDependencies",
 ] as const;
 
-/**
- * Read the pnpm default `catalog:` block from `pnpm-workspace.yaml`.
- *
- * Tiny hand-rolled reader (this package has no yaml dependency). Only the flat
- * default catalog is used here; named catalogs (`catalogs:`) are intentionally
- * unsupported and a `catalog:<name>` spec fails loudly in `resolveCatalogSpec`.
- */
-async function loadDefaultCatalog(
-	repoRoot: string,
-): Promise<Record<string, string>> {
-	let text: string;
-	try {
-		text = await fs.readFile(join(repoRoot, "pnpm-workspace.yaml"), "utf8");
-	} catch {
-		return {};
+export interface WorkspaceCatalogs {
+	default: ReadonlyMap<string, string>;
+	named: ReadonlyMap<string, ReadonlyMap<string, string>>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseCatalog(
+	value: unknown,
+	label: string,
+): ReadonlyMap<string, string> {
+	if (value === undefined) return new Map();
+	if (!isRecord(value)) {
+		throw new Error(`${label} must be a dependency-to-version mapping`);
 	}
-	// The `catalog:` header plus its indented `pkg: "version"` entries, up to the
-	// first blank/dedented line.
-	const block = text.match(/^catalog:[ \t]*\n((?:[ \t]+\S.*\n?)*)/m);
-	if (!block) return {};
-	const catalog: Record<string, string> = {};
-	for (const line of block[1].split("\n")) {
-		const entry = line.match(/^\s+([\w@./-]+)\s*:\s*(\S.*?)\s*$/);
-		if (entry) catalog[entry[1]] = entry[2].replace(/^["']|["']$/g, "");
+	const catalog = new Map<string, string>();
+	for (const [dependency, spec] of Object.entries(value)) {
+		if (typeof spec !== "string" || spec.length === 0) {
+			throw new Error(`${label}.${dependency} must be a non-empty string`);
+		}
+		catalog.set(dependency, spec);
 	}
 	return catalog;
 }
 
-/** Resolve a bare `catalog:` spec to a concrete version from the default catalog. */
-function resolveCatalogSpec(
-	catalog: Record<string, string>,
-	spec: string,
-	dep: string,
-	pkgName: string,
-): string {
-	if (spec.slice("catalog:".length).trim() !== "") {
+export function parseWorkspaceCatalogs(source: string): WorkspaceCatalogs {
+	const parsed: unknown = parse(source);
+	if (!isRecord(parsed)) {
+		throw new Error("pnpm-workspace.yaml must contain a mapping");
+	}
+	const named = new Map<string, ReadonlyMap<string, string>>();
+	if (parsed.catalogs !== undefined) {
+		if (!isRecord(parsed.catalogs)) {
+			throw new Error("catalogs must be a named catalog mapping");
+		}
+		for (const [name, value] of Object.entries(parsed.catalogs)) {
+			named.set(name, parseCatalog(value, `catalogs.${name}`));
+		}
+	}
+	if (parsed.catalog !== undefined && named.has("default")) {
 		throw new Error(
-			`unsupported named catalog spec "${spec}" for ${pkgName} -> ${dep}; only the default catalog is supported`,
+			"default catalog is defined twice: catalog and catalogs.default",
 		);
 	}
-	const resolved = catalog[dep];
-	if (!resolved) {
+	return {
+		default: named.get("default") ?? parseCatalog(parsed.catalog, "catalog"),
+		named,
+	};
+}
+
+export function resolveCatalogDependency(
+	dependency: string,
+	spec: string,
+	catalogs: WorkspaceCatalogs,
+): string | undefined {
+	if (!spec.startsWith("catalog:")) return undefined;
+	const catalogName = spec.slice("catalog:".length);
+	const catalog =
+		catalogName.length === 0 || catalogName === "default"
+			? catalogs.default
+			: catalogs.named.get(catalogName);
+	if (catalog === undefined) {
 		throw new Error(
-			`cannot resolve "${spec}" for ${pkgName} -> ${dep}: no entry for ${dep} in the default catalog of pnpm-workspace.yaml`,
+			`dependency ${dependency} references missing pnpm catalog ${catalogName}`,
+		);
+	}
+	const resolved = catalog.get(dependency);
+	if (resolved === undefined) {
+		throw new Error(
+			`dependency ${dependency} is missing from pnpm catalog ${catalogName || "default"}`,
 		);
 	}
 	return resolved;
@@ -197,7 +226,11 @@ export async function bumpPackageJsons(
 	const packageNames = new Set(packages.map((p) => p.name));
 	const metaPlatformMap = buildMetaPlatformMap(packages);
 	const versionOnly = opts.versionOnly ?? false;
-	const catalog = await loadDefaultCatalog(repoRoot);
+	const catalogs = versionOnly
+		? undefined
+		: parseWorkspaceCatalogs(
+				await fs.readFile(join(repoRoot, "pnpm-workspace.yaml"), "utf8"),
+			);
 
 	// Cache `npm view <pkg> version` lookups for out-of-scope dependencies so a
 	// dep referenced by several packages is only resolved once.
@@ -245,19 +278,14 @@ export async function bumpPackageJsons(
 				const deps = pkgJson[field];
 				if (!deps) continue;
 				for (const [dep, spec] of Object.entries(deps)) {
-					// Resolve pnpm `catalog:` specs first. Catalog deps are often
-					// third-party (e.g. drizzle-orm), so this must run before the
-					// `workspace:`/our-package checks below skip external deps.
-					if (typeof spec === "string" && spec.startsWith("catalog:")) {
-						const resolved = resolveCatalogSpec(
-							catalog,
-							spec,
-							dep,
-							pkg.name,
-						);
-						deps[dep] = resolved;
+					const catalogVersion =
+						catalogs === undefined
+							? undefined
+							: resolveCatalogDependency(dep, spec, catalogs);
+					if (catalogVersion !== undefined) {
+						deps[dep] = catalogVersion;
 						log.info(
-							`resolved catalog dep ${pkg.name} -> ${dep}@${resolved}`,
+							`resolving catalog dep ${pkg.name} -> ${dep}@${catalogVersion}`,
 						);
 						continue;
 					}

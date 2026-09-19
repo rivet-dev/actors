@@ -3,6 +3,9 @@
 	"extends": ["//"],
 	"tasks": {
 		"build": {
+			// Cargo tracks the shared Rust graph and platform. A skipped build must
+			// never cache or restore an unrelated pre-existing native artifact.
+			"cache": false,
 			"inputs": [
 				"scripts/build.mjs",
 				"build.rs",

@@ -76,12 +76,39 @@ await c.db.execute("INSERT INTO todos (title) VALUES (?)", title);
 
 You can also use named SQLite bindings by passing a single properties object.
 
+Integer parameters, including `bigint` values, must fit within JavaScript's safe integer range. Larger integers are rejected to prevent silent rounding.
+
 ```ts @nocheck
 const rows = await c.db.execute(
   "SELECT id, title FROM todos WHERE title = :title",
   { title: "Write SQLite docs" },
 );
 ```
+
+### Synchronous operations in Node.js
+
+The Node.js native runtime also provides `c.db.executeSync(...)` and `c.db.transactionSync(...)` for integrations that cannot use an asynchronous API. `executeSync(...)` accepts the same SQL and parameters as `execute(...)`.
+
+Calls with parameters accept one SQL statement. Without parameters, a SQL script returns rows from its last result-producing statement.
+
+<Warning>
+**Use synchronous SQLite only when absolutely necessary.** Every synchronous operation blocks the entire Node.js runtime until SQLite finishes. This pauses the current actor and can also prevent other actors hosted by the same runtime from running. Prefer `await c.db.execute(...)` and `await c.db.transaction(...)` whenever possible.
+
+</Warning>
+
+Use `transactionSync(...)` when multiple synchronous queries must commit or roll back together. The transaction commits before the method returns and rolls back if the callback throws or returns a promise.
+
+<CodeSnippet file="examples/docs/actors-sqlite/synchronous.ts" />
+
+The callback must complete synchronously and use its `tx` value, which exposes only `executeSync(...)`. Do not start asynchronous work inside it. Rejecting a returned promise cannot cancel work that the callback already started. The transaction handle cannot be used after commit or rollback.
+
+Return from the callback to commit or throw to roll back. Manual `BEGIN`, `COMMIT`, `END`, and `ROLLBACK` statements are rejected inside managed transactions; savepoints are supported.
+
+If SQLite automatically rolls back a transaction, such as with `INSERT OR ROLLBACK`, catching the SQL error does not reopen it. Later queries through that transaction handle fail instead of committing outside the transaction.
+
+`{ name, timeout }` options match `transaction(...)`. Nested synchronous transactions are unsupported. A synchronous call that would wait for another transaction fails immediately; use the asynchronous API to wait without blocking the worker. Synchronous operations are unavailable in WebAssembly runtimes.
+
+Drizzle clients expose the same raw `executeSync(...)` and `transactionSync(...)` methods. Drizzle query builders remain asynchronous and cannot be used inside `transactionSync(...)`.
 
 ### Transactions
 

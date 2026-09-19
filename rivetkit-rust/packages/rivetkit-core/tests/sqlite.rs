@@ -1216,6 +1216,73 @@ async fn disconnect_during_commit_stays_indeterminate_and_releases_waiters() {
 }
 
 #[tokio::test]
+async fn statement_errors_detect_automatic_rollback_without_aborting_live_transactions() {
+	for still_active in [false, true] {
+		let (handle, mut envoy_rx) = test_envoy_handle();
+		let db = SqliteDb::new_with_remote_sqlite(handle, "actor-a", None, Some(7), true, true)
+			.expect("test remote sqlite should be configured");
+		let begin = tokio::spawn({
+			let db = db.clone();
+			async move { db.begin_transaction(None).await }
+		});
+		respond_to_execute(&mut envoy_rx, "BEGIN").await;
+		let transaction = begin.await.unwrap().unwrap();
+		let failed = tokio::spawn({
+			let transaction = transaction.clone();
+			async move { transaction.execute("failing statement", None).await }
+		});
+		receive_execute(&mut envoy_rx, "failing statement")
+			.await
+			.send(Err(anyhow::anyhow!("original constraint error")))
+			.unwrap();
+		if still_active {
+			receive_execute(&mut envoy_rx, "BEGIN")
+				.await
+				.send(Err(anyhow::anyhow!(
+					"cannot start a transaction within a transaction"
+				)))
+				.unwrap();
+		} else {
+			respond_to_execute(&mut envoy_rx, "BEGIN").await;
+			respond_to_execute(&mut envoy_rx, "ROLLBACK").await;
+		}
+		assert!(
+			format!("{:#}", failed.await.unwrap().unwrap_err())
+				.contains("original constraint error")
+		);
+		if still_active {
+			let recovered = tokio::spawn({
+				let transaction = transaction.clone();
+				async move { transaction.execute("recoverable work", None).await }
+			});
+			respond_to_execute(&mut envoy_rx, "recoverable work").await;
+			recovered.await.unwrap().unwrap();
+			let rollback = tokio::spawn(async move { transaction.rollback().await });
+			respond_to_execute(&mut envoy_rx, "ROLLBACK").await;
+			rollback.await.unwrap().unwrap();
+		} else {
+			assert!(
+				transaction
+					.execute("must not autocommit", None)
+					.await
+					.is_err()
+			);
+			assert!(
+				transaction
+					.exec("must not autocommit; SELECT 1")
+					.await
+					.is_err()
+			);
+			assert!(transaction.commit().await.is_err());
+			assert!(envoy_rx.try_recv().is_err());
+		}
+		let fresh = tokio::spawn(async move { db.execute("fresh work", None).await });
+		respond_to_execute(&mut envoy_rx, "fresh work").await;
+		fresh.await.unwrap().unwrap();
+	}
+}
+
+#[tokio::test]
 async fn failed_commit_rolls_back_and_releases_the_transaction() {
 	let (handle, mut envoy_rx) = test_envoy_handle();
 	let db = SqliteDb::new_with_remote_sqlite(handle, "actor-a", None, Some(7), true, true)
@@ -1569,4 +1636,109 @@ fn remote_head_fence_mismatch_stops_actor_once() {
 		message: "second head fence mismatch".to_string(),
 	});
 	assert!(envoy_rx.try_recv().is_err());
+}
+
+async fn synchronous_result<T>(
+	future: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+	tokio::time::timeout(std::time::Duration::from_secs(1), future)
+		.await
+		.expect("synchronous operation waited for transaction coordination")
+}
+
+#[tokio::test]
+async fn synchronous_calls_reject_transaction_contention_without_waiting() {
+	let db = SqliteDb::default();
+	let synchronous = db.for_synchronous_call();
+	let writer = Arc::clone(&db.transaction_coordinator.gate)
+		.write_owned()
+		.await;
+	for result in [
+		synchronous_result(synchronous.execute("SELECT 1", None))
+			.await
+			.map(|_| ()),
+		synchronous_result(synchronous.exec("SELECT 1; SELECT 2"))
+			.await
+			.map(|_| ()),
+		synchronous_result(synchronous.begin_transaction(None))
+			.await
+			.map(|_| ()),
+	] {
+		assert!(result.unwrap_err().to_string().contains("cannot wait"));
+	}
+	drop(writer);
+	assert!(synchronous.begin_regular_operation().await.is_ok());
+}
+
+#[tokio::test]
+async fn synchronous_begin_rejects_in_flight_regular_work() {
+	let db = SqliteDb::default();
+	let reader = db.begin_regular_operation().await.unwrap();
+	assert!(
+		synchronous_result(db.for_synchronous_call().begin_transaction(None))
+			.await
+			.err()
+			.unwrap()
+			.to_string()
+			.contains("cannot wait")
+	);
+	drop(reader);
+}
+
+#[test]
+fn managed_transactions_reject_manual_boundaries_in_scripts() {
+	for sql in [
+		"COMMIT",
+		"-- comment\nEND TRANSACTION",
+		"SELECT 1; /* comment */ ROLLBACK",
+		"BEGIN",
+		"ROLLBACK TRANSACTION",
+	] {
+		assert!(
+			super::tx::validate_managed_transaction_sql(sql).is_err(),
+			"{sql}"
+		);
+	}
+	for sql in [
+		"SAVEPOINT x; ROLLBACK TO x; RELEASE x",
+		"ROLLBACK TRANSACTION TO SAVEPOINT x",
+		"SELECT '; COMMIT', \"END\"",
+		"CREATE TEMP TRIGGER example AFTER INSERT ON items BEGIN SELECT CASE WHEN 1 THEN 2 END; SELECT 2; END;",
+	] {
+		assert!(
+			super::tx::validate_managed_transaction_sql(sql).is_ok(),
+			"{sql}"
+		);
+	}
+	assert!(
+		super::tx::validate_managed_transaction_sql(
+			"CREATE TRIGGER example AFTER INSERT ON items BEGIN SELECT 1; END; COMMIT"
+		)
+		.is_err()
+	);
+}
+
+#[tokio::test]
+async fn synchronous_queries_reject_a_queued_transaction() {
+	let db = SqliteDb::default();
+	let reader = db.begin_regular_operation().await.unwrap();
+	let mut pending = Box::pin(
+		db.begin_transaction_inner("queued".to_owned(), std::time::Duration::from_secs(60)),
+	);
+	assert!(futures::poll!(&mut pending).is_pending());
+	assert!(
+		synchronous_result(db.for_synchronous_call().execute("SELECT 1", None))
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("cannot wait")
+	);
+	drop(pending);
+	drop(reader);
+	assert!(
+		db.for_synchronous_call()
+			.begin_regular_operation()
+			.await
+			.is_ok()
+	);
 }

@@ -409,7 +409,9 @@ async function runDeletes(
 	deletions: PendingDeletions,
 ): Promise<boolean> {
 	const ops = [
-		...deletions.prefixes.map((prefix) => () => driver.deletePrefix(prefix)),
+		...deletions.prefixes.map(
+			(prefix) => () => driver.deletePrefix(prefix),
+		),
 		...deletions.ranges.map(
 			(range) => () => driver.deleteRange(range.start, range.end),
 		),

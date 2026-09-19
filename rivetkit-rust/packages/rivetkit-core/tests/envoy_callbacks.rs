@@ -2,8 +2,7 @@ use super::*;
 
 #[test]
 fn extracts_namespace_and_token_from_url_auth() {
-	let parsed =
-		extract_endpoint_auth("https://my-ns:sk_secret@api.rivet.dev".to_owned()).unwrap();
+	let parsed = extract_endpoint_auth("https://my-ns:sk_secret@api.rivet.dev".to_owned()).unwrap();
 	assert_eq!(parsed.endpoint, "https://api.rivet.dev/");
 	assert_eq!(parsed.namespace.as_deref(), Some("my-ns"));
 	assert_eq!(parsed.token.as_deref(), Some("sk_secret"));

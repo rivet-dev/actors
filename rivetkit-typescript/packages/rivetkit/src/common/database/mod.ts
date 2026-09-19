@@ -7,8 +7,11 @@ import type {
 	SqliteProfilingOptions,
 	SqliteTransactionDatabase,
 	SqliteTransactionOptions,
+	SynchronousRawAccess,
+	SynchronousTransactionAccess,
 } from "./config";
 import {
+	createSynchronousTransactions,
 	isManualTransactionControl,
 	isSqliteBindingObject,
 	MIGRATION_TRANSACTION_TIMEOUT_MS,
@@ -17,7 +20,7 @@ import {
 	validateTransactionTimeout,
 } from "./shared";
 
-export type { RawAccess } from "./config";
+export type { RawAccess, SynchronousRawAccess } from "./config";
 
 export interface DatabaseFactoryConfig {
 	onMigrate?: (db: RawAccess) => Promise<void> | void;
@@ -84,8 +87,8 @@ export function db({
 	onMigrate,
 	warnOnManualTransactions = true,
 	profiling,
-}: DatabaseFactoryConfig = {}): DatabaseProvider<RawAccess> {
-	const provider: DatabaseProvider<RawAccess> = {
+}: DatabaseFactoryConfig = {}): DatabaseProvider<SynchronousRawAccess> {
+	const provider: DatabaseProvider<SynchronousRawAccess> = {
 		sqliteProfiling: profiling,
 		createClient: async (ctx) => {
 			const nativeDatabaseProvider = ctx.nativeDatabaseProvider;
@@ -98,6 +101,7 @@ export function db({
 			const db = await nativeDatabaseProvider.open(ctx.actorId);
 			let closed = false;
 			let manualTransactionWarned = false;
+			const synchronousTransactions = createSynchronousTransactions(db);
 			const ensureOpen = () => {
 				if (closed) {
 					throw new Error(
@@ -110,8 +114,8 @@ export function db({
 				target: SqliteDatabase | SqliteTransactionDatabase,
 				transactionScoped = false,
 				stateTransactionContext?: NativeStateTransactionContext,
-			): RawAccess => {
-				const client: RawAccess = {
+			): SynchronousRawAccess => {
+				const client: SynchronousRawAccess = {
 					execute: async <
 						TRow extends Record<string, unknown> = Record<
 							string,
@@ -122,6 +126,7 @@ export function db({
 						...args: unknown[]
 					): Promise<TRow[]> => {
 						ensureOpen();
+						synchronousTransactions.ensureClient(transactionScoped);
 						if (
 							!transactionScoped &&
 							warnOnManualTransactions &&
@@ -132,7 +137,7 @@ export function db({
 							manualTransactionWarned = true;
 							getLogger("database").warn(
 								{ actorId: ctx.actorId },
-								"Manual cross-call SQLite transactions can interleave with other actor work. Use db.transaction() for coordinated transactions. Set warnOnManualTransactions: false in your db(...) configuration to disable this warning.",
+								"Manual cross-call SQLite transactions can interleave with other actor work. Use db.transaction() or db.transactionSync() for coordinated transactions. Set warnOnManualTransactions: false in your db(...) configuration to disable this warning.",
 							);
 						}
 
@@ -188,10 +193,91 @@ export function db({
 							}
 						}
 					},
+					executeSync: <
+						TRow extends Record<string, unknown> = Record<
+							string,
+							unknown
+						>,
+					>(
+						query: string,
+						...args: unknown[]
+					): TRow[] => {
+						ensureOpen();
+						synchronousTransactions.ensureClient(transactionScoped);
+						if (!target.executeSync) {
+							throw new Error(
+								"Synchronous SQLite queries are only available in the Node.js native runtime.",
+							);
+						}
+						if (
+							!transactionScoped &&
+							warnOnManualTransactions &&
+							!manualTransactionWarned &&
+							!hasMultipleStatements(query) &&
+							isManualTransactionControl(query)
+						) {
+							manualTransactionWarned = true;
+							getLogger("database").warn(
+								{ actorId: ctx.actorId },
+								"Manual cross-call SQLite transactions can interleave with other actor work. Use db.transaction() or db.transactionSync() for coordinated transactions. Set warnOnManualTransactions: false in your db(...) configuration to disable this warning.",
+							);
+						}
+
+						const kvReadsBefore = ctx.metrics?.totalKvReads ?? 0;
+						const kvWritesBefore = ctx.metrics?.totalKvWrites ?? 0;
+						const start = performance.now();
+
+						try {
+							if (args.length > 0) {
+								const bindings =
+									args.length === 1 &&
+									isSqliteBindingObject(args[0])
+										? toSqliteBindings(args[0])
+										: toSqliteBindings(args);
+								const { rows, columns } = target.executeSync(
+									query,
+									bindings,
+								);
+								return rows.map((row) =>
+									rowToObject<TRow>(row, columns),
+								);
+							}
+
+							if (!hasMultipleStatements(query)) {
+								const { rows, columns } = target.executeSync(
+									query,
+									undefined,
+								);
+								return rows.map((row) =>
+									rowToObject<TRow>(row, columns),
+								);
+							}
+
+							return execMultiStatementSync<TRow>(target, query);
+						} finally {
+							const durationMs = performance.now() - start;
+							ctx.metrics?.trackSql(query, durationMs);
+							if (ctx.metrics) {
+								const kvReads =
+									ctx.metrics.totalKvReads - kvReadsBefore;
+								const kvWrites =
+									ctx.metrics.totalKvWrites - kvWritesBefore;
+								ctx.log?.debug({
+									msg: "sql query",
+									query: query.slice(0, 120),
+									durationMs,
+									kvReads,
+									kvWrites,
+								});
+							}
+						}
+					},
 					transaction: async <T>(
 						callback: (tx: RawAccess) => Promise<T> | T,
 						options?: SqliteTransactionOptions,
 					): Promise<T> => {
+						ensureOpen();
+						synchronousTransactions.ensureClient(transactionScoped);
 						validateTransactionTimeout(options?.timeout);
 						validateTransactionName(options?.name);
 						if (
@@ -249,7 +335,30 @@ export function db({
 							}
 						}
 					},
+					transactionSync: <T>(
+						callback: (tx: SynchronousTransactionAccess) => T,
+						options?: Omit<
+							SqliteTransactionOptions,
+							"experimental"
+						>,
+					): T => {
+						ensureOpen();
+						return synchronousTransactions.run(
+							transactionScoped,
+							(transaction) => {
+								const transactionClient = createClient(
+									transaction,
+									true,
+								);
+								return callback({
+									executeSync: transactionClient.executeSync,
+								});
+							},
+							options,
+						);
+					},
 					close: async () => {
+						synchronousTransactions.ensureCanClose();
 						if (!closed) {
 							closed = true;
 							await db.close();
@@ -296,6 +405,26 @@ async function execMultiStatement<TRow extends Record<string, unknown>>(
 	const results: Record<string, unknown>[] = [];
 	let columnNames: string[] | null = null;
 	await db.exec(query, (row: unknown[], columns: string[]) => {
+		if (!columnNames) {
+			columnNames = columns;
+		}
+		results.push(rowToObject(row, columnNames));
+	});
+	return results as TRow[];
+}
+
+function execMultiStatementSync<TRow extends Record<string, unknown>>(
+	db: Pick<SqliteDatabase, "execSync">,
+	query: string,
+): TRow[] {
+	if (!db.execSync) {
+		throw new Error(
+			"Synchronous SQLite queries are only available in the Node.js native runtime.",
+		);
+	}
+	const results: Record<string, unknown>[] = [];
+	let columnNames: string[] | null = null;
+	db.execSync(query, (row: unknown[], columns: string[]) => {
 		if (!columnNames) {
 			columnNames = columns;
 		}

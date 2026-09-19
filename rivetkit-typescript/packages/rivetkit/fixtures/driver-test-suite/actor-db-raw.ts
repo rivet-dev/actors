@@ -254,6 +254,199 @@ export const dbActorRaw = actor({
 			);
 			return results[0].count;
 		},
+		synchronousQueries: async (c, value: string) => {
+			// Even cached-looking queries must reject unsupported runtimes.
+			try {
+				c.db.executeSync("SELECT last_insert_rowid()");
+			} catch (error) {
+				// Inspect the host error here; unexpected action errors are sanitized
+				// before reaching the client.
+				return {
+					unavailable:
+						error instanceof Error ? error.message : String(error),
+				};
+			}
+			const bound = c.db.executeSync<{ column$name: string }>(
+				"SELECT :value AS column$name, ':literal' AS literal /* :comment */",
+				{ value },
+			);
+			if (bound[0]?.column$name !== value) {
+				throw new Error(
+					"named synchronous bindings must preserve values",
+				);
+			}
+			let scriptRejected = false;
+			try {
+				c.db.executeSync(
+					"INSERT INTO test_data (value, created_at) VALUES (?, 0); SELECT 1",
+					"bound-script",
+				);
+			} catch {
+				scriptRejected = true;
+			}
+			if (!scriptRejected) {
+				throw new Error(
+					"parameterized scripts must fail before execution",
+				);
+			}
+			await c.db.transaction(
+				async (tx) => {
+					for (const operation of [
+						() => c.db.executeSync("SELECT 1"),
+						() => c.db.executeSync("SELECT 1; SELECT 2"),
+						() => c.db.transactionSync(() => undefined),
+					]) {
+						let rejected = false;
+						try {
+							operation();
+						} catch (error) {
+							rejected =
+								error instanceof Error &&
+								error.message.includes("cannot wait");
+						}
+						if (!rejected)
+							throw new Error(
+								"synchronous transaction contention must fail immediately",
+							);
+					}
+					await tx.execute("SELECT 1");
+				},
+				{ timeout: 1_000 },
+			);
+			let continuation: Promise<void> | undefined;
+			try {
+				// @ts-expect-error Exercise JavaScript callers that bypass the synchronous type contract.
+				c.db.transactionSync((tx) => {
+					continuation = (async () => {
+						tx.executeSync(
+							"INSERT INTO test_data (value, created_at) VALUES ('async-rollback', 0)",
+						);
+						await Promise.resolve();
+						tx.executeSync("SELECT 1");
+					})();
+					return continuation;
+				});
+				throw new Error("async callback must be rejected");
+			} catch (error) {
+				if (
+					!(error instanceof Error) ||
+					!error.message.includes("must not return a promise")
+				)
+					throw error;
+			}
+			await continuation?.catch(() => {});
+			c.db.executeSync(
+				"INSERT INTO test_data (value, payload, created_at) VALUES (?, ?, ?)",
+				value,
+				"",
+				Date.now(),
+			);
+			const selected = c.db.executeSync<{ value: string }>(
+				"SELECT value FROM test_data WHERE value = ?",
+				value,
+			);
+			const multiStatementValues = c.db.executeSync<{ value: number }>(
+				"SELECT 1 AS value; SELECT 2 AS value",
+			);
+			const transactionCount = c.db.transactionSync((tx) => {
+				tx.executeSync(
+					"INSERT INTO test_data (value, payload, created_at) VALUES (?, ?, ?)",
+					`${value}-committed`,
+					"",
+					Date.now(),
+				);
+				return tx.executeSync<{ count: number }>(
+					"SELECT COUNT(*) AS count FROM test_data",
+				)[0]?.count;
+			});
+			for (const control of [
+				"COMMIT",
+				"SELECT 1; /* control */ END",
+				"ROLLBACK",
+			]) {
+				try {
+					c.db.transactionSync((tx) => {
+						tx.executeSync(
+							"INSERT INTO test_data (value, created_at) VALUES ('manual-rollback', 0)",
+						);
+						tx.executeSync(control);
+					});
+					throw new Error("manual transaction boundary must fail");
+				} catch (error) {
+					if (
+						!(error instanceof Error) ||
+						!error.message.includes("Managed SQLite transactions")
+					)
+						throw error;
+				}
+			}
+			const rolledBackValue = `${value}-rolled-back`;
+			try {
+				c.db.transactionSync((tx) => {
+					tx.executeSync(
+						"INSERT INTO test_data (value, payload, created_at) VALUES (?, ?, ?)",
+						rolledBackValue,
+						"",
+						Date.now(),
+					);
+					throw new Error("rollback sync transaction");
+				});
+			} catch (error) {
+				if (
+					!(error instanceof Error) ||
+					error.message !== "rollback sync transaction"
+				) {
+					throw error;
+				}
+			}
+			try {
+				c.db.transactionSync((tx) => {
+					tx.executeSync(
+						"INSERT INTO test_data (id, value, created_at) VALUES (-1, 'automatic-rollback', 0)",
+					);
+					try {
+						tx.executeSync(
+							"INSERT OR ROLLBACK INTO test_data (id, value, created_at) VALUES (-1, 'duplicate', 0)",
+						);
+					} catch {
+						// Catching a SQL error must not let later work escape the transaction.
+					}
+					tx.executeSync(
+						"INSERT INTO test_data (value, created_at) VALUES ('automatic-rollback', 0)",
+					);
+				});
+			} catch {
+				// The transaction must remain terminal after SQLite rolls it back.
+			}
+			c.db.transactionSync((tx) => {
+				tx.executeSync(
+					"INSERT INTO test_data (id, value, created_at) VALUES (-2, 'recoverable-error', 0)",
+				);
+				tx.executeSync("SAVEPOINT recoverable");
+				try {
+					tx.executeSync(
+						"INSERT INTO test_data (id, value, created_at) VALUES (-2, 'duplicate', 0)",
+					);
+				} catch {
+					// The default ABORT policy preserves the transaction and savepoints.
+				}
+				tx.executeSync("ROLLBACK TO recoverable");
+				tx.executeSync("RELEASE recoverable");
+				tx.executeSync("DELETE FROM test_data WHERE id = -2");
+			});
+			const rollbackCount = c.db.executeSync<{ count: number }>(
+				"SELECT COUNT(*) AS count FROM test_data WHERE value IN (?, 'manual-rollback', 'async-rollback', 'bound-script', 'automatic-rollback')",
+				rolledBackValue,
+			)[0]?.count;
+			return {
+				value: selected[0]?.value,
+				multiStatementValues: multiStatementValues.map(
+					(row) => row.value,
+				),
+				transactionCount,
+				rollbackCount,
+			};
+		},
 		insertMany: async (c, count: number) => {
 			if (count <= 0) {
 				return { count: 0 };
@@ -647,8 +840,15 @@ export const dbActorRaw = actor({
 					await tx.execute(
 						"INSERT INTO transaction_rollback_probe(id, value) VALUES (1, 'first')",
 					);
+					try {
+						await tx.execute(
+							"INSERT OR ROLLBACK INTO transaction_rollback_probe(id, value) VALUES (1, 'duplicate')",
+						);
+					} catch {
+						// The handle must remain terminal even if the callback catches the error.
+					}
 					await tx.execute(
-						"INSERT OR ROLLBACK INTO transaction_rollback_probe(id, value) VALUES (1, 'duplicate')",
+						"INSERT INTO transaction_rollback_probe(id, value) VALUES (3, 'must-not-autocommit')",
 					);
 				});
 			} catch {

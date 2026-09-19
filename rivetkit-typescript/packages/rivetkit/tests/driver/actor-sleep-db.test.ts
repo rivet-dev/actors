@@ -398,7 +398,7 @@ describeDriverMatrix(
 				});
 
 				await waitForAction(
-					connection.getCounts.bind(connection),
+					() => connection.getCounts(),
 					(counts) => {
 						expect(counts.startCount).toBeGreaterThanOrEqual(1);
 					},

@@ -743,12 +743,31 @@ export class NapiCoreRuntime implements CoreRuntime {
 		return await this.#actorSql(ctx).exec(sql);
 	}
 
+	actorSqlExecSync(
+		ctx: ActorContextHandle,
+		sql: string,
+	): RuntimeSqlExecResult {
+		return this.#actorSql(ctx).execSync(sql);
+	}
+
 	async actorSqlExecute(
 		ctx: ActorContextHandle,
 		sql: string,
 		params?: RuntimeSqlBindParams,
 	): Promise<RuntimeSqlExecuteResult> {
 		const result = await this.#actorSql(ctx).execute(
+			sql,
+			toNapiSqlBindParams(params),
+		);
+		return normalizeRuntimeSqlExecuteResult(result);
+	}
+
+	actorSqlExecuteSync(
+		ctx: ActorContextHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): RuntimeSqlExecuteResult {
+		const result = this.#actorSql(ctx).executeSync(
 			sql,
 			toNapiSqlBindParams(params),
 		);
@@ -776,11 +795,29 @@ export class NapiCoreRuntime implements CoreRuntime {
 		)) as unknown as SqliteTransactionHandle;
 	}
 
+	actorSqlBeginTransactionSync(
+		ctx: ActorContextHandle,
+		timeoutMs?: number,
+		name?: string,
+	): SqliteTransactionHandle {
+		return this.#actorSql(ctx).beginTransactionSync(
+			timeoutMs,
+			name,
+		) as unknown as SqliteTransactionHandle;
+	}
+
 	async actorSqlTransactionExec(
 		transaction: SqliteTransactionHandle,
 		sql: string,
 	): Promise<RuntimeSqlExecResult> {
 		return await asNativeSqlTransaction(transaction).exec(sql);
+	}
+
+	actorSqlTransactionExecSync(
+		transaction: SqliteTransactionHandle,
+		sql: string,
+	): RuntimeSqlExecResult {
+		return asNativeSqlTransaction(transaction).execSync(sql);
 	}
 
 	async actorSqlTransactionExecute(
@@ -795,16 +832,38 @@ export class NapiCoreRuntime implements CoreRuntime {
 		return normalizeRuntimeSqlExecuteResult(result);
 	}
 
+	actorSqlTransactionExecuteSync(
+		transaction: SqliteTransactionHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): RuntimeSqlExecuteResult {
+		const result = asNativeSqlTransaction(transaction).executeSync(
+			sql,
+			toNapiSqlBindParams(params),
+		);
+		return normalizeRuntimeSqlExecuteResult(result);
+	}
+
 	async actorSqlTransactionCommit(
 		transaction: SqliteTransactionHandle,
 	): Promise<void> {
 		await asNativeSqlTransaction(transaction).commit();
 	}
 
+	actorSqlTransactionCommitSync(transaction: SqliteTransactionHandle): void {
+		asNativeSqlTransaction(transaction).commitSync();
+	}
+
 	async actorSqlTransactionRollback(
 		transaction: SqliteTransactionHandle,
 	): Promise<void> {
 		await asNativeSqlTransaction(transaction).rollback();
+	}
+
+	actorSqlTransactionRollbackSync(
+		transaction: SqliteTransactionHandle,
+	): void {
+		asNativeSqlTransaction(transaction).rollbackSync();
 	}
 	async actorBeginStateTransaction(
 		ctx: ActorContextHandle,
@@ -821,6 +880,18 @@ export class NapiCoreRuntime implements CoreRuntime {
 		params?: RuntimeSqlBindParams,
 	): Promise<RuntimeSqlExecuteResult> {
 		const result = await asNativeActorStateTransaction(transaction).execute(
+			sql,
+			toNapiSqlBindParams(params),
+		);
+		return normalizeRuntimeSqlExecuteResult(result);
+	}
+
+	actorStateTransactionExecuteSync(
+		transaction: ActorStateTransactionHandle,
+		sql: string,
+		params?: RuntimeSqlBindParams,
+	): RuntimeSqlExecuteResult {
+		const result = asNativeActorStateTransaction(transaction).executeSync(
 			sql,
 			toNapiSqlBindParams(params),
 		);

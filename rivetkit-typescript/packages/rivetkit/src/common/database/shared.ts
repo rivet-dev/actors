@@ -1,4 +1,9 @@
-import type { SqliteBindings } from "./config";
+import type {
+	SqliteBindings,
+	SqliteDatabase,
+	SqliteTransactionOptions,
+	SynchronousSqliteTransactionDatabase,
+} from "./config";
 
 /** Migrations may legitimately do substantially more work than request transactions. */
 export const MIGRATION_TRANSACTION_TIMEOUT_MS = 5 * 60_000;
@@ -21,6 +26,88 @@ export function validateTransactionName(name: string | undefined): void {
 	}
 	if (name.length === 0) {
 		throw new Error("db.transaction() name must not be empty");
+	}
+}
+
+export function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+	return (typeof value === "object" && value !== null) ||
+		typeof value === "function"
+		? typeof (value as { then?: unknown }).then === "function"
+		: false;
+}
+
+export function createSynchronousTransactions(database: SqliteDatabase) {
+	let active = false;
+	return {
+		ensureClient(transactionScoped: boolean): void {
+			if (!transactionScoped && active) {
+				throw new Error(
+					"Use the transaction callback's tx value for queries inside db.transactionSync().",
+				);
+			}
+		},
+		ensureCanClose(): void {
+			if (active) {
+				throw new Error(
+					"Cannot close the database inside db.transactionSync().",
+				);
+			}
+		},
+		run<T>(
+			transactionScoped: boolean,
+			callback: (transaction: SynchronousSqliteTransactionDatabase) => T,
+			options?: Omit<SqliteTransactionOptions, "experimental">,
+		): T {
+			if (transactionScoped || active) {
+				throw new Error(
+					"Nested synchronous SQLite transactions are not supported.",
+				);
+			}
+			active = true;
+			try {
+				return runSqliteTransactionSync(database, callback, options);
+			} finally {
+				active = false;
+			}
+		},
+	};
+}
+
+function runSqliteTransactionSync<T>(
+	database: SqliteDatabase,
+	callback: (transaction: SynchronousSqliteTransactionDatabase) => T,
+	options?: Omit<SqliteTransactionOptions, "experimental">,
+): T {
+	validateTransactionTimeout(options?.timeout);
+	validateTransactionName(options?.name);
+	if (!database.beginTransactionSync) {
+		throw new Error(
+			"Synchronous SQLite transactions are only available in the Node.js native runtime.",
+		);
+	}
+
+	const transaction = database.beginTransactionSync(
+		options?.timeout,
+		options?.name,
+	);
+	try {
+		const result = callback(transaction);
+		if (isPromiseLike(result)) {
+			// The rejected callback can resume after rollback. Observe its rejection.
+			void Promise.resolve(result).catch(() => {});
+			throw new Error(
+				"db.transactionSync() callback must complete synchronously and must not return a promise.",
+			);
+		}
+		transaction.commitSync();
+		return result;
+	} catch (error) {
+		try {
+			transaction.rollbackSync();
+		} catch {
+			// Preserve the callback or commit error after cleanup failure.
+		}
+		throw error;
 	}
 }
 

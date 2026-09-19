@@ -244,6 +244,7 @@ pub struct SqliteDb {
 	worker_failure_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 	worker_fatal_reported: Arc<AtomicBool>,
 	transaction_coordinator: Arc<TransactionCoordinator>,
+	fail_on_transaction_contention: bool,
 	#[cfg(feature = "sqlite-local")]
 	vfs_metrics: Option<Arc<dyn SqliteVfsMetrics>>,
 	#[cfg(feature = "sqlite-local")]
@@ -271,6 +272,7 @@ impl Default for SqliteDb {
 			worker_failure_task: Default::default(),
 			worker_fatal_reported: Default::default(),
 			transaction_coordinator: Default::default(),
+			fail_on_transaction_contention: false,
 			#[cfg(feature = "sqlite-local")]
 			vfs_metrics: None,
 			#[cfg(feature = "sqlite-local")]
@@ -307,6 +309,7 @@ impl SqliteDb {
 			worker_failure_task: Default::default(),
 			worker_fatal_reported: Default::default(),
 			transaction_coordinator: Default::default(),
+			fail_on_transaction_contention: false,
 			#[cfg(feature = "sqlite-local")]
 			vfs_metrics: None,
 			#[cfg(feature = "sqlite-local")]
@@ -341,6 +344,14 @@ impl SqliteDb {
 			profiling: Arc::new(profiling::SqliteProfilingState::new(profiling)),
 			..Self::default()
 		}
+	}
+
+	/// Returns a handle for callers that block their host thread while awaiting SQL.
+	/// Such callers must not wait for a transaction whose owner needs that thread.
+	pub fn for_synchronous_call(&self) -> Self {
+		let mut db = self.clone();
+		db.fail_on_transaction_contention = true;
+		db
 	}
 
 	pub fn is_enabled(&self) -> bool {

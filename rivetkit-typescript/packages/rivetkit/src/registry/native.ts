@@ -55,7 +55,11 @@ import {
 	db as defaultDb,
 	registerNativeStateTransactionOpener,
 } from "@/common/database/mod";
-import { wrapJsNativeDatabase } from "@/common/database/native-database";
+import {
+	type JsNativeDatabaseLike,
+	type JsNativeSynchronousTransactionLike,
+	wrapJsNativeDatabase,
+} from "@/common/database/native-database";
 import { assertJsonCompatValue, type JsonCompatValue } from "@/common/encoding";
 import { isResponseLike } from "@/common/fetch-like";
 import {
@@ -118,6 +122,7 @@ import type {
 	RuntimeScheduledFireInfo,
 	RuntimeServeConfig,
 	RuntimeStateDeltaPayload,
+	SqliteTransactionHandle,
 	WebSocketHandle,
 } from "./runtime";
 import { loadWasmRuntime } from "./wasm-runtime";
@@ -589,6 +594,26 @@ async function closeNativeDatabaseClient(
 	}
 }
 
+function createNativeSqlTransaction(
+	runtime: CoreRuntime,
+	transaction: SqliteTransactionHandle,
+): JsNativeSynchronousTransactionLike {
+	return {
+		exec: (sql) => runtime.actorSqlTransactionExec(transaction, sql),
+		execSync: (sql) =>
+			runtime.actorSqlTransactionExecSync(transaction, sql),
+		execute: (sql, params) =>
+			runtime.actorSqlTransactionExecute(transaction, sql, params),
+		executeSync: (sql, params) =>
+			runtime.actorSqlTransactionExecuteSync(transaction, sql, params),
+		commit: () => runtime.actorSqlTransactionCommit(transaction),
+		commitSync: () => runtime.actorSqlTransactionCommitSync(transaction),
+		rollback: () => runtime.actorSqlTransactionRollback(transaction),
+		rollbackSync: () =>
+			runtime.actorSqlTransactionRollbackSync(transaction),
+	};
+}
+
 function getOrCreateNativeSqlDatabase(
 	runtime: CoreRuntime,
 	ctx: ActorContextHandle,
@@ -599,9 +624,12 @@ function getOrCreateNativeSqlDatabase(
 		return cachedDatabase;
 	}
 
-	const database = wrapJsNativeDatabase({
+	const bindings: JsNativeDatabaseLike = {
 		exec: (sql) => runtime.actorSqlExec(ctx, sql),
+		execSync: (sql) => runtime.actorSqlExecSync(ctx, sql),
 		execute: (sql, params) => runtime.actorSqlExecute(ctx, sql, params),
+		executeSync: (sql, params) =>
+			runtime.actorSqlExecuteSync(ctx, sql, params),
 		executeBatch: (statements) =>
 			runtime.actorSqlExecuteBatch(ctx, statements),
 		beginTransaction: async (timeoutMs, name) => {
@@ -610,19 +638,15 @@ function getOrCreateNativeSqlDatabase(
 				timeoutMs,
 				name,
 			);
-			return {
-				exec: (sql) =>
-					runtime.actorSqlTransactionExec(transaction, sql),
-				execute: (sql, params) =>
-					runtime.actorSqlTransactionExecute(
-						transaction,
-						sql,
-						params,
-					),
-				commit: () => runtime.actorSqlTransactionCommit(transaction),
-				rollback: () =>
-					runtime.actorSqlTransactionRollback(transaction),
-			};
+			return createNativeSqlTransaction(runtime, transaction);
+		},
+		beginTransactionSync: (timeoutMs, name) => {
+			const transaction = runtime.actorSqlBeginTransactionSync(
+				ctx,
+				timeoutMs,
+				name,
+			);
+			return createNativeSqlTransaction(runtime, transaction);
 		},
 		beginStateTransaction: async (timeoutMs, context) => {
 			const scope = context as NativeStateTransactionScope | undefined;
@@ -641,8 +665,19 @@ function getOrCreateNativeSqlDatabase(
 						"actor state transactions only support single-statement execute calls",
 					);
 				},
+				execSync: () => {
+					throw new Error(
+						"actor state transactions only support single-statement execute calls",
+					);
+				},
 				execute: (sql, params) =>
 					runtime.actorStateTransactionExecute(
+						transaction,
+						sql,
+						params,
+					),
+				executeSync: (sql, params) =>
+					runtime.actorStateTransactionExecuteSync(
 						transaction,
 						sql,
 						params,
@@ -663,6 +698,11 @@ function getOrCreateNativeSqlDatabase(
 		metrics: () => runtime.actorSqlMetrics(ctx),
 		takeLastKvError: () => runtime.actorSqlTakeLastKvError(ctx),
 		close: () => runtime.actorSqlClose(ctx),
+	};
+	const database = wrapJsNativeDatabase(bindings, {
+		// Core still needs its shared database for the final state save, and
+		// closes it after shutting down the Actor Runtime Socket.
+		ownsDatabase: false,
 	});
 	runtimeState.sql = database;
 	return database;
