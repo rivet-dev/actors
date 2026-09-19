@@ -944,18 +944,17 @@ impl ActorTask {
 						let actor_id = self.ctx.actor_id().to_owned();
 						let ctx = self.ctx.clone();
 						self.ctx.spawn_work(ActorWorkKind::Action, async move {
-							match tracked_reply_rx.await {
+							let result = match tracked_reply_rx.await {
 								Ok(result) => {
 									let result =
 										result.map_err(|error| ctx.attach_actor_to_error(error));
-									invocation.finish(result.as_ref().err());
 									tracing::info!(
 										actor_id = %actor_id,
 										action_name = %action_name_for_log,
 										ok = result.is_ok(),
 										"actor task: tracked reply received, forwarding"
 									);
-									let _ = reply.send(result);
+									result
 								}
 								Err(_) => {
 									tracing::warn!(
@@ -966,10 +965,11 @@ impl ActorTask {
 									let error = ctx.attach_actor_to_error(
 										ActorLifecycleError::DroppedReply.build(),
 									);
-									invocation.finish(Some(&error));
-									let _ = reply.send(Err(error));
+									Err(error)
 								}
-							}
+							};
+							invocation.finish(result.as_ref().err());
+							let _ = reply.send(result);
 						});
 					}
 					Err(error) => {

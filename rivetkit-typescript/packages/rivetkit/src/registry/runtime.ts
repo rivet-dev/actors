@@ -1,3 +1,4 @@
+import type { ActorInvocationTraceContext } from "@/common/actor-telemetry-context";
 import type {
 	SqliteNativeMetrics,
 	SqliteProfilingOptions,
@@ -28,6 +29,11 @@ export interface RuntimeActorKeySegment {
 	stringValue?: string;
 	numberValue?: number;
 }
+
+/** Resolves correlation at operation time so retained clients cannot freeze stale context. */
+export type CurrentActorInvocation = () =>
+	| ActorInvocationTraceContext
+	| undefined;
 
 export interface RuntimeHttpRequest {
 	method: string;
@@ -541,7 +547,22 @@ export interface CoreRuntime {
 		writes: RuntimeWorkflowKvWrite[],
 	): Promise<void>;
 	actorId(ctx: ActorContextHandle): string;
+	/**
+	 * Runs one actor callback with `ctx` as the current invocation: operations
+	 * on retained handles for the same actor resolve to it, and its Core span
+	 * is the active OpenTelemetry span for the duration of `run`. Only actions,
+	 * raw requests, and queue dispatch run this way; other callbacks have no
+	 * invocation span.
+	 */
 	runWithActorInvocationContext<T>(ctx: ActorContextHandle, run: () => T): T;
+	/**
+	 * Correlation of the invocation currently executing for this actor, or
+	 * `undefined` outside an invocation or after it finished. A sampled-out
+	 * invocation can still expose valid span context for propagation.
+	 */
+	actorInvocationTraceContext(
+		ctx: ActorContextHandle,
+	): ActorInvocationTraceContext | undefined;
 	actorName(ctx: ActorContextHandle): string;
 	actorKey(ctx: ActorContextHandle): RuntimeActorKeySegment[];
 	actorRegion(ctx: ActorContextHandle): string;

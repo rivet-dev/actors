@@ -8,6 +8,8 @@ import type {
 	HttpResponseBodyStream as NativeHttpResponseBodyStream,
 	WebSocket as NativeWebSocket,
 } from "@rivetkit/rivetkit-napi";
+import type { ActorInvocationTraceContext } from "@/common/actor-telemetry-context";
+import { runWithActorInvocationSpan } from "@/common/otel-context";
 import type {
 	ActorContextHandle,
 	ActorFactoryHandle,
@@ -567,7 +569,23 @@ export class NapiCoreRuntime implements CoreRuntime {
 	}
 
 	runWithActorInvocationContext<T>(ctx: ActorContextHandle, run: () => T): T {
-		return this.#invocationContext.run(asNativeActorContext(ctx), run);
+		const nativeCtx = asNativeActorContext(ctx);
+		const traceContext = this.#actorInvocationTraceContext(nativeCtx);
+		return this.#invocationContext.run(nativeCtx, () =>
+			runWithActorInvocationSpan(traceContext?.span, run),
+		);
+	}
+
+	actorInvocationTraceContext(
+		ctx: ActorContextHandle,
+	): ActorInvocationTraceContext | undefined {
+		return this.#actorInvocationTraceContext(asNativeActorContext(ctx));
+	}
+
+	#actorInvocationTraceContext(
+		ctx: NativeActorContext,
+	): ActorInvocationTraceContext | undefined {
+		return ctx.invocationTraceContext() ?? undefined;
 	}
 
 	actorName(ctx: ActorContextHandle): string {

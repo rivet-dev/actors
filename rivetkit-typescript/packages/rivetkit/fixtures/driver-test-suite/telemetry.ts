@@ -28,5 +28,17 @@ export const telemetryActor = actor({
 			);
 			return c.state.count;
 		},
+		insertAfterReply: (c, token: string) => {
+			c.waitUntil(
+				c.queue
+					.next({ names: ["jobs"], timeout: 10_000 })
+					.then((message) => {
+						if (!message)
+							throw new Error("deferred work was not released");
+						return c.db.execute("SELECT ? AS deferred", token);
+					}),
+			);
+			return "replied";
+		},
 	},
 });
