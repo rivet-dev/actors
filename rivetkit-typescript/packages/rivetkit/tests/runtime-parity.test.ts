@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, test } from "vitest";
 import {
 	BRIDGE_RIVET_ERROR_PREFIX,
@@ -335,7 +336,10 @@ function createRuntimeCase(kind: CoreRuntime["kind"]): RuntimeCase {
 		scenario,
 		runtime:
 			kind === "napi"
-				? new NapiCoreRuntime(fakeNapiBindings(scenario) as never)
+				? new NapiCoreRuntime(
+						fakeNapiBindings(scenario) as never,
+						new AsyncLocalStorage(),
+					)
 				: new WasmCoreRuntime(fakeWasmBindings(scenario)),
 	};
 }

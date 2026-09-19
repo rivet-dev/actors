@@ -725,6 +725,7 @@ async fn dispatch_event(callbacks: &WasmCallbacks, ctx: &WasmActorContext, event
 			args,
 			conn,
 			scheduled_fire,
+			invocation_telemetry: _,
 			reply,
 		} => {
 			let Some(callback) = action_callback(&callbacks.actions, &name) else {

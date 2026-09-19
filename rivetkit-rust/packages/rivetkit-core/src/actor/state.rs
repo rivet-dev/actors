@@ -315,7 +315,8 @@ impl ActorContext {
 			.filter(|conn| conn.is_hibernatable())
 			.map(|conn| (conn.id().to_owned(), conn.state()))
 			.collect();
-		let transaction = match self.sql().begin_transaction(timeout).await {
+		let sql = self.invocation_sql();
+		let transaction = match sql.begin_transaction(timeout).await {
 			Ok(transaction) => transaction,
 			Err(error) => {
 				self.0

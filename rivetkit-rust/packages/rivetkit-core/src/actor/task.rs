@@ -913,6 +913,7 @@ impl ActorTask {
 				reply,
 			} => {
 				let invocation = ActionInvocationSpan::start(&self.ctx, &name, incoming);
+				let invocation_telemetry = invocation.telemetry();
 				tracing::info!(
 					actor_id = %self.ctx.actor_id(),
 					action_name = %name,
@@ -929,6 +930,7 @@ impl ActorTask {
 						args,
 						conn: Some(conn),
 						scheduled_fire: None,
+						invocation_telemetry: Some(invocation_telemetry),
 						reply: Reply::from(tracked_reply_tx),
 					},
 				) {
