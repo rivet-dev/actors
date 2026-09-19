@@ -607,7 +607,12 @@ fn handles_listener_request(base_path: &str, url: &str) -> bool {
 		return true;
 	};
 	let request_path = parsed.path();
-	if request_path != base_path && !request_path.starts_with(&format!("{base_path}/")) {
+	// A root base path owns every request path. The prefix check alone would look
+	// for `//`, which no request path starts with.
+	let under_base_path = base_path == "/"
+		|| request_path == base_path
+		|| request_path.starts_with(&format!("{base_path}/"));
+	if !under_base_path {
 		return false;
 	}
 	let path = route_path(base_path, url).expect("URL was parsed and the same base path is valid");

@@ -9,7 +9,7 @@ mod moved_tests {
 
 	use super::{
 		CoreServerlessRuntime, ServerlessRequest, endpoints_match, handles_listener_request,
-		normalize_endpoint_url, parse_start_headers,
+		normalize_base_path, normalize_endpoint_url, parse_start_headers,
 	};
 	use crate::registry::{EngineSpawnMode, ServeConfig};
 
@@ -38,6 +38,21 @@ mod moved_tests {
 		assert!(!handles_listener_request(
 			"/api/rivet",
 			"http://internal/api/rivet/application"
+		));
+	}
+
+	#[test]
+	fn listener_reserves_framework_routes_for_root_base_path() {
+		let base_path = normalize_base_path(Some("/"));
+		for path in ["/", "/start", "/health", "/metadata", "/metrics"] {
+			assert!(
+				handles_listener_request(&base_path, &format!("http://internal{path}")),
+				"root base path should reserve {path}"
+			);
+		}
+		assert!(!handles_listener_request(
+			&base_path,
+			"http://internal/application"
 		));
 	}
 
