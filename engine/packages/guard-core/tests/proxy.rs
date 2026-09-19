@@ -2,6 +2,7 @@ mod common;
 
 use bytes::Bytes;
 use hyper::{Method, StatusCode};
+use rivet_api_builder::X_RIVET_RAY_ID;
 use rivet_util::Id;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,7 +49,7 @@ async fn test_basic_proxy_functionality() {
 }
 
 #[tokio::test]
-async fn test_proxy_forwards_headers() {
+async fn test_proxy_forwards_headers_and_uses_one_bounded_ray_id() {
 	init_tracing();
 
 	// Set up a test server that echoes back headers
@@ -90,11 +91,16 @@ async fn test_proxy_forwards_headers() {
 		.header(hyper::header::HOST, "example.com")
 		.header("X-Custom-Header", "test-value")
 		.header("X-Another-Header", "another-value")
+		.header(X_RIVET_RAY_ID, "caller-ray_123")
 		.body(http_body_util::Empty::<bytes::Bytes>::new())
 		.unwrap();
 
 	let response = client.request(request).await.unwrap();
 	assert_eq!(response.status(), StatusCode::OK);
+	assert_eq!(
+		response.headers().get(X_RIVET_RAY_ID).unwrap(),
+		"caller-ray_123"
+	);
 
 	// Check that our custom headers were forwarded
 	let last_request = test_server.last_request().unwrap();
@@ -107,6 +113,61 @@ async fn test_proxy_forwards_headers() {
 	assert_eq!(
 		last_request.headers.get("x-another-header").unwrap(),
 		"another-value"
+	);
+	assert_eq!(
+		last_request.headers.get(X_RIVET_RAY_ID.as_str()).unwrap(),
+		"caller-ray_123"
+	);
+
+	let invalid_ray_id = "a".repeat(31);
+	let request = hyper::Request::builder()
+		.method(Method::GET)
+		.uri(format!("http://{}/echo", guard_addr))
+		.header(hyper::header::HOST, "example.com")
+		.header(X_RIVET_RAY_ID, &invalid_ray_id)
+		.body(http_body_util::Empty::<bytes::Bytes>::new())
+		.unwrap();
+	let response = client.request(request).await.unwrap();
+	let response_ray_id = response
+		.headers()
+		.get(X_RIVET_RAY_ID)
+		.unwrap()
+		.to_str()
+		.unwrap();
+	assert_ne!(response_ray_id, invalid_ray_id);
+	assert!(Id::parse(response_ray_id).is_ok());
+	assert_eq!(
+		test_server
+			.last_request()
+			.unwrap()
+			.headers
+			.get(X_RIVET_RAY_ID.as_str())
+			.unwrap(),
+		response_ray_id
+	);
+
+	let request = hyper::Request::builder()
+		.method(Method::GET)
+		.uri(format!("http://{}/echo", guard_addr))
+		.header(hyper::header::HOST, "example.com")
+		.body(http_body_util::Empty::<bytes::Bytes>::new())
+		.unwrap();
+	let response = client.request(request).await.unwrap();
+	let response_ray_id = response
+		.headers()
+		.get(X_RIVET_RAY_ID)
+		.unwrap()
+		.to_str()
+		.unwrap();
+	assert!(Id::parse(response_ray_id).is_ok());
+	assert_eq!(
+		test_server
+			.last_request()
+			.unwrap()
+			.headers
+			.get(X_RIVET_RAY_ID.as_str())
+			.unwrap(),
+		response_ray_id
 	);
 }
 

@@ -134,6 +134,7 @@ impl PegboardGateway3 {
 				request_headers.insert(name.to_string(), value_str.to_string());
 			}
 		}
+		req_ctx.forward_ray(&mut request_headers);
 
 		let (mut stopped_sub, _) = tokio::try_join!(
 			ctx.subscribe::<pegboard::workflows::actor2::Stopped>(("actor_id", self.actor_id)),

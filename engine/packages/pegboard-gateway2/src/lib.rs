@@ -127,7 +127,7 @@ impl PegboardGateway2 {
 		let request_id = req_ctx.in_flight_request_id()?;
 
 		// Extract request parts
-		let headers = req
+		let mut headers = req
 			.headers()
 			.iter()
 			.filter_map(|(name, value)| {
@@ -137,6 +137,7 @@ impl PegboardGateway2 {
 					.map(|value_str| (name.to_string(), value_str.to_string()))
 			})
 			.collect::<HashMap<_, _>>();
+		req_ctx.forward_ray(&mut headers);
 
 		// NOTE: Size constraints have already been applied by guard
 		let body_bytes = req
@@ -360,6 +361,7 @@ impl PegboardGateway2 {
 				request_headers.insert(name.to_string(), value_str.to_string());
 			}
 		}
+		req_ctx.forward_ray(&mut request_headers);
 
 		let (mut stopped_sub, _) = tokio::try_join!(
 			ctx.subscribe::<pegboard::workflows::actor2::Stopped>(("actor_id", self.actor_id)),

@@ -16,7 +16,6 @@ use rand::seq::SliceRandom;
 use rivet_api_builder::{RequestIds, X_RIVET_RAY_ID};
 use rivet_error::RivetError;
 use rivet_metrics::GaugeGuardExt;
-use rivet_util::Id;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use rivet_runner_protocol as protocol;
@@ -44,6 +43,23 @@ pub const X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for
 pub const X_RIVET_ERROR: HeaderName = HeaderName::from_static("x-rivet-error");
 
 const WEBSOCKET_CLOSE_LINGER: Duration = Duration::from_millis(5); // Keep TCP connection open briefly after WebSocket close
+const MAX_EXTERNAL_RAY_ID_LEN: usize = 30;
+
+/// Returns `value` when it is a ray ID actors accept: 1 to 30 characters of
+/// `[A-Za-z0-9_-]`. RivetKit enforces the same bound on its side. The engine
+/// cannot depend on RivetKit crates, so the rule is repeated here.
+fn bounded_external_ray_id(value: &str) -> Option<&str> {
+	if !value.is_empty()
+		&& value.len() <= MAX_EXTERNAL_RAY_ID_LEN
+		&& value
+			.bytes()
+			.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+	{
+		Some(value)
+	} else {
+		None
+	}
+}
 
 fn websocket_config(guard_config: &rivet_config::config::guard::Guard) -> WebSocketConfig {
 	WebSocketConfig::default()
@@ -356,12 +372,22 @@ impl ProxyService {
 	}
 
 	/// Process an individual request.
-	#[tracing::instrument(name = "guard_request", skip_all, fields(ray_id, req_id, uri=%utils::redact_uri_for_logs(req.uri())))]
+	#[tracing::instrument(name = "guard_request", skip_all, fields(ray_id, external_ray_id, req_id, uri=%utils::redact_uri_for_logs(req.uri())))]
 	pub async fn process(&self, mut req: Request<BodyIncoming>) -> Result<Response<ResponseBody>> {
 		let start_time = Instant::now();
 
 		let request_ids = RequestIds::new(self.state.config.dc_label());
 		req.extensions_mut().insert(request_ids);
+		let external_ray_id = req
+			.headers()
+			.get(X_RIVET_RAY_ID)
+			.and_then(|value| value.to_str().ok())
+			.and_then(bounded_external_ray_id)
+			.map(str::to_owned)
+			.unwrap_or_else(|| request_ids.ray_id.to_string());
+		if let Ok(value) = HeaderValue::from_str(&external_ray_id) {
+			req.headers_mut().insert(X_RIVET_RAY_ID, value);
+		}
 
 		let current_span = tracing::Span::current();
 
@@ -384,13 +410,9 @@ impl ProxyService {
 
 		current_span.record("req_id", request_ids.req_id.to_string());
 		current_span.record("ray_id", request_ids.ray_id.to_string());
+		current_span.record("external_ray_id", external_ray_id.as_str());
 
 		// Extract request information for logging and analytics before consuming the request
-		let incoming_ray_id = req
-			.headers()
-			.get(X_RIVET_RAY_ID)
-			.and_then(|h| h.to_str().ok())
-			.and_then(|id| Id::parse(id).ok());
 		let host = req
 			.headers()
 			.get(hyper::header::HOST)
@@ -432,6 +454,7 @@ impl ProxyService {
 		let mut req_ctx = RequestContext::new(
 			self.remote_addr,
 			request_ids.ray_id,
+			external_ray_id,
 			request_ids.req_id,
 			host,
 			path,
@@ -450,8 +473,8 @@ impl ProxyService {
 
 		// Debug log request information with structured fields (Apache-like access log)
 		tracing::debug!(
-			?incoming_ray_id,
-			ray_id=?req_ctx.ray_id,
+			ray_id=%req_ctx.ray_id,
+			external_ray_id=%req_ctx.external_ray_id,
 			req_id=?req_ctx.req_id,
 			method=%req_ctx.method,
 			path=%req_ctx.path_for_logs(),
@@ -507,6 +530,7 @@ impl ProxyService {
 							tracing::debug!("Client WebSocket upgrade for error proxy successful");
 
 							let active_guard = metrics::WEBSOCKET_ACTIVE.inc_guard();
+							let external_ray_id = req_ctx.external_ray_id.clone();
 
 							self.state.tasks.spawn(
 								async move {
@@ -522,7 +546,7 @@ impl ProxyService {
 											return;
 										}
 									};
-									let frame = utils::err_to_close_frame(err, request_ids.ray_id);
+									let frame = utils::err_to_close_frame(err, &external_ray_id);
 
 									// Manual conversion to handle different tungstenite versions
 									let code_num: u16 = frame.code.into();
@@ -608,15 +632,18 @@ impl ProxyService {
 		}
 
 		// Add ray_id to response headers
-		if let Ok(ray_id_value) = request_ids.ray_id.to_string().parse() {
+		if let Ok(ray_id_value) = HeaderValue::from_str(req_ctx.external_ray_id()) {
 			if let Some(existing_ray_id_value) = res
 				.headers()
 				.get(X_RIVET_RAY_ID)
 				.and_then(|h| h.to_str().ok())
 			{
-				if ray_id_value != existing_ray_id_value {
+				// api-builder sets the guard's own id on its responses, which is expected.
+				if ray_id_value != existing_ray_id_value
+					&& existing_ray_id_value != req_ctx.ray_id.to_string()
+				{
 					tracing::warn!(
-						expected_ray_id=%request_ids.ray_id,
+						expected_ray_id=%req_ctx.external_ray_id,
 						received_ray_id=%existing_ray_id_value,
 						"downstream service set ray id header to a different value",
 					);
@@ -687,8 +714,8 @@ impl ProxyService {
 
 		// Log information about the completed request
 		tracing::debug!(
-			?incoming_ray_id,
-			ray_id=?req_ctx.ray_id,
+			ray_id=%req_ctx.ray_id,
+			external_ray_id=%req_ctx.external_ray_id,
 			req_id=?req_ctx.req_id,
 			method = %req_ctx.method,
 			path = %req_ctx.path,
@@ -1309,7 +1336,7 @@ impl ProxyService {
 								match client_sink
 									.send(utils::to_hyper_close(Some(utils::err_to_close_frame(
 										err,
-										req_ctx.ray_id,
+										req_ctx.external_ray_id(),
 									))))
 									.await
 								{
@@ -1373,7 +1400,10 @@ impl ProxyService {
 										"websocket target changed to custom serve"
 									);
 									let _ = client_ws
-										.close(Some(utils::err_to_close_frame(err, req_ctx.ray_id)))
+										.close(Some(utils::err_to_close_frame(
+											err,
+											req_ctx.external_ray_id(),
+										)))
 										.await;
 									return;
 								}
@@ -1820,7 +1850,10 @@ impl ProxyService {
 										// Close WebSocket with error
 										ws_handle
 											.send(utils::to_hyper_close(Some(
-												utils::err_to_close_frame(err, req_ctx.ray_id),
+												utils::err_to_close_frame(
+													err,
+													req_ctx.external_ray_id(),
+												),
 											)))
 											.await?;
 
@@ -1865,7 +1898,10 @@ impl ProxyService {
 											);
 											ws_handle
 												.send(utils::to_hyper_close(Some(
-													utils::err_to_close_frame(err, req_ctx.ray_id),
+													utils::err_to_close_frame(
+														err,
+														req_ctx.external_ray_id(),
+													),
 												)))
 												.await?;
 
@@ -1884,7 +1920,10 @@ impl ProxyService {
 											);
 											ws_handle
 												.send(utils::to_hyper_close(Some(
-													utils::err_to_close_frame(err, req_ctx.ray_id),
+													utils::err_to_close_frame(
+														err,
+														req_ctx.external_ray_id(),
+													),
 												)))
 												.await?;
 
@@ -1973,6 +2012,7 @@ impl ProxyServiceFactory {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use rivet_util::Id;
 
 	fn test_state(guard: rivet_config::config::guard::Guard) -> ProxyState {
 		let config = rivet_config::Config::from_root(rivet_config::config::Root {
@@ -1990,6 +2030,7 @@ mod tests {
 		RequestContext::new(
 			"127.0.0.1:12345".parse().unwrap(),
 			Id::v1(uuid::Uuid::nil(), 0),
+			"test-ray".to_owned(),
 			Id::v1(uuid::Uuid::nil(), 1),
 			"example.com".to_owned(),
 			"/actors".to_owned(),
