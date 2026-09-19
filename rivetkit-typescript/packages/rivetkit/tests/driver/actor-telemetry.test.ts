@@ -219,10 +219,70 @@ describeDriverMatrix(
 					`telemetry-down-${crypto.randomUUID()}`,
 				]);
 				expect(await handle.increment(4)).toBe(4);
+				// The exporter reports the failed export on its own export cycle,
+				// which runs after the action returns, so there is nothing to await.
+				await vi.waitFor(
+					() => {
+						const exportFailure = traced.runtime
+							.getRuntimeOutput?.()
+							.split("\n")
+							.find((line) =>
+								line.includes(
+									"otelEvent=BatchSpanProcessor.ExportError",
+								),
+							);
+						expect(exportFailure).toContain("level=error");
+					},
+					{ timeout: 15_000, interval: 250 },
+				);
 			} finally {
 				await traced.stop();
 			}
 		}, 60_000);
+
+		test("keeps actor behavior intact when the trace exporter is slow", async () => {
+			const collector = await startOtlpCollector(
+				await getPort({ host: "127.0.0.1" }),
+				{ responseDelayMs: 120_000 },
+			);
+			try {
+				const traced = await startTracedRuntime(
+					driverTestConfig,
+					collector.endpoint,
+					{
+						OTEL_BSP_MAX_QUEUE_SIZE: "8",
+						OTEL_BSP_MAX_EXPORT_BATCH_SIZE: "4",
+					},
+				);
+				try {
+					const handle = traced.client.telemetryActor.getOrCreate([
+						`telemetry-slow-${crypto.randomUUID()}`,
+					]);
+					const started = Date.now();
+					for (let index = 1; index <= 12; index += 1) {
+						expect(await handle.increment(1)).toBe(index);
+					}
+					expect(Date.now() - started).toBeLessThan(60_000);
+					// The processor reports dropped spans on its own export cycle, which
+					// runs after the actions return, so there is nothing to await.
+					await vi.waitFor(
+						() => {
+							expect(
+								traced.runtime.getRuntimeOutput?.(),
+							).toContain(
+								"otelEvent=BatchSpanProcessor.SpanDroppingStarted",
+							);
+						},
+						{ timeout: 15_000, interval: 250 },
+					);
+					expect(await handle.getCount()).toBe(12);
+				} finally {
+					await traced.stop();
+				}
+			} finally {
+				await collector.close();
+			}
+		}, 120_000);
 
 		/**
 		 * One traced runtime and actor shared by every test that asserts on
