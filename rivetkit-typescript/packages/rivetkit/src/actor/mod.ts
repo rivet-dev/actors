@@ -67,3 +67,4 @@ export {
 	queue,
 	type Type,
 } from "./schema";
+export type { ActionTraceSamplers, ActorTracingOptions } from "./tracing";

@@ -41,7 +41,11 @@ function otlpStatusCode(code: number | string | undefined): number {
 function exportedSpans(exports: Buffer[]): ExportedSpan[] {
 	type OtlpAttribute = {
 		key: string;
-		value: { stringValue?: string; intValue?: string | number };
+		value: {
+			stringValue?: string;
+			intValue?: string | number;
+			doubleValue?: number;
+		};
 	};
 	type OtlpSpan = Omit<
 		ExportedSpan,
@@ -72,9 +76,10 @@ function exportedSpans(exports: Buffer[]): ExportedSpan[] {
 						(span.attributes ?? []).map((attribute) => [
 							attribute.key,
 							attribute.value.stringValue ??
-								(attribute.value.intValue === undefined
-									? undefined
-									: String(attribute.value.intValue)),
+								stringOrUndefined(
+									attribute.value.intValue ??
+										attribute.value.doubleValue,
+								),
 						]),
 					),
 					links: (span.links ?? []).map((link) => ({
@@ -195,6 +200,10 @@ function withRayBaggage<T>(rayId: string, run: () => Promise<T>): Promise<T> {
 		[RAY_BAGGAGE_KEY]: { value: rayId },
 	});
 	return context.with(propagation.setBaggage(context.active(), baggage), run);
+}
+
+function stringOrUndefined(value: string | number | undefined) {
+	return value === undefined ? undefined : String(value);
 }
 
 function randomTraceId(): string {
@@ -487,6 +496,116 @@ describeDriverMatrix(
 							span.attributes["rivet.ray.id"] === invalidRayId,
 					),
 				).toBe(false);
+			});
+
+			test("records only the traces an actor's samplers select", async () => {
+				const sampled = traced.client.telemetrySampledActor.getOrCreate(
+					[`sampled-${crypto.randomUUID()}`],
+				);
+				// Application code sees the decision as the sampled flag of
+				// its active span, which is what its own spans inherit.
+				expect(await sampled.unrecorded("first")).toBe(0);
+				expect(await sampled.recorded("second")).toBe(1);
+				expect(await sampled.unrecorded("third")).toBe(0);
+				expect(await sampled.recorded("last")).toBe(1);
+
+				const actorId = await sampled.resolve();
+				const ofActor = (exported: ExportedSpan[]) =>
+					exported.filter(
+						(span) => span.attributes["rivet.actor.id"] === actorId,
+					);
+				// Spans export in the order they end, so once the last
+				// recorded call and its statement arrive, anything the earlier
+				// unrecorded calls produced would have arrived too.
+				const spans = ofActor(
+					await waitForSpans(
+						traceExports,
+						"both recorded invocations and their statements",
+						(exported) =>
+							ofActor(exported).filter(isSqliteSpan).length >=
+								2 &&
+							ofActor(exported).filter(
+								(span) =>
+									span.name ===
+									"telemetrySampledActor/recorded",
+							).length >= 2,
+					),
+				);
+
+				const invocations = spans.filter((span) => !isSqliteSpan(span));
+				expect(invocations.map((span) => span.name)).toEqual([
+					"telemetrySampledActor/recorded",
+					"telemetrySampledActor/recorded",
+				]);
+				for (const invocation of invocations) {
+					expect(invocation.attributes["rivet.sampling.ratio"]).toBe(
+						"1",
+					);
+				}
+				const recordedSpanIds = invocations.map((span) => span.spanId);
+				const statements = spans.filter(isSqliteSpan);
+				expect(statements).toHaveLength(2);
+				for (const statement of statements) {
+					expect(recordedSpanIds).toContain(statement.parentSpanId);
+				}
+			});
+
+			test("follows the caller's sampling decision over the actor's samplers", async () => {
+				const sampled = traced.client.telemetrySampledActor.getOrCreate(
+					[`sampled-${crypto.randomUUID()}`],
+				);
+				const callUnder = (
+					traceId: string,
+					traceFlags: number,
+					run: () => Promise<unknown>,
+				) =>
+					context.with(
+						trace.setSpan(
+							context.active(),
+							trace.wrapSpanContext({
+								traceId,
+								spanId: randomSpanId(),
+								traceFlags,
+							}),
+						),
+						run,
+					);
+
+				const unsampledTraceId = randomTraceId();
+				const sampledTraceId = randomTraceId();
+				await callUnder(unsampledTraceId, 0, () =>
+					sampled.recorded("caller did not sample"),
+				);
+				await callUnder(sampledTraceId, 1, () =>
+					sampled.unrecorded("caller sampled"),
+				);
+
+				// The invocation span ends after its statement and after
+				// everything the earlier call produced, so its arrival means
+				// the rest has arrived too.
+				const spans = await waitForSpans(
+					traceExports,
+					"the unrecorded action joining the caller's sampled trace",
+					(exported) =>
+						exported.some(
+							(span) =>
+								span.traceId === sampledTraceId &&
+								span.name ===
+									"telemetrySampledActor/unrecorded",
+						),
+				);
+				expect(
+					spans
+						.filter((span) => span.traceId === sampledTraceId)
+						.map((span) => span.name)
+						.sort(),
+				).toEqual([
+					"rivet.sqlite.execute",
+					"telemetrySampledActor/unrecorded",
+				]);
+				expect(
+					spans.filter((span) => span.traceId === unsampledTraceId),
+				).toEqual([]);
 			});
 
 			test("links a scheduled invocation to the invocation that scheduled it", async () => {

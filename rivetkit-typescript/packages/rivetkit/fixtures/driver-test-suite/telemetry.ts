@@ -121,3 +121,27 @@ export const telemetryRunConsumerActor = actor({
 	},
 	actions: {},
 });
+
+/**
+ * Records no trace it starts except for `recorded`, so a test can tell an
+ * actor sampler from an action sampler and from a caller's own decision.
+ */
+export const telemetrySampledActor = actor({
+	db: db(),
+	tracing: {
+		sampler: 0,
+		actions: {
+			recorded: 1,
+		},
+	},
+	actions: {
+		unrecorded: async (c, marker: string) => {
+			await c.db.execute("SELECT ? AS marker", marker);
+			return trace.getActiveSpan()?.spanContext().traceFlags;
+		},
+		recorded: async (c, marker: string) => {
+			await c.db.execute("SELECT ? AS marker", marker);
+			return trace.getActiveSpan()?.spanContext().traceFlags;
+		},
+	},
+});

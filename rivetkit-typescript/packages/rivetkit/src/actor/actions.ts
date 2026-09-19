@@ -46,6 +46,54 @@ export function flattenActionInputSchemas(
 	return flattened;
 }
 
+/**
+ * Flatten a tree of per-action sample rates into dot-separated action names.
+ *
+ * @throws TypeError when a rate names something that is not an action of
+ * `actions`, which is how a JavaScript caller learns about a stale override.
+ * @throws RangeError when a rate is not a number from 0 to 1.
+ */
+export function flattenActionTraceSamplers(
+	actions: unknown,
+	samplers: unknown,
+): Record<string, number> {
+	const flattened = Object.create(null) as Record<string, number>;
+	if (samplers === undefined) return flattened;
+	const handlers = flattenActionHandlers(actions);
+	visitTraceSamplers(samplers, [], handlers, flattened);
+	return flattened;
+}
+
+function visitTraceSamplers(
+	value: unknown,
+	path: string[],
+	handlers: Record<string, RuntimeActionHandler>,
+	flattened: Record<string, number>,
+): void {
+	const location = ["tracing", "actions", ...path].join(".");
+	if (typeof value === "number") {
+		const name = path.join(".");
+		if (!Object.hasOwn(handlers, name)) {
+			throw new TypeError(`${location} does not name an action`);
+		}
+		if (!(value >= 0 && value <= 1)) {
+			throw new RangeError(
+				`${location} must be from 0 to 1, got ${value}`,
+			);
+		}
+		flattened[name] = value;
+		return;
+	}
+	if (!isRecord(value)) {
+		throw new TypeError(
+			`${location} must be a sample rate or a group of them`,
+		);
+	}
+	for (const [segment, child] of Object.entries(value)) {
+		visitTraceSamplers(child, [...path, segment], handlers, flattened);
+	}
+}
+
 interface ActionEntry {
 	name: string;
 	path: string[];

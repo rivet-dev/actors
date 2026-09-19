@@ -131,8 +131,8 @@ pub use actor::{kv, sqlite};
 
 pub use actor::action::ActionDispatchError;
 pub use actor::config::{
-	ActionDefinition, ActorConfig, ActorConfigInput, ActorConfigOverrides, CanHibernateWebSocket,
-	SqliteProfilingConfig, SqliteProfilingConfigInput,
+	ActionDefinition, ActorConfig, ActorConfigInput, ActorConfigOverrides, ActorTracingConfig,
+	CanHibernateWebSocket, SqliteProfilingConfig, SqliteProfilingConfigInput,
 };
 pub use actor::connection::ConnHandle;
 pub use actor::context::{

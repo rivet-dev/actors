@@ -1,6 +1,10 @@
 import type { AnyDatabaseProvider } from "@/common/database/config";
 import type { RegistryConfig } from "@/registry/config";
-import { flattenActionHandlers, flattenActionInputSchemas } from "./actions";
+import {
+	flattenActionHandlers,
+	flattenActionInputSchemas,
+	flattenActionTraceSamplers,
+} from "./actions";
 import {
 	type Actions,
 	type ActorConfig,
@@ -209,6 +213,7 @@ export function actor<
 	>;
 	flattenActionHandlers(config.actions);
 	flattenActionInputSchemas(config.actions, config.actionInputSchemas);
+	flattenActionTraceSamplers(config.actions, config.tracing?.actions);
 	return new ActorDefinition(config);
 }
 
