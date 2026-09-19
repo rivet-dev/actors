@@ -1,10 +1,15 @@
+import { context, propagation, trace } from "@opentelemetry/api";
+import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import getPort from "get-port";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import type { registry } from "../../fixtures/driver-test-suite/registry-static";
 import { type Client, createClient } from "../../src/client/mod";
+import { RAY_BAGGAGE_KEY } from "../../src/common/otel-context";
 import { startOtlpCollector } from "../fixtures/otlp-collector";
 import { describeDriverMatrix } from "./shared-matrix";
 import type { DriverDeployOutput, DriverTestConfig } from "./shared-types";
+
+new NodeTracerProvider().register();
 
 const OTLP_STATUS_OK = 1;
 const OTLP_STATUS_ERROR = 2;
@@ -160,6 +165,22 @@ async function startTracedRuntime(
 			await runtime.cleanup();
 		},
 	};
+}
+
+/** Runs `run` with `rayId` in OpenTelemetry baggage under `rivet.ray.id`. */
+function withRayBaggage<T>(rayId: string, run: () => Promise<T>): Promise<T> {
+	const baggage = propagation.createBaggage({
+		[RAY_BAGGAGE_KEY]: { value: rayId },
+	});
+	return context.with(propagation.setBaggage(context.active(), baggage), run);
+}
+
+function randomTraceId(): string {
+	return crypto.randomUUID().replaceAll("-", "");
+}
+
+function randomSpanId(): string {
+	return randomTraceId().slice(0, 16);
 }
 
 describeDriverMatrix(
@@ -326,6 +347,64 @@ describeDriverMatrix(
 						deferred !== undefined &&
 						invocation.endTimeUnixNano >= deferred.endTimeUnixNano,
 				).toBe(true);
+			});
+
+			test("carries the caller's ray and trace context into the invocation", async () => {
+				const rayId = `caller-${crypto.randomUUID().slice(0, 8)}`;
+				const traceId = randomTraceId();
+				const spanId = randomSpanId();
+				const callerSpan = trace.wrapSpanContext({
+					traceId,
+					spanId,
+					traceFlags: 1,
+				});
+				await withRayBaggage(rayId, () =>
+					context.with(
+						trace.setSpan(context.active(), callerSpan),
+						() => handle.getCount(),
+					),
+				);
+				const spans = await waitForSpans(
+					traceExports,
+					"the getCount invocation carrying the caller's ray",
+					(exported) =>
+						exported.some(
+							(span) => span.attributes["rivet.ray.id"] === rayId,
+						),
+				);
+				const invocation = spans.find(
+					(span) => span.attributes["rivet.ray.id"] === rayId,
+				);
+				expect(invocation?.name).toBe("telemetryActor/getCount");
+				expect(invocation?.kind).toBe(OTLP_SPAN_KIND_SERVER);
+				expect(invocation?.statusCode).toBe(OTLP_STATUS_OK);
+				expect(invocation?.attributes).toMatchObject({
+					"rivet.invocation.type": "action",
+					"rivet.action.name": "getCount",
+					"rivet.actor.name": "telemetryActor",
+					"rivet.actor.id": await handle.resolve(),
+				});
+				expect(invocation?.traceId).toBe(traceId);
+				expect(invocation?.parentSpanId).toBe(spanId);
+
+				const invalidRayId = "a".repeat(31);
+				expect(
+					await withRayBaggage(invalidRayId, () =>
+						handle.increment(0),
+					),
+				).toBeTypeOf("number");
+				const afterInvalid = await waitForSpans(
+					traceExports,
+					"the increment invocation sent with an invalid ray",
+					(exported) =>
+						findInvocation(exported, "increment") !== undefined,
+				);
+				expect(
+					afterInvalid.some(
+						(span) =>
+							span.attributes["rivet.ray.id"] === invalidRayId,
+					),
+				).toBe(false);
 			});
 		});
 	},
