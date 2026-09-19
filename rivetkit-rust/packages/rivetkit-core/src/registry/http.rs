@@ -370,12 +370,15 @@ impl RegistryDispatcher {
 			}
 		};
 
+		let incoming =
+			crate::telemetry::IncomingInvocationContext::from_http_headers(request.headers());
 		let (reply_tx, reply_rx) = oneshot::channel();
 		let dispatch_result = try_send_dispatch_command(
 			&instance.dispatch,
 			DispatchCommand::QueueSend {
 				name: queue_name,
 				body: queue_request.body,
+				incoming,
 				conn: conn.clone(),
 				request,
 				wait: queue_request.wait,

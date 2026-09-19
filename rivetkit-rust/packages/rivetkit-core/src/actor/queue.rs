@@ -26,6 +26,7 @@ use crate::actor::persist::{
 use crate::actor::task_types::UserTaskKind;
 #[cfg(target_arch = "wasm32")]
 use crate::error::ActorRuntime;
+use crate::telemetry::{self, ActorInvocationTelemetry, IncomingTraceContext};
 
 #[derive(Clone, Debug, Default)]
 pub struct QueueNextOpts {
@@ -101,6 +102,10 @@ pub struct QueueMessage {
 	pub name: String,
 	pub body: Vec<u8>,
 	pub created_at: i64,
+	/// Ray ID and span of the invocation that sent the message, which the span
+	/// covering its receipt links back to. Empty when the sender carried no
+	/// trace context.
+	pub trace_context: IncomingTraceContext,
 	completion: Option<CompletionHandle>,
 }
 
@@ -110,6 +115,7 @@ pub struct CompletableQueueMessage {
 	pub name: String,
 	pub body: Vec<u8>,
 	pub created_at: i64,
+	pub trace_context: IncomingTraceContext,
 	completion: CompletionHandle,
 }
 
@@ -281,7 +287,10 @@ impl ActorContext {
 			in_flight_at: None,
 		};
 		let encoded_message = encode_queue_message(&persisted).context("encode queue message")?;
-
+		let trace_context = self
+			.invocation_telemetry()
+			.map(ActorInvocationTelemetry::incoming_trace_context)
+			.unwrap_or_default();
 		let config = self.config();
 		if encoded_message.len() > config.max_queue_message_size as usize {
 			return Err(QueueMessageTooLarge {
@@ -323,9 +332,14 @@ impl ActorContext {
 			false
 		};
 
-		let persist_result =
-			internal_storage::persist_queue_message(self.sql(), id, metadata.next_id, &persisted)
-				.await;
+		let persist_result = internal_storage::persist_queue_message(
+			self.sql(),
+			id,
+			metadata.next_id,
+			&persisted,
+			trace_context.clone(),
+		)
+		.await;
 
 		if let Err(error) = persist_result {
 			metadata.next_id = id;
@@ -350,6 +364,7 @@ impl ActorContext {
 			name: name.to_owned(),
 			body: body.to_vec(),
 			created_at,
+			trace_context,
 			completion: None,
 		})
 	}
@@ -653,6 +668,11 @@ impl ActorContext {
 			return Ok(Vec::new());
 		}
 
+		let _receive_spans: Vec<tracing::Span> = selected
+			.iter()
+			.map(|message| telemetry::start_queue_receive(self, message))
+			.collect();
+
 		if completable {
 			let queue_size = self.0.queue_metadata.lock().await.size;
 			self.0
@@ -927,6 +947,7 @@ impl QueueMessage {
 			name: self.name,
 			body: self.body,
 			created_at: self.created_at,
+			trace_context: self.trace_context,
 			completion,
 		})
 	}
@@ -947,6 +968,7 @@ impl CompletableQueueMessage {
 			name: self.name,
 			body: self.body,
 			created_at: self.created_at,
+			trace_context: self.trace_context,
 			completion: Some(self.completion),
 		}
 	}
@@ -1056,6 +1078,7 @@ fn queue_message_from_row(row: internal_storage::QueueMessageRow) -> QueueMessag
 		name: row.message.name,
 		body: row.message.body,
 		created_at: row.message.created_at,
+		trace_context: row.trace_context,
 		completion: None,
 	}
 }

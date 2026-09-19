@@ -100,6 +100,7 @@ fn counter_factory() -> ActorFactory {
 						request: _,
 						wait: _,
 						timeout_ms: _,
+						invocation_telemetry: _,
 						reply,
 					} => {
 						reply.send(Err(anyhow::anyhow!("queue sends are not handled")));

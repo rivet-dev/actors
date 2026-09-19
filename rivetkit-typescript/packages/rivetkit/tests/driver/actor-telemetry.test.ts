@@ -482,6 +482,97 @@ describeDriverMatrix(
 				expect(request?.traceId).toBe(traceId);
 				expect(request?.parentSpanId).toBe(spanId);
 			});
+
+			test("links a queue receipt to the send that produced it", async () => {
+				const rayId = `queue-${crypto.randomUUID().slice(0, 8)}`;
+				const runRayId = `run-${crypto.randomUUID().slice(0, 8)}`;
+				const jobId = `job-${crypto.randomUUID()}`;
+				const consumer =
+					traced.client.telemetryRunConsumerActor.getOrCreate([
+						`telemetry-run-consumer-${crypto.randomUUID()}`,
+					]);
+				await withRayBaggage(rayId, () =>
+					handle.send("jobs", { id: jobId }),
+				);
+				expect(await handle.consumeJob()).toEqual({ id: jobId });
+				await withRayBaggage(runRayId, () =>
+					consumer.send("runJobs", { id: "job-run" }),
+				);
+
+				const sendWithRay = (spans: ExportedSpan[], ray: string) =>
+					spans.find(
+						(span) =>
+							span.attributes["rivet.invocation.type"] ===
+								"queue_send" &&
+							span.attributes["rivet.ray.id"] === ray,
+					);
+				const receiptUnder = (
+					spans: ExportedSpan[],
+					actorName: string,
+					parentSpanId: string | undefined,
+				) =>
+					spans.find(
+						(span) =>
+							span.name === `${actorName}/queue.receive` &&
+							span.parentSpanId === parentSpanId,
+					);
+				const spans = await waitForSpans(
+					traceExports,
+					"both queue sends, the consuming action, and both receipts",
+					(exported) => {
+						const action = findInvocation(exported, "consumeJob");
+						return (
+							sendWithRay(exported, rayId) !== undefined &&
+							sendWithRay(exported, runRayId) !== undefined &&
+							action !== undefined &&
+							receiptUnder(
+								exported,
+								"telemetryActor",
+								action.spanId,
+							) !== undefined &&
+							receiptUnder(
+								exported,
+								"telemetryRunConsumerActor",
+								undefined,
+							) !== undefined
+						);
+					},
+				);
+
+				const send = sendWithRay(spans, rayId);
+				expect(send?.name).toBe("telemetryActor/queue.send");
+				expect(send?.attributes).toMatchObject({
+					"rivet.invocation.type": "queue_send",
+					"rivet.queue.name": "jobs",
+				});
+				const action = findInvocation(spans, "consumeJob");
+				const receipt = receiptUnder(
+					spans,
+					"telemetryActor",
+					action?.spanId,
+				);
+				expect(receipt?.attributes).toMatchObject({
+					"rivet.queue.name": "jobs",
+					"rivet.ray.id": action?.attributes["rivet.ray.id"],
+				});
+				expect(receipt?.links).toEqual([
+					{ traceId: send?.traceId, spanId: send?.spanId },
+				]);
+
+				const runSend = sendWithRay(spans, runRayId);
+				const runReceipt = receiptUnder(
+					spans,
+					"telemetryRunConsumerActor",
+					undefined,
+				);
+				expect(runReceipt?.attributes).toMatchObject({
+					"rivet.queue.name": "runJobs",
+					"rivet.ray.id": runRayId,
+				});
+				expect(runReceipt?.links).toEqual([
+					{ traceId: runSend?.traceId, spanId: runSend?.spanId },
+				]);
+			});
 		});
 	},
 	{

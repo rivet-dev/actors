@@ -896,6 +896,7 @@ async fn dispatch_event(callbacks: &WasmCallbacks, ctx: &WasmActorContext, event
 			request,
 			wait,
 			timeout_ms,
+			invocation_telemetry: _,
 			reply,
 		} => {
 			let callback = callbacks.on_queue_send.clone();

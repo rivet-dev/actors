@@ -492,6 +492,7 @@ pub(crate) async fn dispatch_event(
 			request,
 			wait,
 			timeout_ms,
+			invocation_telemetry,
 			reply,
 		} => {
 			let Some(callback) = bindings.on_queue_send.clone() else {
@@ -514,6 +515,7 @@ pub(crate) async fn dispatch_event(
 								&callback,
 								QueueSendPayload {
 									ctx: ctx.inner().clone(),
+									telemetry: invocation_telemetry,
 									conn,
 									request,
 									name,

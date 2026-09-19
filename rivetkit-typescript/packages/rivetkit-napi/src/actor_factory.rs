@@ -155,6 +155,7 @@ pub(crate) struct MigratePayload {
 #[derive(Clone)]
 pub(crate) struct QueueSendPayload {
 	pub(crate) ctx: CoreActorContext,
+	pub(crate) telemetry: Option<rivetkit_core::ActorInvocationTelemetry>,
 	pub(crate) conn: CoreConnHandle,
 	pub(crate) request: Request,
 	pub(crate) name: String,
@@ -805,7 +806,10 @@ fn build_queue_send_payload(
 	payload: QueueSendPayload,
 ) -> napi::Result<Vec<napi::JsUnknown>> {
 	let mut object = env.create_object()?;
-	object.set("ctx", ActorContext::new(payload.ctx))?;
+	object.set(
+		"ctx",
+		ActorContext::new(payload.ctx.with_invocation_telemetry(payload.telemetry)),
+	)?;
 	object.set("conn", ConnHandle::new(payload.conn))?;
 	object.set("request", build_request_object(env, payload.request)?)?;
 	object.set("name", payload.name)?;
