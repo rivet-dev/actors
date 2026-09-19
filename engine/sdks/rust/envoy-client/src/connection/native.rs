@@ -130,9 +130,7 @@ async fn single_connection(
 			.await?;
 	let (mut write, mut read) = ws_stream.split();
 
-	// TODO: Bound shared WebSocket writer memory across protocol message types.
-	// https://github.com/rivet-dev/rivet/issues/5468
-	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<WsTxMessage>();
+	let (ws_tx, mut ws_data_rx, mut ws_control_rx) = super::new_ws_connection();
 	let (http_ws_tx, mut http_ws_rx) =
 		mpsc::channel::<HttpWsTxMessage>(super::HTTP_WS_MESSAGE_CAPACITY);
 	let http_byte_budget = Arc::new(Semaphore::new(super::HTTP_WS_BYTE_CAPACITY));
@@ -164,44 +162,86 @@ async fn single_connection(
 			super::send_initial_metadata(&shared2).await;
 
 			loop {
+				let mut write_failed = false;
+				macro_rules! write_message {
+					($message:expr) => {
+						match $message {
+							EitherWrite::Legacy(WsTxMessage::Send(payload)) => {
+								if let Err(e) = write
+									.send(tungstenite::Message::Binary(payload.data.into()))
+									.await
+								{
+									tracing::error!(?e, "failed to send ws message");
+									if let Some(write_failed_tx) = write_failed_tx.take() {
+										let _ = write_failed_tx.send(());
+									}
+									write_failed = true;
+								}
+							}
+							EitherWrite::Legacy(WsTxMessage::Close) => {}
+							EitherWrite::Http(message) => {
+								let result = write
+									.send(tungstenite::Message::Binary(message.data.into()))
+									.await
+									.map_err(anyhow::Error::from);
+								let failed = result.is_err();
+								let _ = message.written.send(result);
+								if failed {
+									if let Some(write_failed_tx) = write_failed_tx.take() {
+										let _ = write_failed_tx.send(());
+									}
+									write_failed = true;
+								}
+							}
+						}
+					};
+				}
 				let msg = tokio::select! {
-					msg = ws_rx.recv() => msg.map(EitherWrite::Legacy),
+					msg = ws_control_rx.recv() => msg.map(EitherWrite::Legacy),
+					msg = ws_data_rx.recv() => msg.map(EitherWrite::Legacy),
 					msg = http_ws_rx.recv() => msg.map(EitherWrite::Http),
 				};
 				let Some(msg) = msg else { break };
 				match msg {
-					EitherWrite::Legacy(WsTxMessage::Send(data)) => {
-						let result = write.send(tungstenite::Message::Binary(data.into())).await;
-						if let Err(e) = result {
-							tracing::error!(?e, "failed to send ws message");
-							if let Some(write_failed_tx) = write_failed_tx.take() {
-								let _ = write_failed_tx.send(());
-							}
+					EitherWrite::Legacy(WsTxMessage::Send(payload)) => {
+						write_message!(EitherWrite::Legacy(WsTxMessage::Send(payload)));
+						if write_failed {
 							break;
 						}
 					}
 					EitherWrite::Legacy(WsTxMessage::Close) => {
-						let _ = write
-							.send(tungstenite::Message::Close(Some(
-								tungstenite::protocol::CloseFrame {
-									code: tungstenite::protocol::frame::coding::CloseCode::Normal,
-									reason: "envoy.shutdown".into(),
-								},
-							)))
-							.await;
+						let mut pending = std::collections::VecDeque::new();
+						while let Ok(message) = ws_control_rx.try_recv() {
+							pending.push_back(EitherWrite::Legacy(message));
+						}
+						while let Ok(message) = ws_data_rx.try_recv() {
+							pending.push_back(EitherWrite::Legacy(message));
+						}
+						while let Ok(message) = http_ws_rx.try_recv() {
+							pending.push_back(EitherWrite::Http(message));
+						}
+						while let Some(message) = pending.pop_front() {
+							write_message!(message);
+							if write_failed {
+								break;
+							}
+						}
+						if !write_failed {
+							let _ = write
+								.send(tungstenite::Message::Close(Some(
+									tungstenite::protocol::CloseFrame {
+										code:
+											tungstenite::protocol::frame::coding::CloseCode::Normal,
+										reason: "envoy.shutdown".into(),
+									},
+								)))
+								.await;
+						}
 						break;
 					}
 					EitherWrite::Http(message) => {
-						let result = write
-							.send(tungstenite::Message::Binary(message.data.into()))
-							.await
-							.map_err(anyhow::Error::from);
-						let failed = result.is_err();
-						let _ = message.written.send(result);
-						if failed {
-							if let Some(write_failed_tx) = write_failed_tx.take() {
-								let _ = write_failed_tx.send(());
-							}
+						write_message!(EitherWrite::Http(message));
+						if write_failed {
 							break;
 						}
 					}

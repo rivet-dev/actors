@@ -26,10 +26,10 @@ use crate::{
 async fn tunnel_context() -> (
 	EnvoyContext,
 	u64,
-	mpsc::UnboundedReceiver<crate::context::WsTxMessage>,
+	mpsc::Receiver<crate::context::WsTxMessage>,
 ) {
 	let (shared, _envoy_rx) = build_shared_context(Arc::new(TestCallbacks::idle()));
-	let (ws_tx, ws_rx) = mpsc::unbounded_channel();
+	let (ws_tx, ws_rx, _control_rx) = crate::connection::new_ws_connection();
 	let session = crate::connection::install_connection(&shared, ws_tx).await;
 	let ctx = empty_envoy_context(shared);
 	(ctx, session, ws_rx)
@@ -52,6 +52,7 @@ fn empty_envoy_context(shared: Arc<crate::context::SharedContext>) -> EnvoyConte
 		http_message_indices: BufferMap::new(),
 		http_request_cancellations: HashMap::new(),
 		buffered_messages: Vec::new(),
+		event_retry_pending: false,
 		processed_command_idx: HashMap::new(),
 	}
 }
@@ -1064,7 +1065,7 @@ async fn streamed_request_returns_credit_only_after_handler_consumption() {
 		request_tx: Mutex::new(Some(request_tx)),
 	});
 	let (shared, _envoy_rx) = build_shared_context(callbacks);
-	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+	let (ws_tx, mut ws_rx, _control_rx) = crate::connection::new_ws_connection();
 	let session = crate::connection::install_connection(&shared, ws_tx).await;
 	let (actor_tx, _active_http_request_count) = create_actor(
 		shared,
@@ -1136,7 +1137,7 @@ async fn active_http_request_count_spans_streaming_response_drain() {
 		body_tx: Mutex::new(Some(body_tx_tx)),
 	});
 	let (shared, _envoy_rx) = build_shared_context(callbacks);
-	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+	let (ws_tx, mut ws_rx, _control_rx) = crate::connection::new_ws_connection();
 	let session = crate::connection::install_connection(&shared, ws_tx).await;
 	let (actor_tx, active_http_request_count) = create_actor(
 		shared,
@@ -1224,7 +1225,7 @@ async fn connection_close_replays_one_indexed_terminal_abort_after_reconnect() {
 		body_tx: Mutex::new(Some(body_tx_tx)),
 	});
 	let (shared, mut envoy_rx) = build_shared_context(callbacks);
-	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+	let (ws_tx, mut ws_rx, _control_rx) = crate::connection::new_ws_connection();
 	let session_one = crate::connection::install_connection(&shared, ws_tx).await;
 	let (actor_tx, active_http_request_count) = create_actor(
 		shared.clone(),
@@ -1317,7 +1318,8 @@ async fn connection_close_replays_one_indexed_terminal_abort_after_reconnect() {
 	crate::tunnel::send_or_buffer_tunnel_message(&mut envoy_ctx, terminal).await;
 	assert_eq!(envoy_ctx.buffered_messages.len(), 1);
 
-	let (replacement_ws_tx, mut replacement_ws_rx) = mpsc::unbounded_channel();
+	let (replacement_ws_tx, mut replacement_ws_rx, _replacement_control_rx) =
+		crate::connection::new_ws_connection();
 	let session_two = crate::connection::install_connection(&shared, replacement_ws_tx).await;
 	assert_ne!(session_two, session_one);
 	crate::tunnel::resend_buffered_tunnel_messages(&mut envoy_ctx).await;
@@ -1350,7 +1352,7 @@ async fn failed_response_write_queues_terminal_before_connclose_is_processed() {
 		body_tx: Mutex::new(Some(body_tx_tx)),
 	});
 	let (shared, mut envoy_rx) = build_shared_context(callbacks);
-	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+	let (ws_tx, mut ws_rx, _control_rx) = crate::connection::new_ws_connection();
 	let session = crate::connection::install_connection(&shared, ws_tx).await;
 	let (actor_tx, active_http_request_count) = create_actor(
 		shared.clone(),
@@ -1403,7 +1405,7 @@ async fn failed_response_write_queues_terminal_before_connclose_is_processed() {
 #[tokio::test]
 async fn queued_terminal_uses_an_already_reconnected_session() {
 	let (shared, _envoy_rx) = build_shared_context(Arc::new(TestCallbacks::idle()));
-	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+	let (ws_tx, mut ws_rx, _control_rx) = crate::connection::new_ws_connection();
 	let _session = crate::connection::install_connection(&shared, ws_tx).await;
 	let mut ctx = empty_envoy_context(shared);
 	let terminal = protocol::ToRivetTunnelMessage {
@@ -1433,7 +1435,7 @@ async fn streamed_response_stalls_at_window_until_gateway_consumes_bytes() {
 		body_tx: Mutex::new(Some(body_tx_tx)),
 	});
 	let (shared, _envoy_rx) = build_shared_context(callbacks);
-	let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+	let (ws_tx, mut ws_rx, _control_rx) = crate::connection::new_ws_connection();
 	let session = crate::connection::install_connection(&shared, ws_tx).await;
 	let (actor_tx, active_http_request_count) = create_actor(
 		shared,

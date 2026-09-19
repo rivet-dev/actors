@@ -17,7 +17,7 @@ use crate::actor::ToActor;
 use crate::commands::{ACK_COMMANDS_INTERVAL_MS, handle_commands, send_command_ack};
 use crate::config::EnvoyConfig;
 use crate::connection::{start_connection, ws_send};
-use crate::context::{SharedContext, WsTxMessage};
+use crate::context::SharedContext;
 use crate::events::{handle_ack_events, handle_send_events, resend_unacknowledged_events};
 use crate::handle::EnvoyHandle;
 use crate::kv::{
@@ -68,6 +68,7 @@ pub struct EnvoyContext {
 	/// `RequestStart` from reaching the actor after its cancellation arrived.
 	pub http_request_cancellations: HashMap<HttpRequestCancellationKey, crate::time::Instant>,
 	pub buffered_messages: Vec<protocol::ToRivetTunnelMessage>,
+	pub event_retry_pending: bool,
 	/// Highest command index processed per `(actor_id, generation)`, used to
 	/// drop replayed commands from `pegboard-envoy` after a reconnect. Persists
 	/// across `remove_actor` so a replayed `CommandStartActor` for an
@@ -429,6 +430,7 @@ fn start_envoy_sync_inner(config: EnvoyConfig) -> EnvoyHandle {
 		http_message_indices: BufferMap::new(),
 		http_request_cancellations: HashMap::new(),
 		buffered_messages: Vec::new(),
+		event_retry_pending: false,
 		processed_command_idx: HashMap::new(),
 	};
 
@@ -446,6 +448,7 @@ async fn envoy_loop(
 ) {
 	let mut ack_tick = boxed_sleep(std::time::Duration::from_millis(ACK_COMMANDS_INTERVAL_MS));
 	let mut kv_cleanup_tick = boxed_sleep(std::time::Duration::from_millis(KV_CLEANUP_INTERVAL_MS));
+	let mut ws_retry_tick = boxed_sleep(std::time::Duration::from_millis(100));
 
 	let mut lost_timeout: Option<SleepFuture> = None;
 
@@ -482,7 +485,7 @@ async fn envoy_loop(
 						}
 					}
 					ToEnvoyMessage::SendEvents { events } => {
-						handle_send_events(&mut ctx, events).await;
+						ctx.event_retry_pending |= handle_send_events(&mut ctx, events).await;
 					}
 					ToEnvoyMessage::KvRequest { actor_id, data, response_tx } => {
 						handle_kv_request(&mut ctx, actor_id, data, response_tx).await;
@@ -572,6 +575,17 @@ async fn envoy_loop(
 				cleanup_old_remote_sqlite_requests(&mut ctx);
 				kv_cleanup_tick = boxed_sleep(std::time::Duration::from_millis(KV_CLEANUP_INTERVAL_MS));
 			}
+			_ = ws_retry_tick.as_mut() => {
+				branch = "ws_retry_tick";
+				process_unsent_kv_requests(&mut ctx).await;
+				process_unsent_sqlite_requests(&mut ctx).await;
+				process_unsent_remote_sqlite_requests(&mut ctx).await;
+				resend_buffered_tunnel_messages(&mut ctx).await;
+				if ctx.event_retry_pending {
+					ctx.event_retry_pending = resend_unacknowledged_events(&ctx).await;
+				}
+				ws_retry_tick = boxed_sleep(std::time::Duration::from_millis(100));
+			}
 			_ = async {
 				match lost_timeout.as_mut() {
 					Some(timeout) => timeout.as_mut().await,
@@ -614,7 +628,7 @@ async fn envoy_loop(
 	{
 		let guard = ctx.shared.ws_tx.lock().await;
 		if let Some(tx) = guard.as_ref() {
-			let _ = tx.send(WsTxMessage::Close);
+			let _ = tx.try_close();
 		}
 	}
 
@@ -694,7 +708,7 @@ async fn handle_conn_message(
 			tracing::info!(?init.metadata, "received init");
 
 			lost_timeout = None;
-			resend_unacknowledged_events(ctx).await;
+			ctx.event_retry_pending = resend_unacknowledged_events(ctx).await;
 			process_unsent_kv_requests(ctx).await;
 			process_unsent_sqlite_requests(ctx).await;
 			process_unsent_remote_sqlite_requests(ctx).await;

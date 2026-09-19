@@ -1640,9 +1640,7 @@ mod tests {
 			actors_notify: Arc::new(tokio::sync::Notify::new()),
 			live_tunnel_requests: Arc::new(std::sync::Mutex::new(HashMap::new())),
 			pending_hibernation_restores: Arc::new(std::sync::Mutex::new(HashMap::new())),
-			ws_tx: Arc::new(tokio::sync::Mutex::new(
-				None::<mpsc::UnboundedSender<WsTxMessage>>,
-			)),
+			ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
 			http_ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
 			connection_session: std::sync::atomic::AtomicU64::new(0),
 			next_connection_session: std::sync::atomic::AtomicU64::new(0),
@@ -1695,7 +1693,7 @@ mod tests {
 	}
 
 	pub(super) async fn recv_ws_tunnel_msg(
-		ws_rx: &mut mpsc::UnboundedReceiver<WsTxMessage>,
+		ws_rx: &mut mpsc::Receiver<WsTxMessage>,
 	) -> protocol::ToRivetTunnelMessage {
 		tokio::time::timeout(Duration::from_secs(2), async {
 			loop {
@@ -1705,9 +1703,11 @@ mod tests {
 				let WsTxMessage::Send(bytes) = msg else {
 					continue;
 				};
-				let message =
-					protocol::versioned::ToRivet::deserialize(&bytes, protocol::PROTOCOL_VERSION)
-						.expect("failed to decode ToRivet message");
+				let message = protocol::versioned::ToRivet::deserialize(
+					&bytes.data,
+					protocol::PROTOCOL_VERSION,
+				)
+				.expect("failed to decode ToRivet message");
 				if let protocol::ToRivet::ToRivetTunnelMessage(msg) = message {
 					return msg;
 				}

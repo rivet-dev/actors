@@ -18,6 +18,7 @@ use rivet_metrics::prometheus::{
 const SQLITE_REQUEST_EXPIRED_LABELS: &[&str] = &["kind", "was_sent"];
 const ENVOY_LOOP_ITER_LABELS: &[&str] = &["branch"];
 const WS_TX_LOCK_LABELS: &[&str] = &["message_kind"];
+const WS_TX_ADMISSION_LABELS: &[&str] = &["lane", "reason"];
 const SQLITE_SEND_LABELS: &[&str] = &["kind"];
 const WS_RECONNECT_LABELS: &[&str] = &["reason"];
 
@@ -29,6 +30,7 @@ pub struct EnvoyClientMetrics {
 	pub envoy_loop_iteration_duration_seconds: HistogramVec,
 	pub ws_tx_lock_wait_duration_seconds: HistogramVec,
 	pub ws_tx_lock_hold_duration_seconds: HistogramVec,
+	pub ws_tx_admission_failures_total: IntCounterVec,
 	pub sqlite_request_total_duration_seconds: HistogramVec,
 	pub sqlite_request_submit_duration_seconds: HistogramVec,
 	pub sqlite_request_wait_duration_seconds: HistogramVec,
@@ -99,6 +101,15 @@ impl EnvoyClientMetrics {
 			WS_TX_LOCK_LABELS,
 		)
 		.expect("create envoy_client_ws_tx_lock_hold_duration_seconds histogram");
+
+		let ws_tx_admission_failures_total = IntCounterVec::new(
+			Opts::new(
+				"rivetkit_envoy_client_ws_tx_admission_failures_total",
+				"messages rejected before entering the bounded websocket writer queues",
+			),
+			WS_TX_ADMISSION_LABELS,
+		)
+		.expect("create envoy_client_ws_tx_admission_failures_total counter");
 
 		let sqlite_request_total_duration_seconds = HistogramVec::new(
 			HistogramOpts::new(
@@ -208,6 +219,10 @@ impl EnvoyClientMetrics {
 		);
 		register(
 			&rivet_metrics::REGISTRY,
+			ws_tx_admission_failures_total.clone(),
+		);
+		register(
+			&rivet_metrics::REGISTRY,
 			sqlite_request_total_duration_seconds.clone(),
 		);
 		register(
@@ -237,6 +252,7 @@ impl EnvoyClientMetrics {
 			envoy_loop_iteration_duration_seconds,
 			ws_tx_lock_wait_duration_seconds,
 			ws_tx_lock_hold_duration_seconds,
+			ws_tx_admission_failures_total,
 			sqlite_request_total_duration_seconds,
 			sqlite_request_submit_duration_seconds,
 			sqlite_request_wait_duration_seconds,

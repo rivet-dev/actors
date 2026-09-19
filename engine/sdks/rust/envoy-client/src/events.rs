@@ -4,7 +4,10 @@ use crate::connection::ws_send;
 use crate::envoy::EnvoyContext;
 use crate::stringify::stringify_event_wrapper;
 
-pub async fn handle_send_events(ctx: &mut EnvoyContext, events: Vec<protocol::EventWrapper>) {
+pub async fn handle_send_events(
+	ctx: &mut EnvoyContext,
+	events: Vec<protocol::EventWrapper>,
+) -> bool {
 	tracing::info!(event_count = events.len(), "sending events");
 	for event in &events {
 		tracing::info!(event = %stringify_event_wrapper(event), "sending event");
@@ -36,7 +39,7 @@ pub async fn handle_send_events(ctx: &mut EnvoyContext, events: Vec<protocol::Ev
 	}
 
 	// Send if connected
-	ws_send(&ctx.shared, protocol::ToRivet::ToRivetEvents(events)).await;
+	ws_send(&ctx.shared, protocol::ToRivet::ToRivetEvents(events)).await
 }
 
 pub fn handle_ack_events(ctx: &mut EnvoyContext, ack: protocol::ToEnvoyAckEvents) {
@@ -52,7 +55,7 @@ pub fn handle_ack_events(ctx: &mut EnvoyContext, ack: protocol::ToEnvoyAckEvents
 
 // TODO: If the envoy disconnects, actor stops, then envoy reconnects, we will send the stop event but there
 // is no mechanism to remove the actor entry afterwards. We only remove the actor entry if rivet stops the actor.
-pub async fn resend_unacknowledged_events(ctx: &EnvoyContext) {
+pub async fn resend_unacknowledged_events(ctx: &EnvoyContext) -> bool {
 	let mut events: Vec<protocol::EventWrapper> = Vec::new();
 
 	for generations in ctx.actors.values() {
@@ -62,7 +65,7 @@ pub async fn resend_unacknowledged_events(ctx: &EnvoyContext) {
 	}
 
 	if events.is_empty() {
-		return;
+		return false;
 	}
 
 	tracing::info!(count = events.len(), "resending unacknowledged events");
@@ -70,7 +73,7 @@ pub async fn resend_unacknowledged_events(ctx: &EnvoyContext) {
 		tracing::info!(event = %stringify_event_wrapper(event), "resending event");
 	}
 
-	ws_send(&ctx.shared, protocol::ToRivet::ToRivetEvents(events)).await;
+	ws_send(&ctx.shared, protocol::ToRivet::ToRivetEvents(events)).await
 }
 
 #[cfg(test)]
@@ -88,7 +91,7 @@ mod tests {
 		BoxFuture, EnvoyCallbacks, EnvoyConfig, HttpRequest, HttpResponse, WebSocketHandler,
 		WebSocketSender,
 	};
-	use crate::context::{SharedContext, WsTxMessage};
+	use crate::context::SharedContext;
 	use crate::envoy::EnvoyContext;
 	use crate::handle::EnvoyHandle;
 
@@ -167,9 +170,7 @@ mod tests {
 			actors_notify: Arc::new(tokio::sync::Notify::new()),
 			live_tunnel_requests: Arc::new(std::sync::Mutex::new(HashMap::new())),
 			pending_hibernation_restores: Arc::new(std::sync::Mutex::new(HashMap::new())),
-			ws_tx: Arc::new(tokio::sync::Mutex::new(
-				None::<mpsc::UnboundedSender<WsTxMessage>>,
-			)),
+			ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
 			http_ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
 			connection_session: std::sync::atomic::AtomicU64::new(0),
 			next_connection_session: std::sync::atomic::AtomicU64::new(0),
@@ -200,6 +201,7 @@ mod tests {
 				http_message_indices: crate::utils::BufferMap::new(),
 				http_request_cancellations: HashMap::new(),
 				buffered_messages: Vec::new(),
+				event_retry_pending: false,
 				processed_command_idx: HashMap::new(),
 			},
 			handle,

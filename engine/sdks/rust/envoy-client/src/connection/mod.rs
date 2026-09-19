@@ -8,7 +8,9 @@ use rivet_envoy_protocol as protocol;
 use std::collections::HashMap;
 use vbare::OwnedVersionedData;
 
-use crate::context::{HttpConnectionTx, HttpWsTxMessage, SharedContext, WsTxMessage};
+use crate::context::{
+	HttpConnectionTx, HttpWsTxMessage, SharedContext, WsConnectionTx, WsTxMessage, WsTxPayload,
+};
 #[cfg(any(
 	feature = "native-transport",
 	all(feature = "wasm-transport", target_arch = "wasm32")
@@ -31,12 +33,116 @@ pub(crate) enum WsSendResult {
 
 pub(crate) const HTTP_WS_MESSAGE_CAPACITY: usize = 256;
 pub(crate) const HTTP_WS_BYTE_CAPACITY: usize = 16 * 1024 * 1024;
+pub(crate) const WS_DATA_MESSAGE_CAPACITY: usize = 256;
+pub(crate) const WS_CONTROL_MESSAGE_CAPACITY: usize = 32;
+pub(crate) const WS_DATA_BYTE_CAPACITY: usize = 16 * 1024 * 1024;
+pub(crate) const WS_CONTROL_BYTE_CAPACITY: usize = 256 * 1024;
+
+#[derive(Clone, Copy)]
+pub(crate) enum WsLane {
+	Data,
+	Control,
+}
+
+pub(crate) fn new_ws_connection() -> (
+	WsConnectionTx,
+	tokio::sync::mpsc::Receiver<WsTxMessage>,
+	tokio::sync::mpsc::Receiver<WsTxMessage>,
+) {
+	let (data_tx, data_rx) = tokio::sync::mpsc::channel(WS_DATA_MESSAGE_CAPACITY);
+	let (control_tx, control_rx) = tokio::sync::mpsc::channel(WS_CONTROL_MESSAGE_CAPACITY);
+	let admission_gate = std::sync::Arc::new(std::sync::Mutex::new(()));
+	(
+		WsConnectionTx {
+			data_tx,
+			control_tx,
+			data_byte_budget: std::sync::Arc::new(tokio::sync::Semaphore::new(
+				WS_DATA_BYTE_CAPACITY,
+			)),
+			control_byte_budget: std::sync::Arc::new(tokio::sync::Semaphore::new(
+				WS_CONTROL_BYTE_CAPACITY,
+			)),
+			closing: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+			admission_gate,
+		},
+		data_rx,
+		control_rx,
+	)
+}
+
+impl WsConnectionTx {
+	pub(crate) fn try_send(&self, lane: WsLane, data: Vec<u8>) -> Result<(), &'static str> {
+		let _admission_guard = self
+			.admission_gate
+			.lock()
+			.expect("websocket admission gate poisoned");
+		if self.closing.load(Ordering::Acquire) {
+			return Err("connection is closing");
+		}
+		let lane_label = lane.as_str();
+		let Ok(byte_len) = u32::try_from(data.len()) else {
+			METRICS
+				.ws_tx_admission_failures_total
+				.with_label_values(&[lane_label, "oversize"])
+				.inc();
+			return Err("message is too large");
+		};
+		let (tx, budget) = match lane {
+			WsLane::Data => (&self.data_tx, &self.data_byte_budget),
+			WsLane::Control => (&self.control_tx, &self.control_byte_budget),
+		};
+		let permit = budget
+			.clone()
+			.try_acquire_many_owned(byte_len)
+			.map_err(|_| {
+				METRICS
+					.ws_tx_admission_failures_total
+					.with_label_values(&[lane_label, "byte_budget"])
+					.inc();
+				"byte budget is saturated"
+			})?;
+		tx.try_send(WsTxMessage::Send(WsTxPayload {
+			data,
+			_byte_permit: permit,
+		}))
+		.map_err(|_| {
+			METRICS
+				.ws_tx_admission_failures_total
+				.with_label_values(&[lane_label, "message_queue"])
+				.inc();
+			"message queue is saturated"
+		})
+	}
+
+	pub(crate) fn try_close(&self) -> Result<(), &'static str> {
+		let _admission_guard = self
+			.admission_gate
+			.lock()
+			.expect("websocket admission gate poisoned");
+		if self
+			.closing
+			.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+			.is_err()
+		{
+			return Ok(());
+		}
+		self.control_tx
+			.try_send(WsTxMessage::Close)
+			.map_err(|_| "control queue is saturated")
+	}
+}
+
+impl WsLane {
+	fn as_str(self) -> &'static str {
+		match self {
+			Self::Data => "data",
+			Self::Control => "control",
+		}
+	}
+}
 
 #[cfg(test)]
-pub(crate) async fn install_connection(
-	shared: &SharedContext,
-	tx: tokio::sync::mpsc::UnboundedSender<WsTxMessage>,
-) -> u64 {
+pub(crate) async fn install_connection(shared: &SharedContext, tx: WsConnectionTx) -> u64 {
 	let (http_tx, mut http_rx) =
 		tokio::sync::mpsc::channel::<HttpWsTxMessage>(HTTP_WS_MESSAGE_CAPACITY);
 	let http_byte_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(HTTP_WS_BYTE_CAPACITY));
@@ -44,8 +150,8 @@ pub(crate) async fn install_connection(
 	tokio::spawn(async move {
 		while let Some(message) = http_rx.recv().await {
 			let result = relay_tx
-				.send(WsTxMessage::Send(message.data))
-				.map_err(|_| anyhow::anyhow!("test WebSocket receiver closed"));
+				.try_send(WsLane::Data, message.data)
+				.map_err(anyhow::Error::msg);
 			let _ = message.written.send(result);
 		}
 	});
@@ -54,7 +160,7 @@ pub(crate) async fn install_connection(
 
 pub(crate) async fn install_connection_with_http(
 	shared: &SharedContext,
-	tx: tokio::sync::mpsc::UnboundedSender<WsTxMessage>,
+	tx: WsConnectionTx,
 	http_tx: tokio::sync::mpsc::Sender<HttpWsTxMessage>,
 	http_byte_budget: std::sync::Arc<tokio::sync::Semaphore>,
 ) -> u64 {
@@ -65,11 +171,15 @@ pub(crate) async fn install_connection_with_http(
 		.fetch_add(1, Ordering::AcqRel)
 		.saturating_add(1);
 	shared.connection_session.store(session, Ordering::Release);
+	let admission_gate = tx.admission_gate.clone();
+	let closing = tx.closing.clone();
 	*guard = Some(tx);
 	*http_guard = Some(HttpConnectionTx {
 		session,
 		tx: http_tx,
 		byte_budget: http_byte_budget,
+		closing,
+		admission_gate,
 	});
 	drop(http_guard);
 	drop(guard);
@@ -139,7 +249,6 @@ pub(crate) async fn ws_send_http_for_session(
 		}
 		connection.clone()
 	};
-
 	let Ok(byte_permit) = connection
 		.byte_budget
 		.clone()
@@ -149,16 +258,25 @@ pub(crate) async fn ws_send_http_for_session(
 		return WsSendResult::Unavailable;
 	};
 	let (written, written_rx) = tokio::sync::oneshot::channel();
-	if connection
-		.tx
-		.send(HttpWsTxMessage {
-			data: encoded,
-			_byte_permit: byte_permit,
-			written,
-		})
-		.await
-		.is_err()
-	{
+	let admitted = {
+		let _admission_guard = connection
+			.admission_gate
+			.lock()
+			.expect("websocket admission gate poisoned");
+		if connection.closing.load(Ordering::Acquire) {
+			false
+		} else {
+			connection
+				.tx
+				.try_send(HttpWsTxMessage {
+					data: encoded,
+					_byte_permit: byte_permit,
+					written,
+				})
+				.is_ok()
+		}
+	};
+	if !admitted {
 		return WsSendResult::Unavailable;
 	}
 
@@ -311,7 +429,7 @@ pub(crate) async fn ws_send_for_session(
 	let encoded = crate::protocol::versioned::ToRivet::wrap_latest(message)
 		.serialize(protocol::PROTOCOL_VERSION)
 		.expect("failed to encode message");
-	if tx.send(WsTxMessage::Send(encoded)).is_err() {
+	if tx.try_send(to_ws_lane(message_kind), encoded).is_err() {
 		return WsSendResult::Unavailable;
 	}
 	drop(guard);
@@ -320,6 +438,47 @@ pub(crate) async fn ws_send_for_session(
 		.with_label_values(&[message_kind])
 		.observe(hold_start.elapsed().as_secs_f64());
 	WsSendResult::Sent { session: current }
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn data_saturation_does_not_block_control_messages() {
+		let (tx, mut data_rx, mut control_rx) = new_ws_connection();
+
+		tx.try_send(WsLane::Data, vec![0; WS_DATA_BYTE_CAPACITY])
+			.expect("the first data message should consume the full data budget");
+		assert!(tx.try_send(WsLane::Data, vec![1]).is_err());
+
+		tx.try_send(WsLane::Control, vec![2])
+			.expect("control traffic has a reserved byte budget");
+		assert!(matches!(control_rx.try_recv(), Ok(WsTxMessage::Send(_))));
+		assert!(matches!(data_rx.try_recv(), Ok(WsTxMessage::Send(_))));
+	}
+
+	#[test]
+	fn control_queue_has_its_own_message_bound() {
+		let (tx, _data_rx, mut control_rx) = new_ws_connection();
+
+		for _ in 0..WS_CONTROL_MESSAGE_CAPACITY {
+			tx.try_send(WsLane::Control, vec![0])
+				.expect("control queue should accept up to its configured capacity");
+		}
+		assert!(tx.try_send(WsLane::Control, vec![1]).is_err());
+		assert!(matches!(control_rx.try_recv(), Ok(WsTxMessage::Send(_))));
+	}
+
+	#[test]
+	fn close_stops_new_admissions() {
+		let (tx, _data_rx, mut control_rx) = new_ws_connection();
+
+		tx.try_close().expect("close should be admitted");
+		assert!(matches!(control_rx.try_recv(), Ok(WsTxMessage::Close)));
+		assert!(tx.try_send(WsLane::Data, vec![0]).is_err());
+		assert!(tx.try_send(WsLane::Control, vec![0]).is_err());
+	}
 }
 
 /// Bounded label set for `ws_tx` send paths.
@@ -342,6 +501,13 @@ fn to_rivet_kind(message: &protocol::ToRivet) -> &'static str {
 		protocol::ToRivet::ToRivetSqliteExecuteRequest(_) => "sqlite_execute",
 		protocol::ToRivet::ToRivetSqliteExecuteBatchRequest(_) => "sqlite_execute_batch",
 		protocol::ToRivet::ToRivetTunnelMessage(_) => "tunnel_message",
+	}
+}
+
+fn to_ws_lane(message_kind: &'static str) -> WsLane {
+	match message_kind {
+		"metadata" | "ack_commands" | "stopping" | "pong" => WsLane::Control,
+		_ => WsLane::Data,
 	}
 }
 

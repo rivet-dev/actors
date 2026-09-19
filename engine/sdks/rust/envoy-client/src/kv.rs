@@ -76,7 +76,7 @@ pub async fn send_single_kv_request(ctx: &mut EnvoyContext, request_id: u32) {
 		return;
 	}
 
-	ws_send(
+	let failed = ws_send(
 		&ctx.shared,
 		protocol::ToRivet::ToRivetKvRequest(protocol::ToRivetKvRequest {
 			actor_id: request.actor_id.clone(),
@@ -85,6 +85,9 @@ pub async fn send_single_kv_request(ctx: &mut EnvoyContext, request_id: u32) {
 		}),
 	)
 	.await;
+	if failed {
+		return;
+	}
 
 	// Re-get after async call
 	if let Some(request) = ctx.kv_requests.get_mut(&request_id) {

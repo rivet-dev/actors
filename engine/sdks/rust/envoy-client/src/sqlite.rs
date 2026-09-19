@@ -318,7 +318,9 @@ pub async fn send_single_sqlite_request(ctx: &mut EnvoyContext, request_id: u32)
 			}
 		};
 
-	ws_send(&ctx.shared, message).await;
+	if ws_send(&ctx.shared, message).await {
+		return;
+	}
 
 	if let Some(request) = ctx.sqlite_requests.get_mut(&request_id) {
 		request.sent = true;
@@ -673,9 +675,7 @@ mod tests {
 			actors_notify: Arc::new(tokio::sync::Notify::new()),
 			live_tunnel_requests: Arc::new(std::sync::Mutex::new(HashMap::new())),
 			pending_hibernation_restores: Arc::new(std::sync::Mutex::new(HashMap::new())),
-			ws_tx: Arc::new(tokio::sync::Mutex::new(
-				None::<tokio::sync::mpsc::UnboundedSender<WsTxMessage>>,
-			)),
+			ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
 			http_ws_tx: Arc::new(tokio::sync::Mutex::new(None)),
 			connection_session: std::sync::atomic::AtomicU64::new(0),
 			next_connection_session: std::sync::atomic::AtomicU64::new(0),
@@ -702,6 +702,7 @@ mod tests {
 			http_message_indices: BufferMap::new(),
 			http_request_cancellations: HashMap::new(),
 			buffered_messages: Vec::new(),
+			event_retry_pending: false,
 			processed_command_idx: HashMap::new(),
 		}
 	}
@@ -752,7 +753,7 @@ mod tests {
 	#[tokio::test]
 	async fn remote_sqlite_exec_response_matches_pending_request() {
 		let mut ctx = new_envoy_context();
-		let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
+		let (ws_tx, mut ws_rx, _control_rx) = crate::connection::new_ws_connection();
 		let session = crate::connection::install_connection(&ctx.shared, ws_tx).await;
 		let (tx, rx) = oneshot::channel();
 
@@ -800,7 +801,7 @@ mod tests {
 	#[tokio::test]
 	async fn remote_sqlite_batch_uses_one_websocket_request() {
 		let mut ctx = new_envoy_context();
-		let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
+		let (ws_tx, mut ws_rx, _control_rx) = crate::connection::new_ws_connection();
 		crate::connection::install_connection(&ctx.shared, ws_tx).await;
 		let (tx, _rx) = oneshot::channel();
 
@@ -869,7 +870,7 @@ mod tests {
 	#[tokio::test]
 	async fn sent_remote_sqlite_request_fails_indeterminate_on_disconnect() {
 		let mut ctx = new_envoy_context();
-		let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
+		let (ws_tx, mut ws_rx, _control_rx) = crate::connection::new_ws_connection();
 		crate::connection::install_connection(&ctx.shared, ws_tx).await;
 		let (tx, rx) = oneshot::channel();
 
@@ -927,7 +928,7 @@ mod tests {
 		));
 		assert!(ctx.remote_sqlite_requests.contains_key(&0));
 
-		let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
+		let (ws_tx, mut ws_rx, _control_rx) = crate::connection::new_ws_connection();
 		crate::connection::install_connection(&ctx.shared, ws_tx).await;
 		process_unsent_remote_sqlite_requests(&mut ctx).await;
 
@@ -943,10 +944,10 @@ mod tests {
 	#[tokio::test]
 	async fn transaction_request_never_crosses_connection_sessions() {
 		let mut ctx = new_envoy_context();
-		let (first_tx, _first_rx) = tokio::sync::mpsc::unbounded_channel();
+		let (first_tx, _first_rx, _first_control_rx) = crate::connection::new_ws_connection();
 		let first_session = crate::connection::install_connection(&ctx.shared, first_tx).await;
 		crate::connection::remove_connection(&ctx.shared).await;
-		let (second_tx, mut second_rx) = tokio::sync::mpsc::unbounded_channel();
+		let (second_tx, mut second_rx, _second_control_rx) = crate::connection::new_ws_connection();
 		let second_session = crate::connection::install_connection(&ctx.shared, second_tx).await;
 		assert_ne!(first_session, second_session);
 

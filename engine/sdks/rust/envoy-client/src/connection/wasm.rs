@@ -171,9 +171,7 @@ mod imp {
 			}
 		}
 
-		// TODO: Bound shared WebSocket writer memory across protocol message types.
-		// https://github.com/rivet-dev/rivet/issues/5468
-		let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<WsTxMessage>();
+		let (ws_tx, mut ws_data_rx, mut ws_control_rx) = super::super::new_ws_connection();
 		let (http_ws_tx, mut http_ws_rx) =
 			mpsc::channel::<HttpWsTxMessage>(super::super::HTTP_WS_MESSAGE_CAPACITY);
 		let http_byte_budget = Arc::new(Semaphore::new(super::super::HTTP_WS_BYTE_CAPACITY));
@@ -202,46 +200,85 @@ mod imp {
 						super::super::send_initial_metadata(&shared).await;
 
 						loop {
+							let mut write_failed = false;
+							macro_rules! write_message {
+								($message:expr) => {
+									match $message {
+										EitherWrite::Legacy(WsTxMessage::Send(payload)) => {
+											let data = Uint8Array::from(payload.data.as_slice());
+											if let Err(error) = ws.send_with_array_buffer(&data.buffer()) {
+												tracing::error!(error = %js_error(error), "failed to send ws message");
+												let _ = event_tx.send(ConnectionEvent::WriteFailed);
+												write_failed = true;
+											}
+										}
+										EitherWrite::Legacy(WsTxMessage::Close) => {}
+										EitherWrite::Http(message) => {
+											let data = Uint8Array::from(message.data.as_slice());
+											let result = ws
+												.send_with_array_buffer(&data.buffer())
+												.map_err(|error| {
+													anyhow::anyhow!(
+														"failed to send HTTP websocket message: {}",
+														js_error(error)
+													)
+												});
+											let failed = result.is_err();
+											if !failed {
+												while ws.buffered_amount() > 1024 * 1024 {
+													sleep(Duration::from_millis(5)).await;
+												}
+											}
+											let _ = message.written.send(result);
+											if failed {
+												let _ = event_tx.send(ConnectionEvent::WriteFailed);
+												write_failed = true;
+											}
+										}
+									}
+								};
+							}
 							let msg = tokio::select! {
-								msg = ws_rx.recv() => msg.map(EitherWrite::Legacy),
+								msg = ws_control_rx.recv() => msg.map(EitherWrite::Legacy),
+								msg = ws_data_rx.recv() => msg.map(EitherWrite::Legacy),
 								msg = http_ws_rx.recv() => msg.map(EitherWrite::Http),
 							};
 							let Some(msg) = msg else { break };
 							match msg {
-								EitherWrite::Legacy(WsTxMessage::Send(data)) => {
-									let data = Uint8Array::from(data.as_slice());
-									if let Err(error) = ws.send_with_array_buffer(&data.buffer()) {
-										tracing::error!(error = %js_error(error), "failed to send ws message");
-										let _ = event_tx.send(ConnectionEvent::WriteFailed);
+								EitherWrite::Legacy(WsTxMessage::Send(payload)) => {
+									write_message!(EitherWrite::Legacy(WsTxMessage::Send(payload)));
+									if write_failed {
 										break;
 									}
 								}
 								EitherWrite::Legacy(WsTxMessage::Close) => {
-									let _ = ws.close_with_code_and_reason(
-										NORMAL_CLOSE_CODE,
-										"envoy.shutdown",
-									);
+									let mut pending = std::collections::VecDeque::new();
+									while let Ok(message) = ws_control_rx.try_recv() {
+										pending.push_back(EitherWrite::Legacy(message));
+									}
+									while let Ok(message) = ws_data_rx.try_recv() {
+										pending.push_back(EitherWrite::Legacy(message));
+									}
+									while let Ok(message) = http_ws_rx.try_recv() {
+										pending.push_back(EitherWrite::Http(message));
+									}
+									while let Some(message) = pending.pop_front() {
+										write_message!(message);
+										if write_failed {
+											break;
+										}
+									}
+									if !write_failed {
+										let _ = ws.close_with_code_and_reason(
+											NORMAL_CLOSE_CODE,
+											"envoy.shutdown",
+										);
+									}
 									break;
 								}
 								EitherWrite::Http(message) => {
-									let data = Uint8Array::from(message.data.as_slice());
-									let result = ws
-										.send_with_array_buffer(&data.buffer())
-										.map_err(|error| {
-											anyhow::anyhow!(
-												"failed to send HTTP websocket message: {}",
-												js_error(error)
-											)
-										});
-									let failed = result.is_err();
-									if !failed {
-										while ws.buffered_amount() > 1024 * 1024 {
-											sleep(Duration::from_millis(5)).await;
-										}
-									}
-									let _ = message.written.send(result);
-									if failed {
-										let _ = event_tx.send(ConnectionEvent::WriteFailed);
+									write_message!(EitherWrite::Http(message));
+									if write_failed {
 										break;
 									}
 								}

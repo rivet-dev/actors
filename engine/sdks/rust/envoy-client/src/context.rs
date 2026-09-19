@@ -26,7 +26,7 @@ pub struct SharedContext {
 	pub live_tunnel_requests: Arc<StdMutex<HashMap<[u8; 8], String>>>,
 	pub pending_hibernation_restores:
 		Arc<StdMutex<HashMap<String, Vec<HibernatingWebSocketMetadata>>>>,
-	pub ws_tx: Arc<Mutex<Option<mpsc::UnboundedSender<WsTxMessage>>>>,
+	pub ws_tx: Arc<Mutex<Option<WsConnectionTx>>>,
 	pub http_ws_tx: Arc<Mutex<Option<HttpConnectionTx>>>,
 	/// The currently connected WebSocket session, or zero while disconnected.
 	///
@@ -52,8 +52,24 @@ pub struct SharedContext {
 
 #[derive(Debug)]
 pub enum WsTxMessage {
-	Send(Vec<u8>),
+	Send(WsTxPayload),
 	Close,
+}
+
+#[derive(Debug)]
+pub struct WsTxPayload {
+	pub data: Vec<u8>,
+	pub _byte_permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+#[derive(Clone)]
+pub struct WsConnectionTx {
+	pub data_tx: mpsc::Sender<WsTxMessage>,
+	pub control_tx: mpsc::Sender<WsTxMessage>,
+	pub data_byte_budget: Arc<Semaphore>,
+	pub control_byte_budget: Arc<Semaphore>,
+	pub closing: Arc<AtomicBool>,
+	pub admission_gate: Arc<StdMutex<()>>,
 }
 
 #[derive(Clone)]
@@ -61,6 +77,8 @@ pub struct HttpConnectionTx {
 	pub session: u64,
 	pub tx: mpsc::Sender<HttpWsTxMessage>,
 	pub byte_budget: Arc<Semaphore>,
+	pub closing: Arc<AtomicBool>,
+	pub admission_gate: Arc<StdMutex<()>>,
 }
 
 pub struct HttpWsTxMessage {
