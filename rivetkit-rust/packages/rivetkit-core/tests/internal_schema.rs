@@ -60,13 +60,80 @@ fn unpublished_schema_has_explicit_values_and_minimal_constraints() {
 }
 
 #[test]
-fn logical_run_wake_metadata_keeps_the_v1_schema_openable() {
+fn v1_database_upgrades_to_the_current_schema() {
+	let conn = rusqlite::Connection::open_in_memory().expect("open fixture database");
+	conn.execute_batch(CREATE_META_TABLE).unwrap();
+	for sql in MIGRATIONS[0] {
+		conn.execute_batch(sql).unwrap();
+	}
+	conn.execute(
+		UPSERT_META_TEXT_SQL,
+		rusqlite::params![SCHEMA_VERSION_KEY, encode_schema_version(1)],
+	)
+	.unwrap();
+	conn.execute(
+		"INSERT INTO _rivet_schedule_events (event_id, trigger_at, action, args, kind, cron_expression, timezone, interval_ms, last_started_at, max_history) VALUES ('at:1', 5, 'tick', NULL, 0, NULL, NULL, NULL, NULL, 0)",
+		[],
+	)
+	.unwrap();
+	conn.execute(
+		"INSERT INTO _rivet_queue (id, name, body, created_at) VALUES (1, 'jobs', X'00', 5)",
+		[],
+	)
+	.unwrap();
+
+	for statement in migration_statements(1, INTERNAL_SCHEMA_VERSION).unwrap() {
+		let params = statement
+			.params
+			.unwrap_or_default()
+			.into_iter()
+			.map(|param| match param {
+				BindParam::Text(text) => rusqlite::types::Value::Text(text),
+				BindParam::Blob(blob) => rusqlite::types::Value::Blob(blob),
+				BindParam::Integer(value) => rusqlite::types::Value::Integer(value),
+				other => panic!("unexpected migration bind parameter: {other:?}"),
+			})
+			.collect::<Vec<_>>();
+		conn.execute(&statement.sql, rusqlite::params_from_iter(params))
+			.unwrap_or_else(|error| panic!("apply migration {}: {error}", statement.sql));
+	}
+
+	let stored_schema: Vec<u8> = conn
+		.query_row(
+			LOAD_META_TEXT_SQL,
+			rusqlite::params![SCHEMA_VERSION_KEY],
+			|row| row.get(0),
+		)
+		.unwrap();
+	assert_eq!(
+		decode_schema_version(&stored_schema).unwrap(),
+		INTERNAL_SCHEMA_VERSION
+	);
+	let trace_context: (Option<String>, Option<String>, Option<String>) = conn
+		.query_row(
+			"SELECT ray_id, traceparent, tracestate FROM _rivet_schedule_events WHERE event_id = 'at:1'",
+			[],
+			|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+		)
+		.unwrap();
+	assert_eq!(trace_context, (None, None, None));
+	let trace_context: (Option<String>, Option<String>, Option<String>) = conn
+		.query_row(
+			"SELECT ray_id, traceparent, tracestate FROM _rivet_queue WHERE id = 1",
+			[],
+			|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+		)
+		.unwrap();
+	assert_eq!(trace_context, (None, None, None));
+}
+
+#[test]
+fn logical_run_wake_metadata_lives_in_the_meta_table() {
 	use rivetkit_actor_persist::versioned::RunWakeAt;
 	use vbare::OwnedVersionedData;
 
-	assert_eq!(INTERNAL_SCHEMA_VERSION, 1);
-	let conn = rusqlite::Connection::open_in_memory().expect("open v1 fixture database");
-	initialize_test_schema(&conn).expect("initialize v1 actor schema");
+	let conn = rusqlite::Connection::open_in_memory().expect("open fixture database");
+	initialize_test_schema(&conn).expect("initialize actor schema");
 	let logical_wake = RunWakeAt::wrap_latest(Some(1_723_456_789_000))
 		.serialize_with_embedded_version(1)
 		.expect("encode logical run wake");
@@ -78,28 +145,6 @@ fn logical_run_wake_metadata_keeps_the_v1_schema_openable() {
 		],
 	)
 	.expect("persist reserved metadata row");
-	conn.execute(
-		"INSERT INTO _rivet_runtime (id, last_pushed_alarm, inspector_token, queue_next_id) VALUES (1, ?1, NULL, 2)",
-		rusqlite::params![1_723_456_789_500_i64],
-	)
-	.expect("persist v1 runtime row");
-
-	let stored_schema: Vec<u8> = conn
-		.query_row(
-			LOAD_META_TEXT_SQL,
-			rusqlite::params![SCHEMA_VERSION_KEY],
-			|row| row.get(0),
-		)
-		.expect("read schema version as an old runtime would");
-	assert_eq!(decode_schema_version(&stored_schema).unwrap(), 1);
-	let legacy_runtime: (Option<i64>, Option<String>, i64) = conn
-		.query_row(
-			"SELECT last_pushed_alarm, inspector_token, queue_next_id FROM _rivet_runtime WHERE id = 1",
-			[],
-			|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-		)
-		.expect("open runtime through the v1 projection");
-	assert_eq!(legacy_runtime, (Some(1_723_456_789_500), None, 2));
 	let stored_wake: Vec<u8> = conn
 		.query_row(
 			LOAD_META_TEXT_SQL,

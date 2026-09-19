@@ -19,8 +19,12 @@ use uuid::Uuid;
 
 use crate::actor::context::ActorContext;
 use crate::actor::internal_storage::queries::*;
+use crate::actor::internal_storage::{
+	optional_owned_text_param, read_trace_context, trace_context_params,
+};
 use crate::error::{ScheduleRuntimeError, client_error_message, client_error_metadata};
 use crate::sqlite::{BindParam, ColumnValue, SqliteBatchStatement};
+use crate::telemetry::{ActorInvocationTelemetry, IncomingTraceContext};
 use crate::time::{SystemTime, UNIX_EPOCH, sleep};
 
 const CRON_ID_PREFIX: &str = "cron:";
@@ -148,6 +152,7 @@ pub(crate) struct DueScheduleDispatch {
 	pub args: Vec<u8>,
 	pub fire: ScheduledFireInfo,
 	pub history_id: Option<i64>,
+	pub trace_context: IncomingTraceContext,
 }
 
 #[derive(Clone, Debug)]
@@ -183,6 +188,14 @@ impl ActorContext {
 		system_now_timestamp_ms()
 	}
 
+	/// Trace context of the invocation defining this schedule, empty when the
+	/// caller is not inside a traced invocation.
+	fn schedule_trace_context(&self) -> IncomingTraceContext {
+		self.invocation_telemetry()
+			.map(ActorInvocationTelemetry::incoming_trace_context)
+			.unwrap_or_default()
+	}
+
 	pub async fn after(
 		&self,
 		duration: Duration,
@@ -195,25 +208,25 @@ impl ActorContext {
 	}
 
 	pub async fn at(&self, timestamp_ms: i64, action_name: &str, args: &[u8]) -> Result<String> {
+		let trace_context = self.schedule_trace_context();
 		let _mutation = self.0.schedule_mutation_lock.lock().await;
 		self.ensure_schedule_capacity(false).await?;
 		let event_id = Uuid::new_v4().to_string();
+		let mut schedule_params = vec![
+			BindParam::Text(event_id.clone()),
+			BindParam::Integer(timestamp_ms),
+			BindParam::Text(action_name.to_owned()),
+			args_param(args),
+			BindParam::Integer(ScheduleKind::At.as_i64()),
+			BindParam::Null,
+			BindParam::Null,
+			BindParam::Null,
+			BindParam::Null,
+			BindParam::Integer(0),
+		];
+		schedule_params.extend(trace_context_params(trace_context));
 		self.sql()
-			.execute(
-				INSERT_SCHEDULE_EVENT_SQL,
-				Some(vec![
-					BindParam::Text(event_id.clone()),
-					BindParam::Integer(timestamp_ms),
-					BindParam::Text(action_name.to_owned()),
-					args_param(args),
-					BindParam::Integer(ScheduleKind::At.as_i64()),
-					BindParam::Null,
-					BindParam::Null,
-					BindParam::Null,
-					BindParam::Null,
-					BindParam::Integer(0),
-				]),
-			)
+			.execute(INSERT_SCHEDULE_EVENT_SQL, Some(schedule_params))
 			.await
 			.context("insert one-shot schedule")?;
 		self.mark_schedule_dirty();
@@ -304,6 +317,7 @@ impl ActorContext {
 		args: &[u8],
 		max_history: Option<i64>,
 	) -> Result<()> {
+		let trace_context = self.schedule_trace_context();
 		validate_name(name)?;
 		let timezone = timezone.unwrap_or("UTC");
 		let timezone_parsed = parse_timezone(timezone)?;
@@ -334,6 +348,7 @@ impl ActorContext {
 			Some(timezone),
 			None,
 			max_history,
+			trace_context,
 		)
 		.await?;
 		self.prune_schedule_history(&event_id, max_history).await?;
@@ -350,6 +365,7 @@ impl ActorContext {
 		args: &[u8],
 		max_history: Option<i64>,
 	) -> Result<()> {
+		let trace_context = self.schedule_trace_context();
 		validate_name(name)?;
 		if interval_ms < MIN_INTERVAL_MS {
 			return Err(ScheduleRuntimeError::InvalidInterval {
@@ -382,6 +398,7 @@ impl ActorContext {
 			None,
 			Some(interval_ms),
 			max_history,
+			trace_context,
 		)
 		.await?;
 		self.prune_schedule_history(&event_id, max_history).await?;
@@ -402,23 +419,23 @@ impl ActorContext {
 		timezone: Option<&str>,
 		interval_ms: Option<i64>,
 		max_history: i64,
+		trace_context: IncomingTraceContext,
 	) -> Result<()> {
+		let mut params = vec![
+			BindParam::Text(event_id.to_owned()),
+			BindParam::Integer(trigger_at),
+			BindParam::Text(action_name.to_owned()),
+			args_param(args),
+			BindParam::Integer(kind.as_i64()),
+			optional_text_param(cron_expression),
+			optional_text_param(timezone),
+			optional_i64_param(interval_ms),
+			BindParam::Null,
+			BindParam::Integer(max_history),
+		];
+		params.extend(trace_context_params(trace_context));
 		self.sql()
-			.execute(
-				UPSERT_RECURRING_SCHEDULE_SQL,
-				Some(vec![
-					BindParam::Text(event_id.to_owned()),
-					BindParam::Integer(trigger_at),
-					BindParam::Text(action_name.to_owned()),
-					args_param(args),
-					BindParam::Integer(kind.as_i64()),
-					optional_text_param(cron_expression),
-					optional_text_param(timezone),
-					optional_i64_param(interval_ms),
-					BindParam::Null,
-					BindParam::Integer(max_history),
-				]),
-			)
+			.execute(UPSERT_RECURRING_SCHEDULE_SQL, Some(params))
 			.await
 			.context("upsert recurring schedule")?;
 		Ok(())
@@ -594,17 +611,17 @@ impl ActorContext {
 		let due_schedules = result
 			.rows
 			.iter()
-			.map(|row| read_stored_schedule(row))
+			.map(|row| read_due_schedule(row))
 			.collect::<Result<Vec<_>>>()?;
 		let claim_statements = due_schedules
 			.iter()
-			.filter(|event| event.kind == ScheduleKind::At)
+			.filter(|(event, _)| event.kind == ScheduleKind::At)
 			.collect::<Vec<_>>()
 			.chunks(CLAIM_ONE_SHOT_BATCH_SIZE)
 			.map(|events| {
 				let mut params = Vec::with_capacity(events.len() * 2 + 1);
 				params.push(BindParam::Integer(ScheduleKind::At.as_i64()));
-				for event in events {
+				for (event, _) in events {
 					params.push(BindParam::Text(event.event_id.clone()));
 					params.push(BindParam::Integer(event.trigger_at));
 				}
@@ -621,7 +638,7 @@ impl ActorContext {
 				.context("claim due one-shot schedules")?;
 		}
 		let mut dispatches = Vec::new();
-		for event in due_schedules {
+		for (event, trace_context) in due_schedules {
 			if event.kind == ScheduleKind::At {
 				dispatches.push(DueScheduleDispatch {
 					event_id: event.event_id.clone(),
@@ -635,6 +652,7 @@ impl ActorContext {
 						fired_at: now_ms,
 					},
 					history_id: None,
+					trace_context,
 				});
 				continue;
 			}
@@ -708,6 +726,7 @@ impl ActorContext {
 					fired_at: now_ms,
 				},
 				history_id,
+				trace_context,
 			});
 		}
 		self.mark_schedule_dirty();
@@ -1364,6 +1383,12 @@ fn read_stored_schedule(row: &[ColumnValue]) -> Result<StoredSchedule> {
 	}
 }
 
+fn read_due_schedule(row: &[ColumnValue]) -> Result<(StoredSchedule, IncomingTraceContext)> {
+	let event = read_stored_schedule(row)?;
+	let trace_context = read_trace_context(row, 10, "schedule trace context")?;
+	Ok((event, trace_context))
+}
+
 fn read_cron_fire(row: &[ColumnValue]) -> Result<CronFire> {
 	let error_group = read_optional_text(row, 5, "error_group")?;
 	let error_code = read_optional_text(row, 6, "error_code")?;
@@ -1455,10 +1480,6 @@ fn optional_text_param(value: Option<&str>) -> BindParam {
 	value
 		.map(|value| BindParam::Text(value.to_owned()))
 		.unwrap_or(BindParam::Null)
-}
-
-fn optional_owned_text_param(value: Option<String>) -> BindParam {
-	value.map(BindParam::Text).unwrap_or(BindParam::Null)
 }
 
 fn optional_i64_param(value: Option<i64>) -> BindParam {

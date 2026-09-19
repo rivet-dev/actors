@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail};
 use super::queries::{LOAD_META_TEXT_SQL, UPSERT_META_TEXT_SQL};
 use crate::sqlite::{BindParam, ColumnValue, SqliteBatchStatement, SqliteDb};
 
-pub(crate) const INTERNAL_SCHEMA_VERSION: i64 = 1;
+pub(crate) const INTERNAL_SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 
@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS _rivet_meta (
 // across runtime releases. Rewriting these entries in place is safe only while
 // no internal schema version has shipped; after release, all changes must be
 // appended as new migrations and INTERNAL_SCHEMA_VERSION must advance.
-pub(crate) const MIGRATIONS: &[&[&str]] = &[&[
+pub(crate) const MIGRATIONS: &[&[&str]] = &[MIGRATION_V1, MIGRATION_V2];
+
+const MIGRATION_V1: &[&str] = &[
 	// W[queue_next_id per enqueue; alarm per head-change; token once | point UPDATE of one column | <100 B | single-row: all runtime singletons on one leaf]
 	r#"
 CREATE TABLE _rivet_runtime (
@@ -153,7 +155,16 @@ CREATE TABLE _rivet_user_kv (
     value BLOB NOT NULL
 ) STRICT, WITHOUT ROWID
 	"#,
-]];
+];
+
+const MIGRATION_V2: &[&str] = &[
+	"ALTER TABLE _rivet_schedule_events ADD COLUMN ray_id TEXT",
+	"ALTER TABLE _rivet_schedule_events ADD COLUMN traceparent TEXT",
+	"ALTER TABLE _rivet_schedule_events ADD COLUMN tracestate TEXT",
+	"ALTER TABLE _rivet_queue ADD COLUMN ray_id TEXT",
+	"ALTER TABLE _rivet_queue ADD COLUMN traceparent TEXT",
+	"ALTER TABLE _rivet_queue ADD COLUMN tracestate TEXT",
+];
 
 pub(crate) async fn ensure_internal_schema(db: &SqliteDb) -> Result<()> {
 	db.execute(CREATE_META_TABLE, None)

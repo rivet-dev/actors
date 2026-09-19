@@ -406,6 +406,32 @@ describeDriverMatrix(
 					),
 				).toBe(false);
 			});
+
+			test("links a scheduled invocation to the invocation that scheduled it", async () => {
+				const token = crypto.randomUUID();
+				expect(await handle.scheduleTrace(token)).toBe(token);
+				const spans = await waitForSpans(
+					traceExports,
+					"the scheduleTrace and scheduledTrace invocations",
+					(exported) =>
+						findInvocation(exported, "scheduleTrace") !==
+							undefined &&
+						findInvocation(exported, "scheduledTrace") !==
+							undefined,
+					15_000,
+				);
+				const definer = findInvocation(spans, "scheduleTrace");
+				const scheduled = findInvocation(spans, "scheduledTrace");
+				expect(scheduled?.statusCode).toBe(OTLP_STATUS_OK);
+				expect(scheduled?.attributes).toMatchObject({
+					"rivet.invocation.type": "scheduled",
+					"rivet.ray.id": definer?.attributes["rivet.ray.id"],
+				});
+				expect(scheduled?.traceId).not.toBe(definer?.traceId);
+				expect(scheduled?.links).toEqual([
+					{ traceId: definer?.traceId, spanId: definer?.spanId },
+				]);
+			});
 		});
 	},
 	{
