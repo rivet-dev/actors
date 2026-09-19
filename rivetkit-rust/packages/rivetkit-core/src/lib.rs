@@ -24,7 +24,8 @@ pub mod telemetry;
 #[doc(hidden)]
 pub use telemetry::{
 	ActorInvocationSpanContext, ActorInvocationTelemetry, ActorInvocationTraceContext,
-	IncomingTraceContext, OutboundCallInvocation,
+	IncomingTraceContext, OutboundCallInvocation, WorkflowPassInvocation, WorkflowPassOutcome,
+	WorkflowStepOutcome, WorkflowStepSpan,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;

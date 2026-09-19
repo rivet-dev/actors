@@ -12,7 +12,16 @@ export {
 	WorkflowContextImpl,
 } from "./context.js";
 // Driver
-export type { EngineDriver, KVEntry, KVWrite } from "./driver.js";
+export type {
+	EngineDriver,
+	KVEntry,
+	KVWrite,
+	WorkflowPassOutcome,
+	WorkflowPassScope,
+	WorkflowStepOutcome,
+	WorkflowStepScope,
+	WorkflowTelemetryDriver,
+} from "./driver.js";
 export { extractErrorInfo } from "./error-utils.js";
 // Errors
 export {
@@ -143,7 +152,7 @@ import {
 } from "../schemas/serde.js";
 import { type RollbackAction, WorkflowContextImpl } from "./context.js";
 // Main workflow runner
-import type { EngineDriver } from "./driver.js";
+import type { EngineDriver, WorkflowPassOutcome } from "./driver.js";
 import {
 	extractErrorInfo,
 	getErrorEventTag,
@@ -511,16 +520,18 @@ async function executeLiveWorkflow<TInput, TOutput>(
 	let lastResult: WorkflowResult<TOutput> | undefined;
 
 	while (true) {
-		const result = await executeWorkflow(
-			workflowId,
-			workflowFn,
-			input,
-			driver,
-			messageDriver,
-			abortController,
-			onHistoryUpdated,
-			onError,
-			logger,
+		const result = await tracePass(driver, () =>
+			executeWorkflow(
+				workflowId,
+				workflowFn,
+				input,
+				driver,
+				messageDriver,
+				abortController,
+				onHistoryUpdated,
+				onError,
+				logger,
+			),
 		);
 		lastResult = result;
 
@@ -642,16 +653,18 @@ export function runWorkflow<TInput, TOutput>(
 					options.onError,
 					logger,
 				)
-			: executeWorkflow(
-					workflowId,
-					workflowFn,
-					input,
-					driver,
-					messageDriver,
-					abortController,
-					options.onHistoryUpdated,
-					options.onError,
-					logger,
+			: tracePass(driver, () =>
+					executeWorkflow(
+						workflowId,
+						workflowFn,
+						input,
+						driver,
+						messageDriver,
+						abortController,
+						options.onHistoryUpdated,
+						options.onError,
+						logger,
+					),
 				);
 
 	return {
@@ -884,6 +897,53 @@ function findReplayBoundaryEntry(
 	}
 
 	return boundary;
+}
+
+function passOutcomeFromState(state: WorkflowState): WorkflowPassOutcome {
+	switch (state) {
+		case "completed":
+			return "completed";
+		case "sleeping":
+			return "sleeping";
+		case "failed":
+			return "failed";
+		case "cancelled":
+			return "cancelled";
+		case "pending":
+		case "running":
+		case "rolling_back":
+			return "evicted";
+	}
+}
+
+/**
+ * Internal: Run one pass and report where it starts and how it ends to the
+ * driver's telemetry, when it has any.
+ */
+async function tracePass<TOutput>(
+	driver: EngineDriver,
+	runPass: () => Promise<WorkflowResult<TOutput>>,
+): Promise<WorkflowResult<TOutput>> {
+	if (!driver.telemetry) {
+		return await runPass();
+	}
+
+	const pass = await driver.telemetry.beginPass();
+	let outcome: WorkflowPassOutcome = "failed";
+	try {
+		const result = await pass.run(runPass);
+		outcome = passOutcomeFromState(result.state);
+		return result;
+	} catch (error) {
+		// The only eviction a pass throws is for a workflow that was already
+		// cancelled. Every other eviction is returned as a result.
+		if (error instanceof EvictedError) {
+			outcome = "cancelled";
+		}
+		throw error;
+	} finally {
+		await pass.finish(outcome);
+	}
 }
 
 /**

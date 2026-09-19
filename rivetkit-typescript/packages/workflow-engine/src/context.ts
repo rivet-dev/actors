@@ -906,13 +906,19 @@ export class WorkflowContextImpl implements WorkflowContextInterface {
 		// Get timeout configuration
 		const timeout = config.timeout ?? DEFAULT_STEP_TIMEOUT;
 
+		const stepScope = this.driver.telemetry?.beginStep(
+			config.name,
+			metadata.attempts,
+		);
+
 		try {
 			// Execute with timeout
 			const output = await this.executeWithTimeout(
-				config.run(),
+				stepScope ? stepScope.run(() => config.run()) : config.run(),
 				timeout,
 				config.name,
 			);
+			stepScope?.finish("ok");
 
 			if (entry.kind.type === "step") {
 				entry.kind.data.output = output;
@@ -951,6 +957,7 @@ export class WorkflowContextImpl implements WorkflowContextInterface {
 			// Timeout errors are treated as critical by default. Steps opt
 			// into retrying on timeout with retryOnTimeout: true.
 			if (error instanceof StepTimeoutError && !config.retryOnTimeout) {
+				stepScope?.finish("failed", error);
 				metadata.status = "exhausted";
 				metadata.error = String(error);
 				await this.notifyStepError(config, metadata.attempts, error, {
@@ -970,6 +977,7 @@ export class WorkflowContextImpl implements WorkflowContextInterface {
 				error instanceof CriticalError ||
 				error instanceof RollbackError
 			) {
+				stepScope?.finish("failed", error);
 				metadata.status = "exhausted";
 				metadata.error = String(error);
 				await this.notifyStepError(config, metadata.attempts, error, {
@@ -989,6 +997,7 @@ export class WorkflowContextImpl implements WorkflowContextInterface {
 			}
 
 			const willRetry = metadata.attempts <= maxRetries;
+			stepScope?.finish(willRetry ? "retry" : "failed", error);
 			metadata.status = willRetry ? "failed" : "exhausted";
 			metadata.error = String(error);
 

@@ -22,6 +22,8 @@ use rivetkit_core::{
 	ActorWorkKind, ConnHandle as CoreConnHandle, KeepAwakeRegion,
 	OutboundCallInvocation as CoreOutboundCallInvocation, Request as CoreRequest, RequestSaveOpts,
 	StateDelta, WebSocketCallbackRegion, WorkflowKvWrite,
+	WorkflowPassInvocation as CoreWorkflowPassInvocation, WorkflowPassOutcome, WorkflowStepOutcome,
+	WorkflowStepSpan as CoreWorkflowStepSpan,
 };
 use scc::HashMap as SccHashMap;
 use tokio::sync::mpsc::UnboundedSender;
@@ -355,6 +357,31 @@ impl ActorContext {
 			.begin_outbound_call(&actor_name, &action_name)
 			.map(|invocation| OutboundCall {
 				invocation: Some(invocation),
+			})
+	}
+
+	/// Opens one workflow pass as an invocation of its own. The workflow engine
+	/// runs the pass under the returned handle's context.
+	#[napi]
+	pub async fn begin_workflow_pass(&self) -> WorkflowPass {
+		let pass = self.inner.begin_workflow_pass().await;
+		WorkflowPass {
+			ctx: pass.ctx(),
+			shared: self.shared.clone(),
+			pass: Mutex::new(Some(pass)),
+		}
+	}
+
+	/// Opens the span covering one attempt at one workflow step. Returns
+	/// nothing when this handle serves no workflow pass or tracing is disabled.
+	#[napi]
+	pub fn begin_workflow_step(&self, step_name: String, attempt: u32) -> Option<WorkflowStep> {
+		self.inner
+			.begin_workflow_step(&step_name, attempt)
+			.map(|step| WorkflowStep {
+				ctx: step.ctx(),
+				shared: self.shared.clone(),
+				step: Some(step),
 			})
 	}
 
@@ -1169,5 +1196,85 @@ impl OutboundCall {
 		};
 		let error = error.map(anyhow_error_from_js_reason);
 		invocation.finish(error.as_ref());
+	}
+}
+
+/// One open workflow pass.
+///
+/// The workflow engine runs in JavaScript, so the pass is opened and closed by
+/// two separate calls. Letting this be collected without finishing records the
+/// pass as abandoned rather than silently losing it.
+#[napi]
+pub struct WorkflowPass {
+	ctx: CoreActorContext,
+	shared: Arc<ActorContextShared>,
+	pass: Mutex<Option<CoreWorkflowPassInvocation>>,
+}
+
+#[napi]
+impl WorkflowPass {
+	/// The context the pass runs under, so everything workflow code does is
+	/// attributed to the pass.
+	#[napi]
+	pub fn ctx(&self) -> ActorContext {
+		ActorContext {
+			inner: self.ctx.clone(),
+			shared: self.shared.clone(),
+		}
+	}
+
+	/// Records how the pass ended.
+	#[napi]
+	pub async fn finish(&self, outcome: String) -> napi::Result<()> {
+		let outcome = WorkflowPassOutcome::parse(&outcome).map_err(napi_anyhow_error)?;
+		let Some(pass) = self.pass.lock().take() else {
+			return Ok(());
+		};
+		self.ctx.finish_workflow_pass(pass, outcome).await;
+		Ok(())
+	}
+}
+
+/// One open attempt at one workflow step, closed the same way a pass is.
+#[napi]
+pub struct WorkflowStep {
+	ctx: CoreActorContext,
+	shared: Arc<ActorContextShared>,
+	step: Option<CoreWorkflowStepSpan>,
+}
+
+#[napi]
+impl WorkflowStep {
+	/// The context the step's callback runs under, so work done inside the
+	/// step sits under the step span.
+	#[napi]
+	pub fn ctx(&self) -> ActorContext {
+		ActorContext {
+			inner: self.ctx.clone(),
+			shared: self.shared.clone(),
+		}
+	}
+
+	/// W3C context of the step span, to make active in JavaScript while the
+	/// step's callback runs.
+	#[napi]
+	pub fn span_context(&self) -> Option<JsActorInvocationSpanContext> {
+		self.step
+			.as_ref()
+			.and_then(CoreWorkflowStepSpan::span_context)
+			.map(Into::into)
+	}
+
+	/// Records how the attempt ended. `error` is the failure the step threw, as
+	/// the bridge encodes it.
+	#[napi]
+	pub fn finish(&mut self, outcome: String, error: Option<String>) -> napi::Result<()> {
+		let outcome = WorkflowStepOutcome::parse(&outcome).map_err(napi_anyhow_error)?;
+		let Some(step) = self.step.take() else {
+			return Ok(());
+		};
+		let error = error.map(anyhow_error_from_js_reason);
+		step.finish(outcome, error.as_ref());
+		Ok(())
 	}
 }

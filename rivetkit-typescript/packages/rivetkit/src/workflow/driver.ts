@@ -4,6 +4,7 @@ import type {
 	KVWrite,
 	Message,
 	WorkflowMessageDriver,
+	WorkflowTelemetryDriver,
 } from "@rivetkit/workflow-engine";
 import type { RunContext } from "@/actor/config";
 import type { AnyStaticActorInstance } from "@/actor/definition";
@@ -319,10 +320,22 @@ class ActorWorkflowMessageDriver implements WorkflowMessageDriver {
 	}
 }
 
+/** Reports pass and step boundaries to RivetKit, which owns the spans. */
+function workflowTelemetry(
+	runCtx: RunContext<any, any, any, any, any, any, any, any>,
+): WorkflowTelemetryDriver {
+	return {
+		beginPass: () => runCtx.run.beginWorkflowPass(),
+		beginStep: (name, attempt) =>
+			runCtx.run.beginWorkflowStep(name, attempt),
+	};
+}
+
 export class ActorWorkflowDriver implements EngineDriver {
 	readonly atomicBatch = true;
 	readonly workerPollInterval = 100;
 	readonly messageDriver: WorkflowMessageDriver;
+	readonly telemetry: WorkflowTelemetryDriver;
 	#actor: AnyStaticActorInstance;
 	#runCtx: RunContext<any, any, any, any, any, any, any, any>;
 	#storage: WorkflowStorage;
@@ -334,45 +347,52 @@ export class ActorWorkflowDriver implements EngineDriver {
 		this.#actor = actor;
 		this.#runCtx = runCtx;
 		this.messageDriver = new ActorWorkflowMessageDriver(actor, runCtx);
+		this.telemetry = workflowTelemetry(runCtx);
 		this.#storage = new WorkflowStorage(runtimeDbFromContext(runCtx));
 	}
 
+	/**
+	 * Runs the engine's own history reads and writes outside the workflow
+	 * pass, so a pass's trace shows what its steps did and not this storage.
+	 */
+	#bookkeeping<T>(run: () => Promise<T>): Promise<T> {
+		return this.#runCtx.internalKeepAwake(
+			this.#runCtx.run.withoutWorkflowPass(run),
+		);
+	}
+
 	async get(key: Uint8Array): Promise<Uint8Array | null> {
-		return await this.#runCtx.internalKeepAwake(this.#storage.get(key));
+		return await this.#bookkeeping(() => this.#storage.get(key));
 	}
 
 	async set(key: Uint8Array, value: Uint8Array): Promise<void> {
-		await this.#runCtx.internalKeepAwake(this.#storage.set(key, value));
+		await this.#bookkeeping(() => this.#storage.set(key, value));
 	}
 
 	async delete(key: Uint8Array): Promise<void> {
-		await this.#runCtx.internalKeepAwake(this.#storage.delete(key));
+		await this.#bookkeeping(() => this.#storage.delete(key));
 	}
 
 	async batchDelete(keys: Uint8Array[]): Promise<void> {
-		await this.#runCtx.internalKeepAwake(this.#storage.batchDelete(keys));
+		await this.#bookkeeping(() => this.#storage.batchDelete(keys));
 	}
 
 	async deletePrefix(prefix: Uint8Array): Promise<void> {
-		await this.#runCtx.internalKeepAwake(
-			this.#storage.deletePrefix(prefix),
-		);
+		await this.#bookkeeping(() => this.#storage.deletePrefix(prefix));
 	}
 
 	async deleteRange(start: Uint8Array, end: Uint8Array): Promise<void> {
-		await this.#runCtx.internalKeepAwake(
-			this.#storage.deleteRange(start, end),
-		);
+		await this.#bookkeeping(() => this.#storage.deleteRange(start, end));
 	}
 
 	async list(prefix: Uint8Array): Promise<KVEntry[]> {
-		return await this.#runCtx.internalKeepAwake(this.#storage.list(prefix));
+		return await this.#bookkeeping(() => this.#storage.list(prefix));
 	}
 
 	async batch(writes: KVWrite[]): Promise<void> {
 		if (writes.length === 0) return;
 
-		await this.#runCtx.internalKeepAwake(
+		await this.#bookkeeping(() =>
 			this.#actor.stateManager.saveStateAndWorkflowBatch(writes),
 		);
 	}

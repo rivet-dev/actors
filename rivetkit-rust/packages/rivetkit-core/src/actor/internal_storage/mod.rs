@@ -1082,6 +1082,31 @@ pub(crate) async fn persist_run_wake_at(db: &SqliteDb, wake_at: Option<i64>) -> 
 	Ok(())
 }
 
+/// Loads the span the previous workflow pass left for the next one to link to.
+pub(crate) async fn load_workflow_trace(db: &SqliteDb) -> Result<IncomingTraceContext> {
+	let result = db
+		.query(LOAD_WORKFLOW_TRACE_SQL, None)
+		.await
+		.context("load internal workflow trace context")?;
+	let Some(row) = result.rows.first() else {
+		return Ok(IncomingTraceContext::default());
+	};
+	read_trace_context(row, 0, "workflow trace context")
+}
+
+pub(crate) async fn persist_workflow_trace(
+	db: &SqliteDb,
+	trace_context: IncomingTraceContext,
+) -> Result<()> {
+	db.execute(
+		UPSERT_WORKFLOW_TRACE_SQL,
+		Some(trace_context_params(trace_context).into()),
+	)
+	.await
+	.context("persist internal workflow trace context")?;
+	Ok(())
+}
+
 pub(crate) async fn load_inspector_token(db: &SqliteDb) -> Result<Option<String>> {
 	let result = db
 		.query(LOAD_INSPECTOR_TOKEN_SQL, None)

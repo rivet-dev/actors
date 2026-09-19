@@ -1,4 +1,8 @@
 import type {
+	ActorRunWorkflowPass,
+	ActorRunWorkflowStep,
+} from "@/actor/config";
+import type {
 	ActorInvocationSpanContext,
 	ActorInvocationTraceContext,
 } from "@/common/actor-telemetry-context";
@@ -599,6 +603,16 @@ export interface CoreRuntime {
 		actorName: string,
 		actionName: string,
 	): RuntimeOutboundCall | undefined;
+	/** Backs `ActorRun.beginWorkflowPass`. A runtime without telemetry returns a pass that only runs its body. */
+	beginWorkflowPass(ctx: ActorContextHandle): Promise<ActorRunWorkflowPass>;
+	/** Backs `ActorRun.beginWorkflowStep`. */
+	beginWorkflowStep(
+		ctx: ActorContextHandle,
+		stepName: string,
+		attempt: number,
+	): ActorRunWorkflowStep | undefined;
+	/** Backs `ActorRun.withoutWorkflowPass`. */
+	runOutsideActorInvocationContext<T>(run: () => T): T;
 	actorName(ctx: ActorContextHandle): string;
 	actorKey(ctx: ActorContextHandle): RuntimeActorKeySegment[];
 	actorRegion(ctx: ActorContextHandle): string;

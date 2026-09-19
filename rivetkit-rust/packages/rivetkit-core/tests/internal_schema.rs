@@ -125,6 +125,12 @@ fn v1_database_upgrades_to_the_current_schema() {
 		)
 		.unwrap();
 	assert_eq!(trace_context, (None, None, None));
+	let workflow_trace_rows: i64 = conn
+		.query_row("SELECT COUNT(*) FROM _rivet_workflow_trace", [], |row| {
+			row.get(0)
+		})
+		.unwrap();
+	assert_eq!(workflow_trace_rows, 0);
 }
 
 #[test]

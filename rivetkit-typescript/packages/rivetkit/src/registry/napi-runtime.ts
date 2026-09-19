@@ -8,6 +8,11 @@ import type {
 	HttpResponseBodyStream as NativeHttpResponseBodyStream,
 	WebSocket as NativeWebSocket,
 } from "@rivetkit/rivetkit-napi";
+import type {
+	ActorRunWorkflowPass,
+	ActorRunWorkflowStep,
+} from "@/actor/config";
+import { encodeErrorForBridge } from "@/actor/errors";
 import type { ActorInvocationTraceContext } from "@/common/actor-telemetry-context";
 import {
 	readActiveTraceHeaders,
@@ -629,6 +634,54 @@ export class NapiCoreRuntime implements CoreRuntime {
 			span: call.spanContext() ?? undefined,
 			finish: (error?: string) => call.finish(error),
 		};
+	}
+
+	async beginWorkflowPass(
+		ctx: ActorContextHandle,
+	): Promise<ActorRunWorkflowPass> {
+		const pass = await asNativeActorContext(ctx).beginWorkflowPass();
+		const passCtx = pass.ctx();
+		return {
+			run: (body) =>
+				this.#invocationContext.run(passCtx, () =>
+					runWithActorInvocationSpan(
+						passCtx.invocationTraceContext()?.span,
+						body,
+					),
+				),
+			finish: (outcome) => pass.finish(outcome),
+		};
+	}
+
+	beginWorkflowStep(
+		ctx: ActorContextHandle,
+		stepName: string,
+		attempt: number,
+	): ActorRunWorkflowStep | undefined {
+		const step = this.#actorContextForOperation(ctx).beginWorkflowStep(
+			stepName,
+			attempt,
+		);
+		if (!step) return undefined;
+		const stepCtx = step.ctx();
+		const span = step.spanContext() ?? undefined;
+		return {
+			run: (body) =>
+				this.#invocationContext.run(stepCtx, () =>
+					runWithActorInvocationSpan(span, body),
+				),
+			finish: (outcome, error) =>
+				step.finish(
+					outcome,
+					error === undefined
+						? undefined
+						: encodeErrorForBridge(error),
+				),
+		};
+	}
+
+	runOutsideActorInvocationContext<T>(run: () => T): T {
+		return this.#invocationContext.exit(run);
 	}
 
 	actorName(ctx: ActorContextHandle): string {

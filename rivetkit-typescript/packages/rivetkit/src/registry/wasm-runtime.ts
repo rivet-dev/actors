@@ -1,3 +1,7 @@
+import type {
+	ActorRunWorkflowPass,
+	ActorRunWorkflowStep,
+} from "@/actor/config";
 import { decodeBridgeRivetError, RivetError } from "@/actor/errors";
 import type { ActorInvocationTraceContext } from "@/common/actor-telemetry-context";
 import type {
@@ -556,6 +560,27 @@ export class WasmCoreRuntime implements CoreRuntime {
 		_actionName: string,
 	): RuntimeOutboundCall | undefined {
 		return undefined;
+	}
+
+	async beginWorkflowPass(
+		_ctx: ActorContextHandle,
+	): Promise<ActorRunWorkflowPass> {
+		return {
+			run: (body) => body(),
+			finish: async () => {},
+		};
+	}
+
+	beginWorkflowStep(
+		_ctx: ActorContextHandle,
+		_stepName: string,
+		_attempt: number,
+	): ActorRunWorkflowStep | undefined {
+		return undefined;
+	}
+
+	runOutsideActorInvocationContext<T>(run: () => T): T {
+		return run();
 	}
 
 	actorName(ctx: ActorContextHandle): string {
