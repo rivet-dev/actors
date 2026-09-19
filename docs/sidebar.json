@@ -181,6 +181,10 @@
 							"href": "/actors/docs/general/logging"
 						},
 						{
+							"title": "OpenTelemetry",
+							"href": "/actors/docs/general/tracing"
+						},
+						{
 							"title": "Errors",
 							"href": "/actors/docs/errors"
 						},
