@@ -1,0 +1,5 @@
+{
+  "code": "worker_acquire_timed_out",
+  "group": "actor",
+  "message": "Timed out waiting for a worker thread"
+}

@@ -1,0 +1,5 @@
+{
+  "code": "worker_pool_duplicate_assignment",
+  "group": "actor",
+  "message": "Actor generation is already assigned"
+}

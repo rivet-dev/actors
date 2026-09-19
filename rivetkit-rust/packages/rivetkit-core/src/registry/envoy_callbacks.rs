@@ -17,10 +17,10 @@ impl EnvoyCallbacks for RegistryCallbacks {
 		let actor_name = config.name.clone();
 		let key = actor_key_from_protocol(config.key.clone());
 		let input = config.input.clone();
-		let factory = dispatcher.factories.get(&actor_name).cloned();
+		let actor_config = dispatcher.actor_config(&actor_name).cloned();
 
 		Box::pin(async move {
-			let factory = factory.ok_or_else(|| {
+			let actor_config = actor_config.ok_or_else(|| {
 				ActorRuntime::NotRegistered {
 					actor_name: actor_name.clone(),
 				}
@@ -32,7 +32,7 @@ impl EnvoyCallbacks for RegistryCallbacks {
 				generation,
 				&actor_name,
 				key,
-				factory.as_ref(),
+				&actor_config,
 			)?;
 
 			dispatcher

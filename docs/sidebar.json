@@ -297,6 +297,10 @@
 							"href": "/actors/docs/general/wasm-vs-native-sdk"
 						},
 						{
+							"title": "Node.js Worker Threads",
+							"href": "/actors/docs/general/node-worker-threads"
+						},
+						{
 							"title": "Registry Configuration",
 							"href": "/actors/docs/general/registry-configuration"
 						},

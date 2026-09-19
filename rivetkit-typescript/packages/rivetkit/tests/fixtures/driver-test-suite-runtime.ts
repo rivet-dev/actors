@@ -45,8 +45,14 @@ registry.config.envoy = {
 	poolName,
 };
 
-const { registry: nativeRegistry, serveConfig } = await buildConfiguredRegistry(
-	registry.parseConfig(),
-);
-
-await nativeRegistry.serve(serveConfig);
+if (process.env.RIVETKIT_TEST_ACTORS_PER_THREAD) {
+	// Exercise the public bootstrap path in both the host and actor workers.
+	registry.config.actorsPerThread = Number(
+		process.env.RIVETKIT_TEST_ACTORS_PER_THREAD,
+	);
+	await registry.startAndWait();
+} else {
+	const { registry: nativeRegistry, serveConfig } =
+		await buildConfiguredRegistry(registry.parseConfig());
+	await nativeRegistry.serve(serveConfig);
+}

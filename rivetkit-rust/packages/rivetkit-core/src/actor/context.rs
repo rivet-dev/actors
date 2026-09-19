@@ -797,6 +797,11 @@ impl ActorContext {
 		&self.0.actor_id
 	}
 
+	/// Identifies the resident generation for foreign-runtime context caches.
+	pub fn generation(&self) -> Option<u32> {
+		self.sleep_generation()
+	}
+
 	pub fn name(&self) -> &str {
 		&self.0.name
 	}

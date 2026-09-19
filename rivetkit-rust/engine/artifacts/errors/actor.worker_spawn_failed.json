@@ -1,0 +1,5 @@
+{
+  "code": "worker_spawn_failed",
+  "group": "actor",
+  "message": "Worker thread failed to start"
+}

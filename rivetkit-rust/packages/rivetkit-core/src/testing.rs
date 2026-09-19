@@ -72,8 +72,20 @@ impl ActorContextHarness {
 		region: impl Into<String>,
 		config: ActorConfig,
 	) -> ActorContext {
+		self.context_with_config_and_generation(actor_id, name, key, region, config, 1)
+	}
+
+	pub fn context_with_config_and_generation(
+		&self,
+		actor_id: impl Into<String>,
+		name: impl Into<String>,
+		key: ActorKey,
+		region: impl Into<String>,
+		config: ActorConfig,
+		generation: u32,
+	) -> ActorContext {
 		let actor_id = actor_id.into();
-		let generation = Some(1);
+		let generation = Some(generation);
 		let sql = SqliteDb::new_with_remote_sqlite(
 			self.handle.clone(),
 			actor_id.clone(),

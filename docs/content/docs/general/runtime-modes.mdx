@@ -21,6 +21,8 @@ Runner is the default mode. Your app runs as a long-running process that opens a
 - **No public endpoint**: Your app connects out to Rivet, so it does not need to be publicly reachable or registered in the dashboard.
 - **Custom scaling**: You control how runner processes are pooled and scaled.
 
+Runner deployments on Node.js can optionally distribute actor JavaScript across worker threads. See [Node.js Worker Threads](/actors/docs/general/node-worker-threads) for the entrypoint and isolation constraints.
+
 ### Example
 
 <CodeSnippet file="examples/docs/general-runtime-modes/runner.ts" title="runner.ts" />

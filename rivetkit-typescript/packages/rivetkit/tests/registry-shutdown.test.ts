@@ -37,6 +37,9 @@ interface FakeState {
 	hangShutdown: boolean;
 	/** When set, `shutdownRegistry` blocks on this gate before resolving. */
 	gate: Gate | null;
+	/** Native shutdown only signals cancellation; serve owns the actor drain. */
+	serveGate: Gate | null;
+	workerPoolClose: ReturnType<typeof vi.fn>;
 }
 
 interface Fake {
@@ -56,11 +59,15 @@ function createFake(): Fake {
 		stopThresholdMs: undefined,
 		hangShutdown: false,
 		gate: null,
+		serveGate: null,
+		workerPoolClose: vi.fn(async () => {}),
 	};
 
 	const runtime = {
 		kind: "napi",
-		serveRegistry: async () => {},
+		serveRegistry: async () => {
+			if (state.serveGate) await state.serveGate.promise;
+		},
 		shutdownRegistry: async (registry: RegistryHandle) => {
 			state.shutdownRegistries.push(registry);
 			if (state.hangShutdown) {
@@ -97,7 +104,12 @@ function createFake(): Fake {
 			serverlessBasePath: "/api/rivet",
 			serverlessMaxStartPayloadBytes: 1024,
 		} as unknown as RuntimeServeConfig;
-		return { runtime, registry, serveConfig };
+		return {
+			runtime,
+			registry,
+			serveConfig,
+			workerPool: { poolId: "pool", close: state.workerPoolClose },
+		};
 	};
 
 	return {
@@ -258,6 +270,63 @@ describe("Registry.shutdown", () => {
 		expect(settled).toBe(false);
 
 		await vi.advanceTimersByTimeAsync(5_000);
+		await drained;
+		expect(settled).toBe(true);
+	});
+
+	test("keeps workers alive until serve finishes draining past five seconds", async () => {
+		const { deps, state } = createFake();
+		state.serveGate = makeGate();
+		const registry = makeRegistry(deps, {
+			shutdown: { gracePeriodMs: 60_000 },
+		});
+		registry.start();
+		const drained = registry.shutdown();
+
+		await vi.advanceTimersByTimeAsync(6_000);
+		expect(state.shutdownRegistries).toHaveLength(1);
+		expect(state.workerPoolClose).not.toHaveBeenCalled();
+
+		state.serveGate.release();
+		await drained;
+		expect(state.workerPoolClose).toHaveBeenCalledOnce();
+	});
+
+	test("closes workers at the grace ceiling if serve never finishes draining", async () => {
+		const { deps, state } = createFake();
+		state.serveGate = makeGate();
+		const registry = makeRegistry(deps, {
+			shutdown: { gracePeriodMs: 10_000 },
+		});
+		registry.start();
+		const drained = registry.shutdown();
+
+		await vi.advanceTimersByTimeAsync(9_999);
+		expect(state.workerPoolClose).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(1);
+		await drained;
+		expect(state.workerPoolClose).toHaveBeenCalledWith(true);
+		state.serveGate.release();
+	});
+
+	test("waits for forced worker termination even when native shutdown hangs", async () => {
+		const { deps, state } = createFake();
+		state.hangShutdown = true;
+		const closeGate = makeGate();
+		state.workerPoolClose.mockImplementation(() => closeGate.promise);
+		const registry = makeRegistry(deps, {
+			shutdown: { gracePeriodMs: 10_000 },
+		});
+		registry.start();
+		let settled = false;
+		const drained = registry.shutdown().then(() => {
+			settled = true;
+		});
+
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(state.workerPoolClose).toHaveBeenCalledWith(true);
+		expect(settled).toBe(false);
+		closeGate.release();
 		await drained;
 		expect(settled).toBe(true);
 	});

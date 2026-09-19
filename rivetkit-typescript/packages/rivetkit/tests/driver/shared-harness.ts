@@ -290,6 +290,8 @@ export async function startNativeDriverRuntime(
 		cwd: dirname(TEST_DIR),
 		env: {
 			...process.env,
+			// This harness owns the Engine; actor runtimes must only connect to it.
+			RIVETKIT_ENGINE_SPAWN: "never",
 			RIVET_TOKEN: TOKEN,
 			RIVET_NAMESPACE: namespace,
 			RIVETKIT_DRIVER_REGISTRY_PATH: variant.registryPath,

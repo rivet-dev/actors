@@ -1,0 +1,5 @@
+{
+  "code": "worker_registration_rejected",
+  "group": "actor",
+  "message": "Worker thread registration was rejected"
+}

@@ -43,6 +43,8 @@ After configuring your registry, start it:
 
 See [Runtime Modes](/actors/docs/general/runtime-modes) for details on when to use each mode.
 
+Long-running Node.js registries can also set `actorsPerThread` to isolate actor JavaScript across multiple event loops. See [Node.js Worker Threads](/actors/docs/general/node-worker-threads) for scheduling, entrypoint, memory, and runtime constraints.
+
 ## Environment Variables
 
 Many configuration options can be set via environment variables. See [Environment Variables](/actors/docs/general/environment-variables) for a complete reference.
@@ -55,4 +57,5 @@ Many configuration options can be set via environment variables. See [Environmen
 ## Related
 
 - [Actor Configuration](/actors/docs/general/actor-configuration): Configure individual actors
+- [Node.js Worker Threads](/actors/docs/general/node-worker-threads): Run actors across isolated Node.js event loops
 - [HTTP Server Setup](/actors/docs/general/http-server): Set up HTTP routing and middleware

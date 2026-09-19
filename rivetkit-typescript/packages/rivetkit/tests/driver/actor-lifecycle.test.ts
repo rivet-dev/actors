@@ -109,17 +109,11 @@ describeDriverMatrix("Actor Lifecycle", (driverTestConfig) => {
 						actorKey,
 					]);
 
-					// Trigger start
-					const resolvePromise = actor.resolve();
-
-					// Immediately destroy
-					const destroyPromise = actor.destroy();
-
-					// Both operations must complete, and the resolved actor ID must no longer exist afterward.
-					const [actorId] = await Promise.all([
-						resolvePromise,
-						destroyPromise,
-					]);
+					// Resolve one identity before destroying it. Racing two independent
+					// get-or-create queries can create a replacement after the first dies,
+					// which tests query routing instead of this actor's startup/stop race.
+					const actorId = await actor.resolve();
+					await client.startStopRaceActor.getForId(actorId).destroy();
 					await expect(
 						client.startStopRaceActor.getForId(actorId).ping(),
 					).rejects.toMatchObject({
@@ -339,12 +333,16 @@ describeDriverMatrix("Actor Lifecycle", (driverTestConfig) => {
 			expect(state.startCompleted).toBe(true);
 
 			const observer = client.lifecycleObserver.getOrCreate(["observer"]);
-			const events = await observer.getEvents();
-			expect(events).toContainEqual(
-				expect.objectContaining({
-					actorKey,
-					event: "destroy",
-				}),
+			// The destroy action requests shutdown; its reply does not wait for
+			// onDestroy's separate observer request to complete.
+			await vi.waitFor(
+				async () => {
+					const events = await observer.getEvents();
+					expect(events).toContainEqual(
+						expect.objectContaining({ actorKey, event: "destroy" }),
+					);
+				},
+				{ timeout: 10_000 },
 			);
 		});
 	});

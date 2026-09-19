@@ -1,0 +1,5 @@
+{
+  "code": "worker_pool_invalid_config",
+  "group": "actor",
+  "message": "Invalid worker pool configuration"
+}

@@ -30,7 +30,7 @@ Rules for `rivetkit-typescript/packages/rivetkit-napi/`. The bridge is pure plum
 
 ## Receive-loop state lifecycle
 
-- `ActorContextShared` instances are cached by `actor_id`. Every fresh `run_adapter_loop` must call `reset_runtime_shared_state()` before reattaching abort/run/task hooks or sleep→wake cycles inherit stale `end_reason` / lifecycle flags and drop post-wake events.
+- `ActorContextShared` instances are cached by `(actor_id, generation)`. Old JS wrappers can survive sleep, so a new generation must never reuse their environment-local references or callback slots. Every fresh `run_adapter_loop` calls `reset_runtime_shared_state()` before reattaching abort/run/task hooks.
 - Receive-loop `SerializeState` handling stays inline in `napi_actor_events.rs`, reuses the shared `state_deltas_from_payload(...)` converter from `actor_context.rs`, and only cancels the adapter abort token on `Destroy` or final adapter teardown, not on `Sleep`.
 - Receive-loop NAPI optional callbacks preserve the TypeScript runtime defaults: missing `onBeforeSubscribe` allows the subscription, missing workflow callbacks reply `None`, and missing connection lifecycle hooks still accept the connection while leaving the existing empty conn state untouched.
 

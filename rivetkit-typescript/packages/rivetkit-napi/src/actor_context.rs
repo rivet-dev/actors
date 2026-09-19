@@ -39,7 +39,7 @@ type DisconnectPredicateTsfn =
 type RunRestartHook = Arc<dyn Fn(Option<(i64, u64)>) -> anyhow::Result<()> + Send + Sync + 'static>;
 pub(crate) type RegisteredTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
-static ACTOR_CONTEXT_SHARED: LazyLock<SccHashMap<String, Weak<ActorContextShared>>> =
+static ACTOR_CONTEXT_SHARED: LazyLock<SccHashMap<(String, Option<u32>), Weak<ActorContextShared>>> =
 	LazyLock::new(SccHashMap::new);
 
 /// N-API wrapper around `rivetkit-core::ActorContext`.
@@ -153,7 +153,7 @@ struct DisconnectPredicatePayload {
 impl ActorContext {
 	pub(crate) fn new(inner: CoreActorContext) -> Self {
 		let actor_id = inner.actor_id().to_owned();
-		let shared = actor_context_shared(&actor_id);
+		let shared = actor_context_shared(&actor_id, inner.generation());
 		tracing::debug!(
 			class = "ActorContext",
 			%actor_id,
@@ -890,10 +890,12 @@ impl Drop for ActorContextShared {
 	}
 }
 
-fn actor_context_shared(actor_id: &str) -> Arc<ActorContextShared> {
+fn actor_context_shared(actor_id: &str, generation: Option<u32>) -> Arc<ActorContextShared> {
 	ACTOR_CONTEXT_SHARED.retain_sync(|_, shared| shared.strong_count() > 0);
 
-	match ACTOR_CONTEXT_SHARED.entry_sync(actor_id.to_owned()) {
+	// Old JS wrappers can outlive sleep and still hold environment-local refs.
+	// A later generation may run in a different Node environment.
+	match ACTOR_CONTEXT_SHARED.entry_sync((actor_id.to_owned(), generation)) {
 		scc::hash_map::Entry::Occupied(mut entry) => {
 			if let Some(shared) = entry.get().upgrade() {
 				tracing::debug!(

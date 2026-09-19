@@ -398,7 +398,7 @@ describeDriverMatrix(
 				});
 
 				await waitForAction(
-					connection.getCounts.bind(connection),
+					() => connection.getCounts(),
 					(counts) => {
 						expect(counts.startCount).toBeGreaterThanOrEqual(1);
 					},
@@ -716,10 +716,7 @@ describeDriverMatrix(
 				]);
 				const firstConn = handle.connect();
 
-				// Poll until the first connection handshake finishes because connect() has no ready promise.
-				await vi.waitFor(async () => {
-					expect(firstConn.isConnected).toBe(true);
-				});
+				await waitForConnectionReady(firstConn);
 
 				// Trigger sleep (the actor will be in onSleep for ~500ms)
 				await firstConn.triggerSleep();

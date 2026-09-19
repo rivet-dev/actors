@@ -24,6 +24,71 @@ fn is_actor_active(state: Option<&ActorInstanceState>) -> bool {
 	matches!(state, Some(ActorInstanceState::Active(_)))
 }
 
+fn dispatcher_with_factories(
+	factories: HashMap<String, Arc<ActorFactory>>,
+) -> Arc<RegistryDispatcher> {
+	let configs = factories
+		.iter()
+		.map(|(name, factory)| (name.clone(), factory.config().clone()))
+		.collect();
+	Arc::new(RegistryDispatcher::new(
+		ActorFactoryProvider::Static(factories),
+		configs,
+		false,
+	))
+}
+
+#[tokio::test]
+async fn stale_stop_during_startup_does_not_displace_current_stop() {
+	for preparked in [false, true] {
+		let dispatcher = dispatcher_with_factories(HashMap::new());
+		let actor_id = "stale-then-current".to_owned();
+		if preparked {
+			dispatcher
+				.stop_actor(
+					&actor_id,
+					49,
+					protocol::StopActorReason::Lost,
+					ActorStopHandle::detached(),
+				)
+				.await
+				.unwrap();
+		}
+		dispatcher
+			.starting_instances
+			.insert_async(
+				actor_id.clone(),
+				StartingActorInstance {
+					generation: 50,
+					notify: Arc::new(Notify::new()),
+				},
+			)
+			.await
+			.ok()
+			.unwrap();
+		for generation in [49, 50] {
+			dispatcher
+				.stop_actor(
+					&actor_id,
+					generation,
+					protocol::StopActorReason::Lost,
+					ActorStopHandle::detached(),
+				)
+				.await
+				.unwrap();
+		}
+		assert_eq!(
+			dispatcher
+				.pending_stops
+				.get_async(&actor_id)
+				.await
+				.unwrap()
+				.generation,
+			50
+		);
+	}
+}
+
 /// Regression test for the production incident where a `CommandStopActor` addressed
 /// to a previous generation was applied to a freshly-started newer generation.
 ///
@@ -43,7 +108,7 @@ async fn stop_for_previous_generation_does_not_kill_freshly_started_generation()
 			Box::pin(async { Ok(()) })
 		})),
 	);
-	let dispatcher = Arc::new(RegistryDispatcher::new(factories, false));
+	let dispatcher = dispatcher_with_factories(factories);
 
 	let actor_id = "actor-preparked";
 
@@ -105,8 +170,7 @@ async fn stop_for_previous_generation_does_not_kill_freshly_started_generation()
 }
 
 /// Regression test for the exact logged ordering: a gen-49 stop arrives *while gen
-/// 50 is still starting*. It parks, and gen 50's startup must treat it as stale and
-/// keep running.
+/// 50 is still starting*. The stop is stale and must leave gen 50 running.
 ///
 /// Uses a test-only startup gate (`start_actor` seam) to hold gen 50 in the
 /// "starting" window so the stop is delivered mid-startup.
@@ -125,7 +189,7 @@ async fn parked_previous_generation_stop_does_not_kill_starting_generation() {
 			Box::pin(async { Ok(()) })
 		})),
 	);
-	let dispatcher = Arc::new(RegistryDispatcher::new(factories, false));
+	let dispatcher = dispatcher_with_factories(factories);
 
 	let actor_id = "actor-gated";
 
@@ -162,7 +226,7 @@ async fn parked_previous_generation_stop_does_not_kill_starting_generation() {
 	.await
 	.expect("gen 50 should register as starting");
 
-	// gen 49's `Lost` stop arrives while gen 50 is starting: it parks under the actor id.
+	// gen 49's `Lost` stop is discarded while gen 50 is starting.
 	dispatcher
 		.stop_actor(
 			actor_id,
@@ -171,17 +235,17 @@ async fn parked_previous_generation_stop_does_not_kill_starting_generation() {
 			ActorStopHandle::detached(),
 		)
 		.await
-		.expect("stop parks while gen 50 is starting");
+		.expect("stale stop completes while gen 50 is starting");
 	assert!(
 		dispatcher
 			.pending_stops
 			.get_async(&actor_id.to_owned())
 			.await
-			.is_some(),
-		"gen-49 stop should be parked while gen 50 is starting",
+			.is_none(),
+		"gen-49 stop must not occupy gen 50's pending-stop slot",
 	);
 
-	// Release gen 50's startup; it must recognize the parked gen-49 stop as stale.
+	// Release gen 50's startup; it must stay active.
 	test_hooks::release_startup_gate(actor_id);
 	start_task
 		.await
@@ -226,7 +290,7 @@ async fn stop_for_current_generation_stops_it() {
 			Box::pin(async { Ok(()) })
 		})),
 	);
-	let dispatcher = Arc::new(RegistryDispatcher::new(factories, false));
+	let dispatcher = dispatcher_with_factories(factories);
 
 	let actor_id = "actor-current";
 

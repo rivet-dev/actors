@@ -243,7 +243,7 @@
 		"eventsource": "^4.0.0",
 		"get-port": "^7.1.0",
 		"tsup": "^8.4.0",
-		"tsx": "^4.19.4",
+		"tsx": "^4.23.1",
 		"typescript": "^5.7.3",
 		"vite-tsconfig-paths": "^5.1.4",
 		"vitest": "^3.1.1",

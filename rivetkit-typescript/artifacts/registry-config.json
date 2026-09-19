@@ -18,6 +18,12 @@
       "description": "Maximum size of outgoing WebSocket messages in bytes. Default: 1048576",
       "type": "number"
     },
+    "actorsPerThread": {
+      "description": "Hard limit on resident actor generations per Node.js worker thread, including actors that are starting, running, or stopping. Omit to run actor JavaScript on the main thread.",
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
     "noWelcome": {
       "description": "Disable the welcome message on startup. Default: false",
       "type": "boolean"

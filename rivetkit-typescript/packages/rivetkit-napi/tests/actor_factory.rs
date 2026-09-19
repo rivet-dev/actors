@@ -67,6 +67,8 @@ mod moved_tests {
 				"message": "same message",
 				"metadata": { "count": 1 },
 				"rayId": "ray-123",
+				"public": true,
+				"statusCode": 409,
 			})
 		);
 
@@ -78,7 +80,9 @@ mod moved_tests {
 		assert_eq!(transport_error(&second).group(), "actor");
 		assert_eq!(transport_error(&second).code(), "same_code");
 
-		let payload = crate::anyhow_to_bridge_rivet_error_payload(first);
+		let payload = crate::anyhow_to_bridge_rivet_error_payload(first.context("worker callback"));
+		assert_eq!(payload.get("public"), Some(&serde_json::json!(true)));
+		assert_eq!(payload.get("statusCode"), Some(&serde_json::json!(409)));
 		assert_eq!(
 			payload.get("rayId").and_then(|value| value.as_str()),
 			Some("ray-123")
