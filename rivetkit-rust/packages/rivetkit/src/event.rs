@@ -104,7 +104,11 @@ impl<A: Actor> RuntimeEvent<A> {
 				scheduled_fire,
 				reply: Some(reply),
 			}),
-			ActorEvent::HttpRequest { request, reply } => Self::Http(HttpCall {
+			ActorEvent::HttpRequest {
+				request,
+				invocation_telemetry: _,
+				reply,
+			} => Self::Http(HttpCall {
 				request: Some(request),
 				reply: Some(reply),
 			}),

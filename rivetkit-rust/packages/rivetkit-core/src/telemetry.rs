@@ -59,6 +59,17 @@ fn invocation_ray_id(headers: &http::HeaderMap) -> Option<String> {
 	rivetkit_client_protocol::telemetry_headers::bounded_ray_id(value).map(str::to_owned)
 }
 
+/// Name a request invocation is reported under, in place of a caller-supplied path.
+const REQUEST_INVOCATION_NAME: &str = "onRequest";
+
+/// What an invocation ran, which decides its name and the attributes that
+/// identify it on the span.
+#[derive(Clone, Copy, Debug)]
+enum InvocationSubject<'a> {
+	Action(&'a str),
+	Request { method: &'a str },
+}
+
 /// Owns the complete lifecycle of one actor invocation.
 #[derive(Debug)]
 pub(crate) struct ActorInvocation {
@@ -69,6 +80,7 @@ pub(crate) struct ActorInvocation {
 enum InvocationType {
 	Action,
 	Scheduled,
+	Request,
 }
 
 impl InvocationType {
@@ -76,6 +88,7 @@ impl InvocationType {
 		match self {
 			Self::Action => "action",
 			Self::Scheduled => "scheduled",
+			Self::Request => "request",
 		}
 	}
 }
@@ -205,7 +218,7 @@ impl ActorInvocation {
 	) -> Self {
 		Self::start(
 			ctx,
-			action_name,
+			InvocationSubject::Action(action_name),
 			InvocationType::Action,
 			incoming.ray_id,
 			incoming.remote_parent,
@@ -224,7 +237,7 @@ impl ActorInvocation {
 		);
 		Self::start(
 			ctx,
-			action_name,
+			InvocationSubject::Action(action_name),
 			InvocationType::Scheduled,
 			trace_context.ray_id,
 			None,
@@ -232,15 +245,39 @@ impl ActorInvocation {
 		)
 	}
 
+	/// Starts the invocation for one raw HTTP request served by `onRequest`.
+	/// The span is named after the handler rather than the path, because a
+	/// path is caller-supplied and would make the name a cardinality surface.
+	pub(crate) fn start_request(
+		ctx: &ActorContext,
+		request: &crate::actor::messages::Request,
+		incoming: IncomingInvocationContext,
+	) -> Self {
+		Self::start(
+			ctx,
+			InvocationSubject::Request {
+				method: request.method().as_str(),
+			},
+			InvocationType::Request,
+			incoming.ray_id,
+			incoming.remote_parent,
+			None,
+		)
+	}
+
 	fn start(
 		ctx: &ActorContext,
-		action_name: &str,
+		subject: InvocationSubject<'_>,
 		invocation_type: InvocationType,
 		ray_id: Option<String>,
 		parent: Option<SpanContext>,
 		link: Option<SpanContext>,
 	) -> Self {
 		let identity = ctx.telemetry_identity();
+		let (action_name, http_method) = match subject {
+			InvocationSubject::Action(name) => (name, None),
+			InvocationSubject::Request { method } => (REQUEST_INVOCATION_NAME, Some(method)),
+		};
 		let span = if tracing::enabled!(target: "rivetkit::telemetry", tracing::Level::INFO) {
 			let span = tracing::info_span!(
 				target: "rivetkit::telemetry",
@@ -252,14 +289,20 @@ impl ActorInvocation {
 				rivet.actor.id = %identity.actor_id,
 				rivet.actor.name = %identity.actor_name,
 				rivet.actor.key = %identity.actor_key,
-				rivet.action.name = %action_name,
+				rivet.action.name = tracing::field::Empty,
 				rivet.ray.id = tracing::field::Empty,
+				http.request.method = tracing::field::Empty,
+				http.response.status_code = tracing::field::Empty,
 				otel.status_code = tracing::field::Empty,
 				error.type = tracing::field::Empty,
 			);
 			if let Some(ray_id) = ray_id.as_deref() {
 				span.record("rivet.ray.id", ray_id);
 			}
+			match http_method {
+				Some(method) => span.record("http.request.method", method),
+				None => span.record("rivet.action.name", action_name),
+			};
 			if let Some(parent) = parent {
 				span.set_parent(Context::new().with_remote_span_context(parent));
 			}
@@ -282,6 +325,27 @@ impl ActorInvocation {
 
 	pub(crate) fn finish(self, error: Option<&anyhow::Error>) {
 		self.telemetry.finish(error);
+	}
+
+	pub(crate) fn finish_request(
+		self,
+		response: std::result::Result<&crate::actor::messages::ActorHttpResponse, &anyhow::Error>,
+	) {
+		match response {
+			Ok(response) => {
+				let status = response.status();
+				self.telemetry.finish_with(|span| {
+					span.record("http.response.status_code", status);
+					if status >= 500 {
+						span.record("otel.status_code", "ERROR");
+						span.record("error.type", status.to_string());
+					} else {
+						record_outcome(span, None);
+					}
+				});
+			}
+			Err(error) => self.finish(Some(error)),
+		}
 	}
 }
 
@@ -526,11 +590,11 @@ fn w3c_trace_headers(span_context: &SpanContext) -> OwnedTraceHeaders {
 	headers
 }
 
-/// An action is entered from outside the actor; a scheduled fire originates
-/// inside it.
+/// An action or a raw HTTP request is entered from outside the actor; a
+/// scheduled fire originates inside it.
 fn otel_kind(invocation_type: InvocationType) -> &'static str {
 	match invocation_type {
-		InvocationType::Action => "server",
+		InvocationType::Action | InvocationType::Request => "server",
 		InvocationType::Scheduled => "internal",
 	}
 }

@@ -7,10 +7,25 @@ use crate::actor::messages::ActorEvent;
 
 pub struct Reply<T> {
 	tx: Option<oneshot::Sender<Result<T>>>,
+	on_reply: Option<Box<dyn FnOnce(&Result<T>) + Send>>,
 }
 
 impl<T> Reply<T> {
+	/// Runs `on_reply` with the result just before it is sent. A reply dropped
+	/// unsent runs it with the dropped-reply error, so every outcome is seen.
+	pub(crate) fn on_reply(mut self, on_reply: impl FnOnce(&Result<T>) + Send + 'static) -> Self {
+		self.on_reply = Some(Box::new(on_reply));
+		self
+	}
+
 	pub fn send(mut self, result: Result<T>) {
+		self.deliver(result);
+	}
+
+	fn deliver(&mut self, result: Result<T>) {
+		if let Some(on_reply) = self.on_reply.take() {
+			on_reply(&result);
+		}
 		if let Some(tx) = self.tx.take() {
 			let _ = tx.send(result);
 		}
@@ -19,8 +34,8 @@ impl<T> Reply<T> {
 
 impl<T> Drop for Reply<T> {
 	fn drop(&mut self) {
-		if let Some(tx) = self.tx.take() {
-			let _ = tx.send(Err(crate::error::ActorLifecycle::DroppedReply.build()));
+		if self.tx.is_some() {
+			self.deliver(Err(crate::error::ActorLifecycle::DroppedReply.build()));
 		}
 	}
 }
@@ -35,7 +50,10 @@ impl<T> std::fmt::Debug for Reply<T> {
 
 impl<T> From<oneshot::Sender<Result<T>>> for Reply<T> {
 	fn from(tx: oneshot::Sender<Result<T>>) -> Self {
-		Self { tx: Some(tx) }
+		Self {
+			tx: Some(tx),
+			on_reply: None,
+		}
 	}
 }
 
