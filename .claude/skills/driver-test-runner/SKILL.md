@@ -115,6 +115,7 @@ Each row: `[native] [wasm] <file> | <suite description>`
 - [ ] [ ] access-control | access control
 - [ ] [ ] actor-vars | Actor Variables
 - [ ] [ ] actor-metadata | Actor Metadata Tests
+- [ ] [ ] actor-telemetry | Actor Telemetry
 - [ ] [ ] actor-onstatechange | Actor State Change Tests
 - [ ] [ ] actor-db | Actor Database
 - [ ] [ ] actor-db-raw | Actor Database Raw Tests
@@ -214,6 +215,7 @@ Replace `<FILE>` with the file name stem (part before the `|` in the progress fi
 | access-control | access control |
 | actor-vars | Actor Variables |
 | actor-metadata | Actor Metadata Tests |
+| actor-telemetry | Actor Telemetry |
 | actor-onstatechange | Actor State Change Tests |
 | actor-db | Actor Database |
 | actor-db-raw | Actor Database Raw Tests |

@@ -57,6 +57,7 @@ use crate::actor::task_types::ShutdownKind;
 use crate::actor::work_registry::ActorWorkKind;
 use crate::error::{ActorLifecycle as ActorLifecycleError, ActorRuntime};
 use crate::runtime::RuntimeSpawner;
+use crate::telemetry::{ActionInvocationSpan, IncomingInvocationContext};
 #[cfg(test)]
 use crate::time::sleep;
 use crate::time::{Instant, sleep_until, timeout};
@@ -201,6 +202,7 @@ pub enum DispatchCommand {
 	Action {
 		name: String,
 		args: Vec<u8>,
+		incoming: IncomingInvocationContext,
 		conn: ConnHandle,
 		reply: oneshot::Sender<Result<Vec<u8>>>,
 	},
@@ -906,9 +908,11 @@ impl ActorTask {
 			DispatchCommand::Action {
 				name,
 				args,
+				incoming,
 				conn,
 				reply,
 			} => {
+				let invocation = ActionInvocationSpan::start(&self.ctx, &name, incoming);
 				tracing::info!(
 					actor_id = %self.ctx.actor_id(),
 					action_name = %name,
@@ -942,6 +946,7 @@ impl ActorTask {
 								Ok(result) => {
 									let result =
 										result.map_err(|error| ctx.attach_actor_to_error(error));
+									invocation.finish(result.as_ref().err());
 									tracing::info!(
 										actor_id = %actor_id,
 										action_name = %action_name_for_log,
@@ -959,6 +964,7 @@ impl ActorTask {
 									let error = ctx.attach_actor_to_error(
 										ActorLifecycleError::DroppedReply.build(),
 									);
+									invocation.finish(Some(&error));
 									let _ = reply.send(Err(error));
 								}
 							}
@@ -971,7 +977,9 @@ impl ActorTask {
 							?error,
 							"actor task: failed to enqueue ActorEvent::Action"
 						);
-						let _ = reply.send(Err(self.attach_actor_to_error(error)));
+						let error = self.attach_actor_to_error(error);
+						invocation.finish(Some(&error));
+						let _ = reply.send(Err(error));
 						self.log_dispatch_command_handled(command_kind, "enqueue_failed");
 					}
 				}

@@ -3,6 +3,7 @@ use super::http::*;
 use super::*;
 use crate::error::{ProtocolError, client_error_message};
 use crate::inspector::InspectorTabEntry;
+use crate::telemetry::IncomingInvocationContext;
 use ::http;
 
 #[derive(rivet_error::RivetError, serde::Serialize)]
@@ -344,6 +345,7 @@ impl RegistryDispatcher {
 			conn.clone(),
 			action_name.to_owned(),
 			args,
+			IncomingInvocationContext::default(),
 		)
 		.await;
 		match &output {
